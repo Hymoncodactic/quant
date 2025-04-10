@@ -16,7 +16,7 @@ class MyStrategy(bt.Strategy):
             self.sell()  # Sell signal
 
 # Fetch data using yfinance
-data = yf.download('AAPL', start='2010-01-01', end='2020-12-31', auto_adjust=False)
+data = yf.download('TSLA', start='2025-01-01', end='2025-04-10', auto_adjust=False)
 
 # Flatten multi-level column names (if any)
 data.columns = data.columns.map(lambda x: x[0] if isinstance(x, tuple) else x)
