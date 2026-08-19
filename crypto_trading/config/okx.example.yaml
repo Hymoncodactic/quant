@@ -1,0 +1,46 @@
+# OKX 配置模板。复制为 okx.paper.yaml / okx.live.yaml 后填写。
+# 密钥不在此处：一律走 secrets/ 或环境变量（CLAUDE.md §4.2）。
+#
+# 【重要】本文件所有数值均为占位符，未经取证。接入前必须按 CLAUDE.md §1.1 S4
+# 从 OKX 官方文档或接口取回真实值，并把依据写进注释与 data/reference/。
+
+live: false                 # live 环境必须显式改为 true，否则执行层拒绝下单
+
+account:
+  # instrument_type: SPOT | SWAP —— 现货还是永续，待用户裁定（工作记忆 未决项 5）
+  instrument_type: SPOT
+  quote_ccy: USDT           # 计价币；改动会影响全部金额口径
+
+endpoints:
+  rest_base: ""             # 未证实：填官方文档给出的 REST base URL
+  ws_public: ""             # 未证实：公共行情 WS
+  ws_private: ""            # 未证实：私有订单/账户 WS
+
+rate_limits:                # 未证实：填官方 Rate Limit 节的值，代码会再乘 0.7 余量
+  market_per_sec: 0
+  trade_per_sec: 0
+  account_per_sec: 0
+
+fees:                       # 未证实：填账户实际费率档（bps）
+  maker_bps: 0
+  taker_bps: 0
+
+execution:
+  dry_run: true             # 默认 true；改 false 属实盘参数变更，须先问用户
+  order_timeout_sec: 30
+  max_replace_times: 3
+  cooldown_ok_sec: 0        # 成交后最短间隔
+  cooldown_fail_sec: 0      # 失败后最短间隔
+  stale_seconds: 5          # 行情快照新鲜度闸
+
+risk:                       # 全部为拒单/削减上限，风控闸只能收紧不能放大
+  max_order_notional: 0     # 单笔金额上限（计价币）
+  max_position_notional: 0  # 单标的仓位上限
+  max_gross_notional: 0     # 账户总敞口上限
+  max_daily_orders: 0       # 日内笔数熔断
+  max_daily_loss: 0         # 日内亏损熔断
+  stop_loss_pct: 0          # 止损
+
+ingest:
+  periods: ["1m", "1h", "1d"]
+  start_date: ""            # 待用户裁定（工作记忆 未决项 4）

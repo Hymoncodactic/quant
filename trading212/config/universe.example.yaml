@@ -1,0 +1,17 @@
+# Trading 212 标的池。选入必须有可复现的标准（market-data-pipeline §6）。
+
+selection_rule:
+  # 未证实：具体阈值待用户裁定
+  min_avg_daily_turnover_gbp: 0
+  lookback_days: 90
+  markets: []                         # 例：["LSE"]；跨市场标的须考虑 FX 成本
+
+effective_from: ""
+
+instruments: []                       # 例：["AAPL", "SHEL"]
+
+history:                              # 成分变更留痕，防幸存者偏差
+  - date: ""
+    action: ""
+    instrument: ""
+    reason: ""

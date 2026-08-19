@@ -1,0 +1,44 @@
+# Trading 212 配置模板。复制为 t212.paper.yaml / t212.live.yaml 后填写。
+# 密钥不在此处：已存于 secrets/trading212_api_key.txt（CLAUDE.md §4.2）。
+#
+# 【重要】本文件所有数值均为占位符，未经取证。Trading 212 的 API 能力
+# （是否支持下单、限频、历史数据深度、是否支持碎股）全部属未证实项，
+# 接入前必须按 CLAUDE.md §1.1 S4 查官方文档确认（工作记忆 未决项 2）。
+
+live: false                 # live 环境必须显式改为 true，否则执行层拒绝下单
+
+account:
+  base_ccy: GBP             # 用户明言：账户内存放英镑（S6）
+  # 非英镑计价标的须建模 FX 换算与费用，口径未证实
+
+endpoints:
+  rest_base: ""             # 未证实
+  secret_name: trading212_api_key   # 传给 common.secrets.get_secret() 的名字
+
+rate_limits:                # 未证实
+  read_per_sec: 0
+  trade_per_sec: 0
+
+costs:                      # 未证实：佣金 / 印花税 / FX 费 / 点差
+  commission_bps: 0
+  stamp_duty_bps: 0         # 英股买入印花税，须确认适用范围与豁免
+  fx_fee_bps: 0
+
+execution:
+  dry_run: true
+  order_timeout_sec: 60
+  max_replace_times: 3
+  stale_seconds: 10
+  fractional_shares: false  # 未证实：是否支持碎股
+
+risk:
+  max_order_notional: 0     # GBP
+  max_position_notional: 0
+  max_gross_notional: 0
+  max_daily_orders: 0
+  max_daily_loss: 0
+  stop_loss_pct: 0
+
+ingest:
+  periods: ["1d"]
+  start_date: ""

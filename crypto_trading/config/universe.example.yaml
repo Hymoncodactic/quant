@@ -1,0 +1,18 @@
+# OKX 标的池。选入必须有可复现的标准，不允许无标准的手工列表
+# （market-data-pipeline §6）。
+
+selection_rule:
+  # 未证实：具体阈值待用户裁定
+  min_avg_daily_turnover_usdt: 0
+  lookback_days: 90
+  exclude_leveraged_tokens: true      # 排除 3L/3S 一类杠杆代币
+
+effective_from: ""                    # 本版成分的生效日期
+
+instruments: []                       # 例：["BTC-USDT", "ETH-USDT"]
+
+history:                              # 成分变更留痕，回测须用当时成分而非今日成分
+  - date: ""
+    action: ""                        # add | remove
+    instrument: ""
+    reason: ""

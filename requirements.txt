@@ -1,0 +1,24 @@
+# 基础
+pandas>=2.2
+numpy>=1.26
+pyarrow>=16.0          # parquet 读写
+pyyaml>=6.0            # 配置
+python-dateutil>=2.9
+pytz>=2024.1
+
+# 网络
+httpx>=0.27            # REST，同步+异步同一套 API
+websockets>=12.0       # 行情推送
+tenacity>=8.2          # 重试与退避
+
+# 交易所接口（下一步接入时再按 CLAUDE.md §1.1 S4 核对版本与字段）
+ccxt>=4.3              # OKX 统一封装；官方 REST 亦可直连
+
+# 研究与回测
+scipy>=1.13
+statsmodels>=0.14
+matplotlib>=3.8
+plotly>=5.22           # html-report skill 使用
+
+# 测试
+pytest>=8.2

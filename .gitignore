@@ -1,0 +1,29 @@
+# ---- 密钥：绝不入库 ----
+secrets/
+*.key
+*.pem
+.env
+.env.*
+**/config/*.live.yaml
+**/config/*.paper.yaml
+!**/config/*.example.yaml
+
+# ---- 数据与运行产物 ----
+data/
+logs/
+reports/
+backtest/results/
+*.parquet
+*.csv.gz
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ---- 系统 ----
+.DS_Store
+.claude/worktrees/
