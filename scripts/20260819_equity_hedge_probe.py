@@ -129,6 +129,10 @@ def main() -> None:
           f"{'crisis mean':>13}{'hedge?':>9}")
     print("-" * 92)
     for corr, symbol, _ca, _ar, _av in stats:
+        # The benchmark against itself yields a duplicate-column frame, and it
+        # answers nothing anyway.
+        if symbol == BENCHMARK:
+            continue
         sub = crash[[BENCHMARK, symbol]].dropna()
         if len(sub) < 20:
             continue
@@ -144,6 +148,8 @@ def main() -> None:
     print("=" * 92)
     yearly = {}
     for _c, symbol, _ca, _ar, _av in stats:
+        if symbol == BENCHMARK:
+            continue
         row = {}
         for year, group in returns.groupby(returns.index.year):
             sub = group[[BENCHMARK, symbol]].dropna()
