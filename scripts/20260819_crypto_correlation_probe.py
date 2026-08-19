@@ -1,11 +1,26 @@
-"""探针：用 Binance 日线实证计算主流币两两相关性，检验「存在流动性好且与 BTC 负相关的币」这一前提。
+"""Probe: measure realised correlations between liquid Binance pairs from daily bars.
 
-数据源：https://data-api.binance.vision/api/v3/klines（只读镜像，UK 可达，无鉴权）
-口径：日线收盘价的对数收益率；Pearson 相关；全窗口 + 分年 + 下跌日子样本。
-本脚本为一次性探针，结论写入 research/notes/，不进入生产管线。
+Purpose is to test the premise "a liquid crypto asset exists that is negatively
+correlated with BTC" against data rather than against literature. A correlation
+coefficient alone is not enough, so the probe also measures behaviour in the
+drawdowns where a hedge is supposed to earn its keep.
 
-对外函数：
-    main()   取数、计算、打印相关性结果
+Source: https://data-api.binance.vision/api/v3/klines
+    Read-only market-data mirror. Reachable from the UK and needs no credentials,
+    unlike api.binance.com which answers HTTP 451 from this location.
+
+Method: log returns of daily closes; Pearson correlation; measured over the whole
+window, over BTC's worst decile of days, and year by year.
+
+Known limitation: the endpoint caps a single request at 1000 bars, so the window
+starts in 2024 and excludes the 2021-2022 bear market. Extending it means pulling
+monthly archives from data.binance.vision, which reach back to 2017-08.
+
+One-off probe. Its conclusions belong in research/notes/; it is not part of the
+production pipeline.
+
+Public functions:
+    main()   Fetch, compute and print the correlation results
 """
 
 from __future__ import annotations
@@ -22,127 +37,145 @@ import pandas as pd
 
 BASE = "https://data-api.binance.vision"
 INTERVAL = "1d"
-LIMIT = 1000                      # 单次上限，约 2.7 年日线
-KLINE_WEIGHT = 2                  # 依据：exchangeInfo 权重表，klines limit<=100 为 2
-SLEEP_SEC = 0.25                  # 主动限速，远低于 6000 权重/分钟
+LIMIT = 1000                      # endpoint maximum, roughly 2.7 years of daily bars
+SLEEP_SEC = 0.25                  # self-imposed throttle, far under 6000 weight/minute
+MIN_OVERLAP_DAYS = 60             # below this a correlation is too noisy to report
+CRASH_QUANTILE = 0.10             # "crisis" means BTC's worst decile of daily returns
 
 CANDIDATES = [
-    # 主流高流动性
+    # Liquid majors
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT",
     "TRXUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "LTCUSDT", "BCHUSDT",
     "DOTUSDT", "TONUSDT", "SUIUSDT",
-    # 隐私币 / 常被称作「避险」叙事
+    # Privacy coins, sometimes framed as a safe haven
     "ZECUSDT", "XMRUSDT", "DASHUSDT",
-    # 黄金代币（真正的跨资产分散候选）
+    # Gold-backed tokens, the only genuine cross-asset diversifier on the venue
     "PAXGUSDT", "XAUTUSDT",
-    # 稳定币（相关性应约等于 0，用作方法论对照组）
+    # Stablecoins: correlation should be near zero. They are the control group
+    # that gives the measurement its discriminating power.
     "USDCUSDT", "FDUSDUSDT", "TUSDUSDT",
 ]
 
 
 def _fetch_klines(symbol: str) -> Optional[pd.DataFrame]:
-    """取单个交易对的日线。返回 index=UTC 日期、含 close 列的 DataFrame；失败返回 None。"""
+    """Fetch daily bars for one symbol.
+
+    Returns:
+        Frame indexed by UTC bar-open time with close and quote_volume columns,
+        or None when the symbol is absent or the request failed. A failure is
+        reported and skipped rather than raised: one delisted symbol should not
+        abort the whole panel.
+    """
     url = f"{BASE}/api/v3/klines?symbol={symbol}&interval={INTERVAL}&limit={LIMIT}"
     req = urllib.request.Request(url, headers={"User-Agent": "quant-research/1.0"})
     try:
         raw = urllib.request.urlopen(req, timeout=30).read()
     except Exception as exc:
-        print(f"  {symbol:<12} 取回失败: {type(exc).__name__}")
+        print(f"  {symbol:<12} fetch failed: {type(exc).__name__}")
         return None
     rows = json.loads(raw)
     if not rows:
-        print(f"  {symbol:<12} 无数据")
+        print(f"  {symbol:<12} no data")
         return None
-    df = pd.DataFrame(rows, columns=[
+    frame = pd.DataFrame(rows, columns=[
         "open_time", "open", "high", "low", "close", "volume", "close_time",
         "quote_volume", "trades", "taker_base", "taker_quote", "ignore"])
-    df["dt"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-    df["close"] = df["close"].astype(float)
-    df["quote_volume"] = df["quote_volume"].astype(float)
-    out = df.set_index("dt")[["close", "quote_volume"]]
-    print(f"  {symbol:<12} {len(out):>5} 根  {out.index[0].date()} ~ {out.index[-1].date()}"
-          f"  日均成交额 {out['quote_volume'].mean()/1e6:>8,.1f} 百万")
+    # open_time is the bar's opening instant in UTC milliseconds. Verified against
+    # the spacing of consecutive bars, which equals the bar period exactly.
+    frame["dt"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
+    frame["close"] = frame["close"].astype(float)
+    frame["quote_volume"] = frame["quote_volume"].astype(float)
+    out = frame.set_index("dt")[["close", "quote_volume"]]
+    print(f"  {symbol:<12} {len(out):>5} bars  {out.index[0].date()} to {out.index[-1].date()}"
+          f"  mean daily turnover {out['quote_volume'].mean()/1e6:>8,.1f}m")
     return out
 
 
+def _classify(corr: float) -> str:
+    """Label a correlation coefficient for the summary table."""
+    if corr < -0.1:
+        return "negative"
+    if corr < 0.15:
+        return "roughly uncorrelated"
+    if corr < 0.5:
+        return "weakly positive"
+    return "strongly positive"
+
+
 def main() -> None:
+    """Fetch the panel, compute the three views, and print them."""
     print("=" * 78)
-    print("取数：Binance 日线（data-api.binance.vision 只读镜像）")
+    print("Fetching daily bars from data-api.binance.vision")
     print("=" * 78)
-    closes, volumes = {}, {}
-    for sym in CANDIDATES:
-        df = _fetch_klines(sym)
-        if df is not None:
-            closes[sym] = df["close"]
-            volumes[sym] = df["quote_volume"].mean()
+    closes, turnover = {}, {}
+    for symbol in CANDIDATES:
+        frame = _fetch_klines(symbol)
+        if frame is not None:
+            closes[symbol] = frame["close"]
+            turnover[symbol] = frame["quote_volume"].mean()
         time.sleep(SLEEP_SEC)
 
-    px = pd.DataFrame(closes).sort_index()
-    ret = np.log(px / px.shift(1)).dropna(how="all")
-    print(f"\n收益率面板：{ret.shape[0]} 个交易日 × {ret.shape[1]} 个标的")
-    print(f"区间：{ret.index[0].date()} ~ {ret.index[-1].date()}")
+    prices = pd.DataFrame(closes).sort_index()
+    returns = np.log(prices / prices.shift(1)).dropna(how="all")
+    print(f"\nReturn panel: {returns.shape[0]} days by {returns.shape[1]} instruments")
+    print(f"Window: {returns.index[0].date()} to {returns.index[-1].date()}")
 
-    # ---- 1. 与 BTC 的全窗口相关性 ----
-    btc = ret["BTCUSDT"]
+    btc = returns["BTCUSDT"]
+
+    # ---- View 1: whole-window correlation against BTC ----
     print("\n" + "=" * 78)
-    print("与 BTCUSDT 的日收益率相关性（全窗口，按相关性升序 = 最「负」的排最前）")
+    print("Correlation of daily log returns against BTCUSDT, whole window")
     print("=" * 78)
-    print(f"{'标的':<12}{'相关性':>10}{'重叠天数':>10}{'日均成交额(百万)':>18}   判定")
+    print(f"{'symbol':<12}{'corr':>10}{'overlap':>10}{'turnover (m)':>16}   classification")
     print("-" * 78)
     stats = []
-    for sym in ret.columns:
-        if sym == "BTCUSDT":
+    for symbol in returns.columns:
+        if symbol == "BTCUSDT":
             continue
-        pair = pd.concat([btc, ret[sym]], axis=1).dropna()
-        if len(pair) < 60:
+        pair = pd.concat([btc, returns[symbol]], axis=1).dropna()
+        if len(pair) < MIN_OVERLAP_DAYS:
             continue
-        c = pair.iloc[:, 0].corr(pair.iloc[:, 1])
-        stats.append((c, sym, len(pair), volumes.get(sym, float("nan"))))
+        stats.append((pair.iloc[:, 0].corr(pair.iloc[:, 1]), symbol, len(pair),
+                      turnover.get(symbol, float("nan"))))
     stats.sort()
-    for c, sym, n, v in stats:
-        if c < -0.1:
-            verdict = "负相关"
-        elif c < 0.15:
-            verdict = "近似无关"
-        elif c < 0.5:
-            verdict = "弱正相关"
-        else:
-            verdict = "强正相关"
-        print(f"{sym:<12}{c:>10.3f}{n:>10}{v/1e6:>18,.1f}   {verdict}")
+    for corr, symbol, n, turn in stats:
+        print(f"{symbol:<12}{corr:>10.3f}{n:>10}{turn/1e6:>16,.1f}   {_classify(corr)}")
 
-    # ---- 2. 判别力检验：只看 BTC 大跌日，相关性是否更糟 ----
+    # ---- View 2: behaviour when BTC falls hard ----
+    # A hedge is only worth holding if it holds up precisely when the majors do
+    # not. A low whole-window coefficient can coexist with heavy losses on exactly
+    # those days, so the mean return in the subsample matters more than the
+    # coefficient does.
     print("\n" + "=" * 78)
-    print("危机相关性检验：BTC 单日跌幅进入最差 10% 的子样本")
-    print("（对冲标的的价值在于「BTC 跌时它不跌」，全窗口相关性掩盖这一点）")
+    print("Crisis subsample: BTC's worst decile of daily returns")
     print("=" * 78)
-    thr = btc.quantile(0.10)
-    crash = ret[btc <= thr]
-    print(f"阈值：BTC 日收益 <= {thr:.2%}，样本 {len(crash)} 天\n")
-    print(f"{'标的':<12}{'全窗口ρ':>10}{'危机日ρ':>10}{'危机日均收益':>14}{'BTC同期均收益':>15}")
+    threshold = btc.quantile(CRASH_QUANTILE)
+    crash = returns[btc <= threshold]
+    print(f"Threshold: BTC daily return <= {threshold:.2%}, {len(crash)} days\n")
+    print(f"{'symbol':<12}{'full corr':>12}{'crisis corr':>13}{'mean return':>14}{'BTC same days':>16}")
     print("-" * 78)
-    for c, sym, n, v in stats:
-        sub = crash[["BTCUSDT", sym]].dropna()
+    for corr, symbol, _n, _turn in stats:
+        sub = crash[["BTCUSDT", symbol]].dropna()
         if len(sub) < 20:
             continue
-        cc = sub["BTCUSDT"].corr(sub[sym])
-        print(f"{sym:<12}{c:>10.3f}{cc:>10.3f}{sub[sym].mean():>14.2%}"
-              f"{sub['BTCUSDT'].mean():>15.2%}")
+        print(f"{symbol:<12}{corr:>12.3f}{sub['BTCUSDT'].corr(sub[symbol]):>13.3f}"
+              f"{sub[symbol].mean():>14.2%}{sub['BTCUSDT'].mean():>16.2%}")
 
-    # ---- 3. 分年稳定性 ----
+    # ---- View 3: stability across years ----
+    # A coefficient that is negative in a single year and positive in the others
+    # is noise, not a hedge.
     print("\n" + "=" * 78)
-    print("分年相关性（检验是否稳定，还是只在某一年偶然为负）")
+    print("Correlation by calendar year")
     print("=" * 78)
     yearly = {}
-    for sym in [s for _, s, _, _ in stats]:
+    for symbol in [s for _c, s, _n, _t in stats]:
         row = {}
-        for year, grp in ret.groupby(ret.index.year):
-            sub = grp[["BTCUSDT", sym]].dropna()
-            row[year] = sub["BTCUSDT"].corr(sub[sym]) if len(sub) >= 60 else np.nan
-        yearly[sym] = row
+        for year, group in returns.groupby(returns.index.year):
+            sub = group[["BTCUSDT", symbol]].dropna()
+            row[year] = (sub["BTCUSDT"].corr(sub[symbol])
+                         if len(sub) >= MIN_OVERLAP_DAYS else np.nan)
+        yearly[symbol] = row
     print(pd.DataFrame(yearly).T.round(3).to_string())
-
-    px.to_csv("/tmp/crypto_closes.csv")
-    print("\n收盘价面板已存 /tmp/crypto_closes.csv")
 
 
 if __name__ == "__main__":

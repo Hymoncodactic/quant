@@ -1,13 +1,14 @@
-"""日志初始化（quant-error-handling §3）。
+"""Logger initialisation (quant-error-handling section 3).
 
-约定：
-    - 时间一律 UTC，ISO8601。
-    - 每模块一路 logger，文件落 logs/<name>_YYYYMMDD.log，UTF-8。
-    - 控制台只输出 WARNING 以上。
-    - 密钥一律先过 common.secrets.mask() 再进日志。
+Conventions:
+    - Timestamps are UTC, ISO 8601. Local time is a display concern only.
+    - One logger per module; files land in logs/<name>_YYYYMMDD.log as UTF-8.
+    - The console handler only surfaces WARNING and above.
+    - Anything that might carry a credential goes through common.secrets.mask()
+      before it reaches a log record.
 
-对外函数：
-    get_logger(name, level=INFO)  取得已配置的 logger，重复调用不重复挂 handler
+Public functions:
+    get_logger(name, level=INFO)  Configured logger; repeat calls do not duplicate handlers
 """
 
 from __future__ import annotations
@@ -24,12 +25,14 @@ LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 CONSOLE_LEVEL = logging.WARNING
 
+
 def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    """取得已配置的 logger。重复调用同名不会重复挂 handler。
+    """Return a configured logger.
 
     Args:
-        name: 模块名，用点分层，如 "okx.ingest.klines"。
-        level: 文件 handler 的级别。
+        name: Dotted module name, e.g. "okx.ingest.klines". The first segment
+            selects the log file, so related modules share one file.
+        level: Level for the file handler. The console stays at CONSOLE_LEVEL.
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -39,7 +42,7 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     DIR_LOGS.mkdir(parents=True, exist_ok=True)
     day = datetime.now(timezone.utc).strftime("%Y%m%d")
     formatter = logging.Formatter(LOG_FORMAT, LOG_DATEFMT)
-    formatter.converter = time.gmtime          # asctime 用 UTC
+    formatter.converter = time.gmtime          # render asctime in UTC, not local time
 
     file_handler = logging.FileHandler(
         DIR_LOGS / f"{name.split('.')[0]}_{day}.log", encoding="utf-8"
@@ -53,5 +56,6 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     console.setFormatter(formatter)
     logger.addHandler(console)
 
+    # Records are emitted once, by this logger's own handlers.
     logger.propagate = False
     return logger

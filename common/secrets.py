@@ -1,13 +1,16 @@
-"""密钥读取的唯一入口（CLAUDE.md §4.2）。
+"""The single entry point for reading credentials (CLAUDE.md section 3.2).
 
-规则：
-    - 密钥只允许来自环境变量或 secrets/ 目录，且 secrets/ 已 gitignore。
-    - 业务代码一律经本模块取用，禁止自行读文件或读环境变量。
-    - 任何日志、异常、报告中出现密钥，一律先过 mask()。
+Rules:
+    - Credentials may only come from environment variables or the secrets/
+      directory, which is git-ignored.
+    - Business code always goes through this module. Reading credential files or
+      environment variables directly elsewhere is prohibited.
+    - Anything that could carry a credential into a log, an exception or a report
+      must be passed through mask() first.
 
-对外函数：
-    get_secret(name, required=True)  按名取密钥（环境变量优先，其次 secrets/<name>.txt）
-    mask(value)                      脱敏，只留前 4 后 4 位
+Public functions:
+    get_secret(name, required=True)  Read a credential by name
+    mask(value)                      Redact a value, keeping first and last four
 """
 
 from __future__ import annotations
@@ -21,31 +24,37 @@ from common.paths import DIR_SECRETS
 
 _MIN_MASK_LEN = 12
 
+
 def mask(value: str | None) -> str:
-    """脱敏：只保留前 4 后 4 位。短于阈值的一律全遮。"""
+    """Redact a credential for display, keeping only the first and last four characters.
+
+    Values shorter than the threshold are fully obscured, since keeping eight of
+    ten characters would not redact anything meaningful.
+    """
     if not value:
         return "<empty>"
     if len(value) < _MIN_MASK_LEN:
         return "*" * len(value)
     return f"{value[:4]}...{value[-4:]}"
 
-def get_secret(name: str, *, required: bool = True) -> str | None:
-    """按名取密钥。
 
-    查找顺序：
-        1. 环境变量 QUANT_SECRET_<NAME 大写>
-        2. secrets/<name>.txt（首行，strip）
+def get_secret(name: str, *, required: bool = True) -> str | None:
+    """Read a credential by name.
+
+    Resolution order:
+        1. Environment variable QUANT_SECRET_<NAME in upper case>
+        2. secrets/<name>.txt, first line, stripped
 
     Args:
-        name: 密钥名，小写下划线，如 "okx_api_key"、"trading212_api_key"。
-        required: 取不到时是否抛异常。
+        name: Credential name in lower snake case, e.g. "okx_api_key".
+        required: Whether a missing credential should raise.
 
     Returns:
-        密钥字符串；未找到且 required=False 时返回 None。
+        The credential, or None when it is absent and required is False.
 
     Raises:
-        FileNotFoundError: required=True 且未找到。
-        PermissionError: 密钥文件权限宽于 600。
+        FileNotFoundError: Required but neither source held the credential.
+        PermissionError: The credential file is readable by group or others.
     """
     env_key = f"QUANT_SECRET_{name.upper()}"
     if env_key in os.environ:
@@ -56,12 +65,12 @@ def get_secret(name: str, *, required: bool = True) -> str | None:
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & 0o077:
             raise PermissionError(
-                f"密钥文件权限过宽 {path} (mode={mode:o})，请执行 chmod 600"
+                f"credential file {path} is too permissive (mode={mode:o}); run chmod 600"
             )
         return path.read_text(encoding="utf-8").splitlines()[0].strip()
 
     if required:
         raise FileNotFoundError(
-            f"未找到密钥 {name!r}：既无环境变量 {env_key}，也无 {path}"
+            f"credential {name!r} not found: no {env_key} in the environment and no {path}"
         )
     return None

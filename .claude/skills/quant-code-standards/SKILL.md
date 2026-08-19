@@ -91,6 +91,54 @@ from common.retry import with_backoff
 
 ## 三、注释与文档字符串
 
+### 3.0 注释语言：英文 + 英式拼写（硬性）
+
+**代码中的一切注释、docstring、`__all__` 说明、日志字符串、异常消息一律用英文书写，
+且采用英式拼写。** 项目文档（md 件）仍用中文。
+
+英式拼写要点，写之前对照：
+
+| 英式（用） | 美式（禁） |
+|---|---|
+| normalise / normalisation | normalize / normalization |
+| initialise | initialize |
+| serialise / deserialise | serialize / deserialize |
+| analyse | analyze |
+| behaviour | behavior |
+| colour | color |
+| centre | center |
+| cancelled / cancelling | canceled / canceling |
+| modelled / modelling | modeled / modeling |
+| licence（名词）/ license（动词） | license（两者） |
+| catalogue | catalog |
+| defence | defense |
+| fulfil | fulfill |
+| grey | gray |
+
+例外（不改，照抄外部拼写）：
+- 第三方 API 的字段名、参数名、方法名（如 pandas 的 `normalize=`、
+  交易所返回的 `color` 字段）——那是外部契约，改了就错。
+- 已有的英文标准术语与缩写（`serialization` 出现在库名中时不改）。
+
+```python
+def align_order_size(qty: Decimal, lot_sz: Decimal, min_sz: Decimal) -> Decimal:
+    """Round an order quantity down to the venue's lot step.
+
+    Rounding is always downwards so the resulting order can never exceed the
+    intended notional. The caller must re-check the result against min_sz:
+    a quantity that rounds below the minimum is dropped, not submitted.
+
+    Args:
+        qty: Desired quantity, base-currency units.
+        lot_sz: Quantity step from the venue's instrument spec.
+        min_sz: Minimum order quantity from the venue's instrument spec.
+
+    Returns:
+        Aligned quantity, base-currency units. Zero if it falls below min_sz.
+    """
+```
+
+
 ### 3.1 模块头（强制）
 
 ```python
