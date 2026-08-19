@@ -6,11 +6,19 @@
 
 ## 当前状态
 
-- 项目刚建立框架，尚无任何代码实现、无任何数据落地。
-- 两条方向均处于「接入前取证」阶段：OKX 与 Trading 212 的 API 事实
-  （端点、字段、单位、精度、费率、限频、复权口径）**全部未取证**。
-- `secrets/trading212_api_key.txt` 已就位（权限 600），内容未读取、未验证。
-- OKX 侧尚无任何密钥。
+- 框架完成。Python 3.11.15 venv 于 `.venv/`，依赖已装。
+- **数据管线已跑通并落地**（2026-08-19）：加密走 Binance 归档，股票走日线。
+  清单随时用 `./.venv/bin/python scripts/data_inventory.py` 生成。
+- **已证实的关键环境事实**（本机实测，非推断）：
+  - `api.binance.com` / `fapi` / `dapi` 从本机返回 **HTTP 451**（英国地理封锁，
+    响应体明示 "restricted location"）。
+  - `data.binance.vision`（批量归档）、`data-api.binance.vision`（只读行情 REST）、
+    `wss://data-stream.binance.vision:9443`（行情 WS）**三者均可达**，无鉴权。
+  - **L2 订单簿实时重建已验证可行**：25 秒录制零序列缺口，5000 档快照 + 100ms
+    增量流。历史 L2 在 Binance 免费归档中**完全不存在**（现货连 bookTicker 都没有）。
+  - 现货归档只有 trades / aggTrades / klines 三类；bookDepth / bookTicker / metrics /
+    fundingRate 等**只存在于期货**。
+- 两条方向的交易接口仍未接：OKX 无密钥；T212 API 已确认**只有交易接口、零行情接口**。
 - 已纳入 git 版本管理，remote `origin` = `https://github.com/Hymoncodactic/quant.git`，
   分支 `main`。同步入口：`python3 scripts/sync_to_git.py`（每日手动执行）。
 - **该 GitHub 仓库为 PUBLIC**（用户 2026-08-19 明确裁定保持公开）。今后一切入库内容
@@ -22,10 +30,13 @@
 | # | 事项 | 需要谁定 | 备注 |
 |:--:|---|---|---|
 | 1 | OKX API Key 是否已申请、权限位如何设置 | 用户 | 建议研究期只开只读；交易权限单独一把、绑 IP、关提现 |
-| 2 | Trading 212 API 的实际能力（是否支持下单、限频、历史数据深度） | 取证 | 属 S4，须查官方文档，不得凭记忆 |
+| 2 | ~~T212 API 能力~~ **已证实**：`equity/*` 系列 401（存在，需密钥），`equity/prices`/`quotes`/`market/candles` 均 **404 不存在** | 已закрыт | 行情须另找源，T212 只做执行与对账 |
 | 3 | 标的池筛选标准（流动性口径、样本数量） | 用户 + 取证 | 写进 `<venue>/config/universe.yaml`，须可复现 |
 | 4 | 数据起始时间与周期（要几年、要哪些 bar 周期） | 用户 | 决定下载量级 |
-| 5 | 加密方向是现货还是合约 | 用户 | 影响资金费率、杠杆、风控设计 |
+| 5 | 加密方向是现货还是合约 | 用户 | ⚠️ **FCA 自 2021-01-06 禁止英国零售交易加密衍生品，至今有效**。永续合约不可交易，只能取其数据。等于只剩现货 |
+| 7 | 是否购买 L2 历史（Crypto Lake $64-80/月）或自行录制（180-360 GB/年/标的） | 用户 | 见 `research/notes/20260819_negative_correlation_findings.md` 与本轮报告 |
+| 8 | LSE 上的 UCITS 替代品（SGLN/IB01/IDTL/XSPS）在 T212 是否真的可买 | 用户在 App 内确认 | `trading212.com` 对自动化请求一律 403，无法程序化验证 |
+| 9 | 磁盘：当前可用 146 GB，完整计划需 250 GB+，录制 L2 需 1 TB+ | 用户 | 是否加外置盘 |
 | 6 | ~~是否 `git init` 纳入版本管理~~ | 已决 | 2026-08-19 已 init 并首推，见时间线 |
 
 ## 时间线
@@ -47,3 +58,7 @@
 | 2026-08-19 14:5x | 新增仓库根 `sync_to_git.command`（已 chmod +x，无 quarantine 属性）：Finder 双击即在 Terminal 跑日常同步。职责只有四件——补 PATH（git 是 Homebrew 构建，在 `/opt/homebrew/bin/git`，Finder 的最小环境找不到）、以自身位置而非 cwd 定位仓库（双击时 cwd 是家目录）、按退出码 0/1/2 输出结论、`read -n 1` 挂住窗口使闸门命中不会一闪而过。参数透传给 `scripts/sync_to_git.py`。**`--overwrite-remote` 刻意不可由双击触发**，强制覆盖只能显式命令行执行。验证：`env -i PATH=/usr/bin:/bin` + cwd=`$HOME` 下运行 `--dry-run`，仓库定位与 git 调用均正常。回滚：删该文件 |
 | 2026-08-19 14:5x | 待办（未做）：`scripts/sync_to_git.py` 的注释与 docstring 仍为中文，违反 `/quant-code-standards` §3.0（代码注释一律英文 + 英式拼写）。同批次 `common/` 五模块与探针脚本已完成英文化。**【已完成 — 见 2026-08-19 15:0x 行】** |
 | 2026-08-19 15:0x | `scripts/sync_to_git.py` 英文化完成（`/quant-code-standards` §3.0）：模块与函数 docstring、全部注释、argparse help、print 与 RuntimeError 消息改为英文 + 英式拼写；输出前缀由中文标签改为 `[repo] [remote] [staged] [secret-gate] [abort] [dry-run] [commit] [done] [warning] [result] [init]`。等价性证明：剥离 docstring 并把全部字符串常量置空后，新旧文件 AST 完全一致；`EXPECTED_REMOTE`、`DEFAULT_BRANCH`、`MAX_BLOB_BYTES`、`SECRET_PATH_PATTERNS`、`__all__` 与全部 6 个正则（`HARD_CONTENT_PATTERNS` 的 10 条 pattern+flags、`SECRET_FIELD_RE`、`ASSIGN_VALUE_RE`、`PLACEHOLDER_RE`、`UUID_RE`、`HEX_RE`）逐项相等；退出码 0/1/2 未动。判别力复检（5 假密钥 + 3 对照，`tests/secret_gate_probe.txt` 用后即删）：5 处全中、3 个对照全放行、退出码 2。改写中发现并修复一处自伤：URL 内嵌口令规则的英文标签若写作 `credentials embedded in a URL`，其中的 `credential` 会被本模块自己的 `SECRET_FIELD_RE` 命中，而该行含 `://`，`ASSIGN_VALUE_RE` 随即取到取值，导致脚本每次运行都自堵密钥闸（首轮 dry-run 实测命中 `scripts/sync_to_git.py:102`）；标签改为 `login details inline in a URL` 后自伤消失。该约束已写进该行上方注释。回滚：`git checkout f360ebc -- scripts/sync_to_git.py` |
+| 2026-08-19 15:0x | 用户裁定：注释语言先英式后改**美式英语**；代码全部回填，规范见 `/quant-code-standards` §3.0 |
+| 2026-08-19 15:2x | 多智能体工作流完成数据源调研（13 agent / 652 工具调用 / 137 万 token），结论与本机实测互相印证，报告存 `/tmp/synthesis.md` |
+| 2026-08-19 15:3x | 实证否定「存在流动性好的负相关标的」这一前提，两侧证据写入 `research/notes/20260819_negative_correlation_findings.md`。最重要发现：**股债负相关制度已于 2022 年反转且连续五年未回归** |
+| 2026-08-19 15:5x | Phase 1 数据落地：新增 `common/store.py`（调优 parquet 写入）、`crypto_trading/ingest/{schemas,binance_archive}.py`、三个 ingest 脚本、`scripts/data_inventory.py`。回滚：删这些文件与 `data/` 下对应目录 |

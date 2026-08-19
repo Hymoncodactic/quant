@@ -5,7 +5,7 @@ is that liquid instruments exist which are negatively correlated with the
 mega-caps and can therefore hedge them.
 
 Two things this probe checks that a plain correlation matrix does not:
-    1. Behaviour in drawdowns. A hedge only pays if it rises when the market
+    1. Behavior in drawdowns. A hedge only pays if it rises when the market
        falls, so the mean return in the market's worst decile matters more than
        the whole-window coefficient.
     2. Regime stability. The equity-bond correlation was reliably negative for

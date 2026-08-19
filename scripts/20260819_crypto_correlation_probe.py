@@ -1,8 +1,8 @@
-"""Probe: measure realised correlations between liquid Binance pairs from daily bars.
+"""Probe: measure realized correlations between liquid Binance pairs from daily bars.
 
 Purpose is to test the premise "a liquid crypto asset exists that is negatively
 correlated with BTC" against data rather than against literature. A correlation
-coefficient alone is not enough, so the probe also measures behaviour in the
+coefficient alone is not enough, so the probe also measures behavior in the
 drawdowns where a hedge is supposed to earn its keep.
 
 Source: https://data-api.binance.vision/api/v3/klines
@@ -141,7 +141,7 @@ def main() -> None:
     for corr, symbol, n, turn in stats:
         print(f"{symbol:<12}{corr:>10.3f}{n:>10}{turn/1e6:>16,.1f}   {_classify(corr)}")
 
-    # ---- View 2: behaviour when BTC falls hard ----
+    # ---- View 2: behavior when BTC falls hard ----
     # A hedge is only worth holding if it holds up precisely when the majors do
     # not. A low whole-window coefficient can coexist with heavy losses on exactly
     # those days, so the mean return in the subsample matters more than the

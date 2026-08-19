@@ -36,7 +36,7 @@ def current_env() -> str:
     """
     env = os.environ.get(ENV_VAR, ENV_PAPER).strip().lower()
     if env not in VALID_ENVS:
-        raise ValueError(f"{ENV_VAR}={env!r} is not recognised, expected one of {VALID_ENVS}")
+        raise ValueError(f"{ENV_VAR}={env!r} is not recognized, expected one of {VALID_ENVS}")
     return env
 
 

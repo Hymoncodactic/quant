@@ -1,4 +1,4 @@
-"""Logger initialisation (quant-error-handling section 3).
+"""Logger initialization (quant-error-handling section 3).
 
 Conventions:
     - Timestamps are UTC, ISO 8601. Local time is a display concern only.
