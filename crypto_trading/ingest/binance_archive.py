@@ -35,6 +35,7 @@ __all__ = ["build_url", "list_prefix", "head_size", "fetch_to_frame",
 import hashlib
 import io
 import re
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -42,12 +43,23 @@ from typing import Optional
 
 import pandas as pd
 
+from common.net import backoff_seconds
 from crypto_trading.ingest.schemas import spec_for, timestamp_unit
 
 CDN_BASE = "https://data.binance.vision"
 S3_LIST_BASE = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 USER_AGENT = "quant-research/1.0"
-TIMEOUT_SEC = 120
+
+# Per-socket-operation timeout, not a whole-transfer budget. Large objects on a
+# saturated link can legitimately take many minutes in total; what this bounds is
+# a single stalled read.
+TIMEOUT_SEC = 180
+
+# Attempts per object, including the first. Five attempts with the exponential
+# back-off in common.net spans roughly 45 seconds of retrying, which covers the
+# transient resets seen on this link without stalling the run on a genuinely
+# missing object.
+GET_ATTEMPTS = 5
 
 # No documented rate limit exists for the archive and none was observed under 40
 # concurrent requests, but a modest ceiling costs nothing and keeps us a good
@@ -85,9 +97,37 @@ def build_url(market: str, freq: str, dataset: str, symbol: str,
     return f"{CDN_BASE}/{_prefix(market, freq, dataset, symbol, period)}{symbol}-{tag}-{date_str}.zip"
 
 
-def _get(url: str, timeout: int = TIMEOUT_SEC) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    return urllib.request.urlopen(req, timeout=timeout).read()
+def _get(url: str, timeout: int = TIMEOUT_SEC, attempts: int = GET_ATTEMPTS) -> bytes:
+    """Fetch one object, retrying transient failures with exponential back-off.
+
+    Retries matter more here than the request count suggests. Several workers
+    share a link measured at about 1.6 MB/s total, so an 88 MB object occupies a
+    connection for minutes, and over that window a reset or a stalled read is
+    routine rather than exceptional. Without retries a single such event
+    permanently drops that day from the dataset: an observed 55 percent failure
+    rate on the bookTicker window came entirely from this.
+
+    A 404 is a fact about coverage, not a failure, so it is raised immediately
+    rather than retried; every other error is treated as transient.
+
+    Raises:
+        urllib.error.HTTPError: 404, raised on the first attempt without retrying.
+        Exception: the last error seen, once the attempts are exhausted.
+    """
+    last: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            return urllib.request.urlopen(req, timeout=timeout).read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise
+            last = exc
+        except Exception as exc:
+            last = exc
+        if attempt < attempts:
+            time.sleep(backoff_seconds(attempt))
+    raise last if last is not None else RuntimeError(f"failed to fetch {url}")
 
 
 def head_size(url: str) -> Optional[int]:

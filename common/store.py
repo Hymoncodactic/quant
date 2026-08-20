@@ -5,9 +5,11 @@ real BTCUSDT data, and each choice below cites the measurement that justifies it
 Changing any of them without re-measuring is how a lake silently doubles in size.
 
 Public functions:
-    write_table(table, path, sort_by=None)   Write one partition with the tuned config
+    write_table(table, path, sort_by=None)   Write one partition, atomically
     read_dataset(root, **filters)            Read a partitioned dataset via DuckDB
     parquet_stats(path)                      Row count, byte size, bytes per row
+    is_readable_parquet(path)                Whether a file is a complete Parquet file
+    clear_stale_temps(root)                  Remove temp files left by an interrupted run
 
 Public constants:
     COMPRESSION, COMPRESSION_LEVEL, ROW_GROUP_SIZE
@@ -15,9 +17,11 @@ Public constants:
 
 from __future__ import annotations
 
-__all__ = ["write_table", "read_dataset", "parquet_stats",
-           "COMPRESSION", "COMPRESSION_LEVEL", "ROW_GROUP_SIZE"]
+__all__ = ["write_table", "read_dataset", "parquet_stats", "is_readable_parquet",
+           "clear_stale_temps", "COMPRESSION", "COMPRESSION_LEVEL", "ROW_GROUP_SIZE",
+           "TEMP_SUFFIX"]
 
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -37,6 +41,13 @@ COMPRESSION_LEVEL = 3
 # guidance is 100k-1M. 128k sits at the good end of both curves.
 ROW_GROUP_SIZE = 131_072
 
+# Partitions are written to this suffix and then renamed into place. A long ingest
+# will be interrupted -- by a signal, a crash, or the machine losing power -- and
+# a partition written directly to its final path leaves a truncated file that
+# still satisfies an existence check, so a resumed run skips it and the corruption
+# survives silently. Renaming makes the file either absent or complete.
+TEMP_SUFFIX = ".writing"
+
 
 def write_table(table: pa.Table, path: Path | str,
                 sort_by: str | Iterable[str] | None = "ts") -> Path:
@@ -45,6 +56,10 @@ def write_table(table: pa.Table, path: Path | str,
     Sorting first is not cosmetic. Delta, run-length and dictionary encodings only
     compress adjacent similar values, and sorted data yields tight per-row-group
     statistics. Writing the same rows shuffled measured 5.2-5.5x larger.
+
+    The write is atomic: data goes to a temporary sibling and is then renamed onto
+    the target. os.replace is an atomic rename within one filesystem, so a reader
+    or a resumed run never observes a half-written partition.
 
     Args:
         table: The data. Column order is preserved.
@@ -57,6 +72,7 @@ def write_table(table: pa.Table, path: Path | str,
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + TEMP_SUFFIX)
 
     if sort_by is not None:
         keys = [sort_by] if isinstance(sort_by, str) else list(sort_by)
@@ -66,23 +82,65 @@ def write_table(table: pa.Table, path: Path | str,
 
     # Delta encoding suits monotonically increasing integer columns; dictionary
     # encoding suits the low-cardinality repeated values typical of price and size.
+    #
+    # pyarrow rejects a column that is named in column_encoding while dictionary
+    # encoding is still enabled for it, so the two sets are made disjoint here.
+    # Passing use_dictionary as a bare True with any column_encoding raises
+    # ValueError: "To use 'column_encoding' set 'use_dictionary' to False".
+    MONOTONIC_ID_COLUMNS = ("ts", "trade_id", "agg_id", "first_id", "last_id",
+                            "update_id", "open_time", "transaction_time")
     encodings = {}
     for name, field in zip(table.column_names, table.schema):
-        if pa.types.is_integer(field.type) and name in ("ts", "trade_id", "agg_id",
-                                                        "first_id", "last_id",
-                                                        "update_id", "open_time"):
+        if pa.types.is_integer(field.type) and name in MONOTONIC_ID_COLUMNS:
             encodings[name] = "DELTA_BINARY_PACKED"
+    dictionary_columns = [c for c in table.column_names if c not in encodings]
 
-    pq.write_table(
-        table,
-        path,
-        compression=COMPRESSION,
-        compression_level=COMPRESSION_LEVEL,
-        column_encoding=encodings or None,
-        row_group_size=ROW_GROUP_SIZE,
-        write_statistics=True,
-    )
+    try:
+        pq.write_table(
+            table,
+            temp,
+            compression=COMPRESSION,
+            compression_level=COMPRESSION_LEVEL,
+            column_encoding=encodings or None,
+            use_dictionary=dictionary_columns if encodings else True,
+            row_group_size=ROW_GROUP_SIZE,
+            write_statistics=True,
+        )
+        os.replace(temp, path)
+    except BaseException:
+        # BaseException rather than Exception so that KeyboardInterrupt and
+        # SystemExit also clean up rather than leaving the temp behind.
+        temp.unlink(missing_ok=True)
+        raise
     return path
+
+
+def is_readable_parquet(path: Path | str) -> bool:
+    """Whether a file is a complete, readable Parquet file.
+
+    Reads only the footer, so this costs no data scan and is cheap enough to run
+    over an entire dataset when resuming. Parquet ends with a footer and a magic
+    marker, so any truncation is detected: verified against files truncated to
+    99%, 50% and 1% of their length, and against a zero-byte file.
+    """
+    try:
+        pq.read_metadata(Path(path))
+        return True
+    except Exception:
+        return False
+
+
+def clear_stale_temps(root: Path | str) -> list[Path]:
+    """Delete temporary partitions left behind by an interrupted run.
+
+    Returns the paths removed. These are always incomplete by construction, so
+    removing them is safe; the corresponding work is simply redone.
+    """
+    removed = []
+    for temp in Path(root).rglob(f"*{TEMP_SUFFIX}"):
+        temp.unlink(missing_ok=True)
+        removed.append(temp)
+    return removed
 
 
 def read_dataset(root: Path | str, columns: list[str] | None = None,

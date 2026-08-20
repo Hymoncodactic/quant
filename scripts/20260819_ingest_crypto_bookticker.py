@@ -10,17 +10,31 @@ about it improves by waiting, and five other datasets in this archive have gone
 dark the same way without notice.
 
 Daily files are used rather than monthly. A monthly file is 4-6 GB compressed and
-expands past 20 GB in memory; a daily file peaks around 1 GB, which one machine
-can hold across several workers.
+expands past 20 GB in memory; a daily file peaks around 1 GB, which matters on a
+machine with 8 GB of RAM.
+
+The run is designed to be interrupted. At roughly 1.6 MB/s to this archive the
+full window takes about 17 hours, so it will be stopped and restarted at least
+once. Three mechanisms make that safe:
+
+    1. Partitions are written atomically by common.store, so an interrupted write
+       leaves no file rather than a truncated one.
+    2. On start, any temporary partitions are removed and every existing output
+       has its footer read. Anything unreadable is deleted and re-fetched, so a
+       file damaged by power loss cannot be mistaken for completed work.
+    3. SIGINT and SIGTERM set a stop flag. Workers finish the file in flight and
+       take no new work, so the process exits within one file rather than being
+       killed mid-write.
 
 Public functions:
-    main()   Run the bookTicker ingest
+    main()   Run the bookTicker ingest, resuming from whatever is already on disk
 """
 
 from __future__ import annotations
 
 __all__ = ["main"]
 
+import signal
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,8 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pyarrow as pa
 
 from common.paths import DIR_DATA
-from common.store import write_table
+from common.store import clear_stale_temps, is_readable_parquet, write_table
 from crypto_trading.ingest import binance_archive as archive
+
+# Set by the signal handler. Workers check it before starting new work so that an
+# interrupted run stops at a file boundary rather than inside a write.
+_STOP = False
 
 VENUE, LAYER, MARKET, DATASET = "binance", "curated", "um", "bookTicker"
 
@@ -46,6 +64,46 @@ FIRST_DAY = date(2023, 5, 16)     # first published day, verified by listing
 LAST_DAY = date(2024, 3, 30)      # publication ceased, verified by listing
 
 
+def _install_signal_handlers() -> None:
+    """Make SIGINT and SIGTERM request a clean stop instead of killing the process."""
+    def handler(signum, _frame):
+        global _STOP
+        if _STOP:                      # further signals during the drain are noise
+            return
+        _STOP = True
+        print(f"\n  signal {signum} received: finishing files in flight, starting "
+              f"no new ones. Re-run this script to resume.", flush=True)
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+
+def _out_path(symbol: str, day: str) -> Path:
+    """Destination partition for one symbol-day."""
+    return (DIR_DATA / VENUE / LAYER / MARKET / DATASET / symbol / DATASET
+            / f"year={day[:4]}" / f"{day.replace('-', '')}.parquet")
+
+
+def _prune_damaged(tasks: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], int, int]:
+    """Split tasks into those still to do and those already complete.
+
+    Every existing output has its footer read. A file that fails is deleted and
+    returned to the work list: a partition damaged by power loss would otherwise
+    pass an existence check forever and silently poison the dataset.
+    """
+    todo, done, repaired = [], 0, 0
+    for symbol, day in tasks:
+        out = _out_path(symbol, day)
+        if not out.exists():
+            todo.append((symbol, day))
+        elif is_readable_parquet(out):
+            done += 1
+        else:
+            out.unlink(missing_ok=True)
+            repaired += 1
+            todo.append((symbol, day))
+    return todo, done, repaired
+
+
 def _days() -> list[str]:
     """Every date in the published window, as YYYY-MM-DD."""
     span = (LAST_DAY - FIRST_DAY).days + 1
@@ -54,10 +112,9 @@ def _days() -> list[str]:
 
 def _ingest_one(symbol: str, day: str) -> dict:
     """Fetch and store one symbol-day. Reports failures rather than raising."""
-    out = (DIR_DATA / VENUE / LAYER / MARKET / DATASET / symbol / DATASET
-           / f"year={day[:4]}" / f"{day.replace('-', '')}.parquet")
-    if out.exists():
-        return {"status": "skip", "rows": 0, "bytes": out.stat().st_size}
+    if _STOP:
+        return {"status": "stopped", "rows": 0, "bytes": 0}
+    out = _out_path(symbol, day)
     try:
         frame = archive.fetch_to_frame(MARKET, "daily", DATASET, symbol, day)
     except Exception as exc:
@@ -70,14 +127,29 @@ def _ingest_one(symbol: str, day: str) -> dict:
 
 
 def main() -> None:
-    """Fetch every published bookTicker day for the configured symbols."""
+    """Fetch every published bookTicker day, resuming from what is already on disk."""
     started = time.time()
-    tasks = [(s, d) for s in SYMBOLS for d in _days()]
-    print(f"bookTicker: {len(SYMBOLS)} symbols x {len(_days())} days = {len(tasks):,} files")
-    print(f"Window {FIRST_DAY} to {LAST_DAY} (publication ceased; window is fixed)")
-    print(f"Workers {WORKERS}\n", flush=True)
+    _install_signal_handlers()
 
-    counts = {"ok": 0, "skip": 0, "absent": 0, "error": 0}
+    root = DIR_DATA / VENUE / LAYER / MARKET / DATASET
+    stale = clear_stale_temps(root) if root.exists() else []
+    if stale:
+        print(f"Removed {len(stale)} temporary partition(s) from an interrupted run")
+
+    all_tasks = [(s, d) for s in SYMBOLS for d in _days()]
+    tasks, done, repaired = _prune_damaged(all_tasks)
+
+    print(f"bookTicker: {len(SYMBOLS)} symbols x {len(_days())} days = {len(all_tasks):,} files")
+    print(f"Window {FIRST_DAY} to {LAST_DAY} (publication ceased; window is fixed)")
+    print(f"Already complete {done:,}   damaged and requeued {repaired:,}   "
+          f"remaining {len(tasks):,}")
+    print(f"Workers {WORKERS}. Safe to interrupt: re-run to resume.\n", flush=True)
+
+    if not tasks:
+        print("Nothing to do.")
+        return
+
+    counts = {"ok": 0, "absent": 0, "error": 0, "stopped": 0}
     rows = written = 0
     errors = []
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -89,17 +161,29 @@ def main() -> None:
             written += r.get("bytes", 0)
             if r["status"] == "error":
                 errors.append((futures[fut], r["detail"]))
-            if i % 10 == 0 or i == len(tasks):
+            # Once stopping, the remaining futures return immediately and would
+            # otherwise emit hundreds of identical progress lines while draining.
+            if r["status"] == "stopped":
+                continue
+            if i % 5 == 0 or i == len(tasks):
                 elapsed = time.time() - started
-                eta = (len(tasks) - i) / max(i / elapsed, 1e-9) / 3600
-                print(f"  {i:>5,}/{len(tasks):,}  ok={counts['ok']:,} err={counts['error']:,}  "
-                      f"{rows/1e9:>6.2f}bn rows  {written/1e9:>6.2f} GB  "
-                      f"eta {eta:>4.1f}h", flush=True)
+                finished = counts["ok"]
+                eta = ((len(tasks) - i) / max(finished / elapsed, 1e-9) / 3600
+                       if finished else float("nan"))
+                print(f"  {i:>5,}/{len(tasks):,}  ok={counts['ok']:,} "
+                      f"err={counts['error']:,} stopped={counts['stopped']:,}  "
+                      f"{rows/1e6:>8,.1f}m rows  {written/1e9:>6.2f} GB  "
+                      f"eta {eta:>5.1f}h", flush=True)
 
-    print(f"\nRESULT  written {counts['ok']:,}  skipped {counts['skip']:,}  "
-          f"absent {counts['absent']:,}  errors {counts['error']:,}")
-    print(f"  {rows:,} rows   {written/1e9:.2f} GB parquet   "
-          f"{(time.time()-started)/3600:.1f} h")
+    total_done = done + counts["ok"]
+    print(f"\nRESULT  this run wrote {counts['ok']:,}   absent {counts['absent']:,}   "
+          f"errors {counts['error']:,}   skipped after stop {counts['stopped']:,}")
+    print(f"  dataset now {total_done:,}/{len(all_tasks):,} files complete "
+          f"({total_done/len(all_tasks):.1%})")
+    print(f"  this run: {rows:,} rows, {written/1e9:.2f} GB, "
+          f"{(time.time()-started)/3600:.2f} h")
+    if total_done < len(all_tasks):
+        print("  INCOMPLETE. Re-run this script to continue from here.")
     for key, detail in errors[:20]:
         print(f"  ERROR {key}: {detail}")
 

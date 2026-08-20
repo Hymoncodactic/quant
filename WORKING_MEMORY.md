@@ -19,6 +19,12 @@
   - 现货归档只有 trades / aggTrades / klines 三类；bookDepth / bookTicker / metrics /
     fundingRate 等**只存在于期货**。
 - 两条方向的交易接口仍未接：OKX 无密钥；T212 API 已确认**只有交易接口、零行情接口**。
+- **带宽是真正的约束，不是磁盘**：到 data.binance.vision 实测约 1.6 MB/s，
+  且并发不提升（单连接 1.66、4 连接 1.54 MB/s）。灌满 500 GB 需约 90 小时。
+  选数据集应按「每小时下载能换到多少研究价值」排序，不是按 GB。
+- 本机内存仅 8 GB；bookTicker 单日 2665 万行，解析峰值约 1 GB/worker，故 workers=4。
+- **bookTicker 过夜任务运行中**：可断电续传，用 `scripts/resume_bookticker.command`
+  双击恢复；或 `caffeinate -i ./.venv/bin/python -u scripts/20260819_ingest_crypto_bookticker.py`。
 - 已纳入 git 版本管理，remote `origin` = `https://github.com/Hymoncodactic/quant.git`，
   分支 `main`。同步入口：`python3 scripts/sync_to_git.py`（每日手动执行）。
 - **该 GitHub 仓库为 PUBLIC**（用户 2026-08-19 明确裁定保持公开）。今后一切入库内容
@@ -62,3 +68,9 @@
 | 2026-08-19 15:2x | 多智能体工作流完成数据源调研（13 agent / 652 工具调用 / 137 万 token），结论与本机实测互相印证，报告存 `/tmp/synthesis.md` |
 | 2026-08-19 15:3x | 实证否定「存在流动性好的负相关标的」这一前提，两侧证据写入 `research/notes/20260819_negative_correlation_findings.md`。最重要发现：**股债负相关制度已于 2022 年反转且连续五年未回归** |
 | 2026-08-19 15:5x | Phase 1 数据落地：新增 `common/store.py`（调优 parquet 写入）、`crypto_trading/ingest/{schemas,binance_archive}.py`、三个 ingest 脚本、`scripts/data_inventory.py`。回滚：删这些文件与 `data/` 下对应目录 |
+| 2026-08-19 18:0x | 股票日线改为 `period="max"` 全历史：us_equity 由 130,560 增至 228,214 个交易日（最早 1962-01-02），us_etf 97,706（SPY 回到 1993），uk_tradable 40,301。回滚：把 `PERIOD_MAX` 改回固定 `start` 日期并重跑 |
+| 2026-08-19 18:1x | 发现并修复 yfinance 批量取数缺陷：`period=max` 批量请求被解析成统一 1927 起点并触发限流（24 标的只回 3 个，21 个误报 delisted）。`_fetch_one()` 改为逐标的请求 + 4 次指数退避。回滚：改回 `yf.download(tickers, period=...)` 批量调用（会重现该缺陷） |
+| 2026-08-19 18:3x | `common/store.py::write_table()` 改为**原子写入**：先写 `<name>.parquet.writing` 再 `os.replace()`。新增 `is_readable_parquet()`（读 footer 检测截断，已对 99%/50%/1%/零字节四种截断验证均可检出）与 `clear_stale_temps()`。回滚：删这两个函数并把 `pq.write_table` 的目标改回 `path`——但那样崩溃会留下截断文件且被 `exists()` 误判为已完成 |
+| 2026-08-19 18:3x | 修复 `write_table` 潜伏缺陷：`column_encoding` 与 `use_dictionary=True` 冲突（pyarrow 报 ValueError）。Phase 1 未触发是因其 `ts` 为 timestamp 类型不满足 `is_integer`；bookTicker 的 `update_id` 是 int64，会在每个文件上崩溃。现改为两集合互斥。回滚：删 `dictionary_columns` 与 `use_dictionary=` 参数 |
+| 2026-08-19 18:4x | bookTicker 脚本加断点续传：`_prune_damaged()` 恢复时逐个读 footer，损坏件删除并重排；SIGINT/SIGTERM 设停止标志，在途文件写完后退出。三项测试均以故障注入验证通过 |
+| 2026-08-19 18:5x | **修复高错误率**：`binance_archive._get()` 原本无任何重试，实测错误率 55%（30/55）。改为 5 次指数退避重试，404 立即抛出不重试；`TIMEOUT_SEC` 120→180。故障注入三例验证通过。回滚：把 `_get` 改回单次 `urlopen`——会重现 55% 丢失率 |
