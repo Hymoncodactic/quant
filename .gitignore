@@ -9,10 +9,12 @@ secrets/
 !**/config/*.example.yaml
 
 # ---- 数据与运行产物 ----
-data/
-logs/
-reports/
-backtest/results/
+# 一律根锚定（前导 /）。未锚定的 `data/` 会匹配任意层级的同名目录，
+# 曾因此把 `docs/data/`（数据说明与重建 manifest，必须入库）一并排除。
+/data/
+/logs/
+/reports/
+/backtest/results/
 *.parquet
 *.csv.gz
 

@@ -197,10 +197,15 @@ quant/
 ├── crypto_trading/        OKX 交易代码：client / ingest / strategy / execution / config
 ├── trading212/            Trading 212 交易代码：同上五层
 ├── backtest/              回测，独立于交易代码：engine / okx / t212 / results
-├── data/                  全部落地数据
+├── data/                  全部落地字节。整棵 gitignore，预期迁往外置磁盘
+│   ├── binance/{raw,curated}   数据源，非交易场所
 │   ├── okx/{raw,curated}
 │   ├── t212/{raw,curated}
 │   └── reference/         合约规格、费率、交易日历（须注明取自哪个接口、取回时间）
+├── docs/data/<source>/    数据的说明与重建凭据。入库
+│   ├── DATA_SPEC.md       字段、单位、时区、已知陷阱
+│   ├── MANIFEST.jsonl     每分区一条：坐标、上游 URL、字节数、行数
+│   └── GAPS.csv           缺口登记
 ├── research/{prereg,decisions,notes}
 ├── reports/  logs/  scripts/  tests/  secrets/
 ```
@@ -214,9 +219,13 @@ quant/
 | `backtest/` | 不碰交易所接口，只读 `data/` 与 `<venue>/strategy/`；结果落 `backtest/results/` |
 | `secrets/` | 唯一的密钥落地位置，gitignore，永不展示内容 |
 | `data/*/raw/` | 只增不改（§3.4） |
-| `data/*/curated/` | 每个目录须配 `DATA_SPEC.md`，写明字段、单位、时区、生成脚本 |
+| `data/` | **整棵 gitignore**，⛔ 不得在其中放说明件；说明与凭据一律进 `docs/data/<source>/` |
+| `docs/data/<source>/` | 入库。每个数据源须配 `DATA_SPEC.md`（字段、单位、时区、生成脚本）与 `MANIFEST.jsonl`（重建凭据） |
 | `research/prereg/` | 跑结果**之前**冻结的判定标准，与 `decisions/` 同前缀成对 |
 | `logs/` `reports/` `backtest/results/` | gitignore（报告产出件按需单独入库） |
+
+`.gitignore` 中排除 `data/` `logs/` `reports/` 的模式**必须根锚定**（写作 `/data/`）。
+未锚定的 `data/` 会匹配任意层级的同名目录，曾因此把 `docs/data/` 一并排除。
 
 ### 4.1 命名（硬性）
 
@@ -224,8 +233,8 @@ quant/
   禁止中文、空格、冒号、其他非 ASCII 字符。文档**内容**可用中文，文件名不行。
 - 根目录 md 用全大写下划线（`CLAUDE.md`、`ARCHITECTURE.md`、`WORKING_MEMORY.md`、
   `DATA_SPEC.md`）；代码与其余文件用 `snake_case`。
-- 数据文件按 `data/<venue>/<layer>/<instrument>/<period>/year=YYYY/` 分区，
-  文件名 `YYYYMMDD.parquet`。
+- 数据文件按数据源各自的实际分区落盘，构造一律经 `common/paths.py`，
+  ⛔ 不得在业务代码里自行拼接路径。实际布局见 `ARCHITECTURE.md` §3.3。
 - 一次性脚本带日期前缀：`scripts/20260819_ingest_okx_klines.py`。
 
 ## 五、跨会话工作记忆（强制）

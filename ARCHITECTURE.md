@@ -15,7 +15,8 @@
 | `crypto_trading/` | OKX 交易代码 | 只装与交易所打交道的代码 |
 | `trading212/` | Trading 212 交易代码 | 同上 |
 | `backtest/` | 回测，独立于交易代码 | 不碰交易所接口 |
-| `data/` | 全部落地数据 | gitignore |
+| `data/` | 全部落地数据 | gitignore，见 §3 |
+| `docs/data/<source>/` | 数据的**说明与重建凭据**：`DATA_SPEC.md`、`MANIFEST.jsonl`、`GAPS.csv` | 入库。见 §3 |
 | `research/` | `prereg/` 预注册、`decisions/` 裁定、`notes/` 笔记 | |
 | `reports/` `logs/` `scripts/` `tests/` `secrets/` | 见下 | |
 
@@ -42,6 +43,13 @@ backtest/  ─┐
 | 配置 | `<venue>/config/` | yaml 配置、标的池 | **任何密钥** |
 
 `<venue>` = `crypto_trading`（slug `okx`）或 `trading212`（slug `t212`）。
+
+### 2.0.1 策略带版本号
+
+策略身份 = 名字 + 版本，起点 **V0.0.1**。文件 `<name>_v0_0_1.py`，
+常量 `STRATEGY_VERSION = "0.0.1"`，回测结果与预注册/裁定/报告的文件名都带同一版本串。
+MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字节不变。
+细则见 `/quant-code-standards` §4.5.1。
 
 ### 2.0 信号只有一份（硬性）
 
@@ -73,20 +81,67 @@ backtest/  ─┐
 | `secrets.py` | **唯一**的密钥读取入口（`secrets/` 或环境变量），带脱敏 |
 | `logging_setup.py` | 日志初始化，UTC 时间，落 `logs/<模块>_YYYYMMDD.log` |
 | `net.py` | HTTP 会话、指数退避、令牌桶限频 |
+| `store.py` | parquet 原子写入、临时件清理 |
 
-后续按需新增（先更新本表再写代码）：`store.py`（parquet 读写与校验）、
-`metrics.py`（业绩率与风险比率）、`risk.py`（风控闸）。回测引擎不在这里，在 `backtest/`。
+后续按需新增（先更新本表再写代码）：`metrics.py`（业绩率与风险比率）、
+`risk.py`（风控闸）。回测引擎不在这里，在 `backtest/`。
 
 ## 3. 数据布局
 
+### 3.1 数据源 ≠ 交易场所
+
+`data/` 下的一级目录是**数据源 slug**（`common/paths.py` 的 `DATA_SOURCES`），
+不是交易场所 slug（`VENUES`）。二者是包含关系：
+
+| slug | 是数据源 | 是交易场所 | 说明 |
+|---|:--:|:--:|---|
+| `binance` | 是 | 否 | 只取数据。FCA 自 2021-01-06 禁止英国零售交易加密衍生品；`api.binance.com` 从本机返回 HTTP 451 |
+| `okx` | 是 | 是 | |
+| `t212` | 是 | 是 | 行情实取自 Yahoo，T212 无行情接口 |
+
+数据源不得因此获得空的 `execution/` 目录；场所代码也不得假定每个数据源都能下单。
+
+### 3.2 字节与说明分离（硬性）
+
 ```
-data/<venue_slug>/
-├── raw/        原始返回，只增不改（CLAUDE.md §3.4）；元信息见 _manifest.jsonl
-└── curated/    清洗后，每目录配 DATA_SPEC.md；缺口登记 _gaps.csv
-data/reference/ 合约规格、费率、交易日历（须注明取自哪个接口、取回时间）
+data/                       全部字节。gitignore 整棵树，预期迁往外置磁盘
+└── <source>/{raw,curated}/
+
+docs/data/<source>/         全部说明与凭据。入库，随代码一起版本化
+├── DATA_SPEC.md            字段、单位、时区、已知陷阱、已知不存在的数据
+├── MANIFEST.jsonl          每个分区一条：坐标、上游 URL、本地字节数与行数
+└── GAPS.csv                缺口登记：dataset, symbol, from, to, cause, state
 ```
 
-分区：`data/<venue>/<layer>/<instrument>/<period>/year=YYYY/YYYYMMDD.parquet`
+说明件**不得**放在 `data/` 内。整棵 `data/` 不入库且预期迁往外置磁盘，
+放在字节旁边的说明会跟着磁盘走，仓库里将不剩任何关于这批数据的记录。
+
+`MANIFEST.jsonl` 由 `scripts/build_data_manifest.py` 生成，
+`sync_to_git.command` 在提交前自动重建。该文件**不含生成时间戳**：
+数据无变更时重跑须逐字节相同，否则每天同步都会提交一个无信息量的 diff。
+
+### 3.3 实际分区
+
+Binance（`market` = spot / um / cm；`leaf` = kline 族取 bar 周期，其余取 dataset 名）：
+
+```
+data/binance/curated/<market>/<dataset>/<symbol>/<leaf>/year=YYYY/<stamp>.parquet
+```
+
+`stamp` 三种形式：`YYYY-MM`（月度归档件）、`YYYY-MM-DD`（日度）、
+`YYYYMMDD`（2026-08-19 那版 bookTicker 加载器留下的旧式日度，读侧兼容）。
+由 `common/paths.py` 的 `stamp_freq()` 判别，它决定重建时该取 daily 还是 monthly 的 URL。
+
+股票（Yahoo 取数，落 `t212` 源）：
+
+```
+data/t212/curated/<group>/<symbol>/1d/<symbol>_<year>.parquet
+data/t212/curated/<group>/<symbol>/<interval>/<symbol>_<start>_<end>_<interval>.parquet
+```
+
+路径构造一律经 `common/paths.py`，⛔ 不得在业务代码里自行拼接。
+
+`data/reference/` 合约规格、费率、交易日历（须注明取自哪个接口、取回时间）。
 
 ## 4. Skills 索引
 
