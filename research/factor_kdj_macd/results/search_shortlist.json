@@ -1,0 +1,338 @@
+[
+  {
+    "cell": [
+      "b_50_80",
+      "recent_cross",
+      "k_over_80"
+    ],
+    "reason": "screened",
+    "search_edge_pp": 25.254572579773903,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 16,
+        "edge_pp": 31.88
+      },
+      {
+        "year": 2019,
+        "n": 23,
+        "edge_pp": 35.46
+      },
+      {
+        "year": 2020,
+        "n": 20,
+        "edge_pp": 23.24
+      },
+      {
+        "year": 2021,
+        "n": 28,
+        "edge_pp": 20.2
+      },
+      {
+        "year": 2022,
+        "n": 14,
+        "edge_pp": -7.25
+      },
+      {
+        "year": 2023,
+        "n": 25,
+        "edge_pp": 14.7
+      },
+      {
+        "year": 2024,
+        "n": 24,
+        "edge_pp": 31.88
+      },
+      {
+        "year": 2025,
+        "n": 30,
+        "edge_pp": 10.06
+      },
+      {
+        "year": 2026,
+        "n": 13,
+        "edge_pp": 27.64
+      }
+    ]
+  },
+  {
+    "cell": [
+      "b_20_80",
+      "both",
+      "k_over_80"
+    ],
+    "reason": "screened",
+    "search_edge_pp": 24.726656447085016,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 44,
+        "edge_pp": 11.54
+      },
+      {
+        "year": 2019,
+        "n": 71,
+        "edge_pp": 29.44
+      },
+      {
+        "year": 2020,
+        "n": 75,
+        "edge_pp": 31.77
+      },
+      {
+        "year": 2021,
+        "n": 60,
+        "edge_pp": 15.85
+      },
+      {
+        "year": 2022,
+        "n": 37,
+        "edge_pp": 0.03
+      },
+      {
+        "year": 2023,
+        "n": 57,
+        "edge_pp": 11.26
+      },
+      {
+        "year": 2024,
+        "n": 60,
+        "edge_pp": 23.77
+      },
+      {
+        "year": 2025,
+        "n": 49,
+        "edge_pp": 13.25
+      },
+      {
+        "year": 2026,
+        "n": 31,
+        "edge_pp": 11.77
+      }
+    ]
+  },
+  {
+    "cell": [
+      "b_20_50",
+      "dif_gt_zero",
+      "fixed_5"
+    ],
+    "reason": "screened",
+    "search_edge_pp": 8.196161873602703,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 40,
+        "edge_pp": 7.25
+      },
+      {
+        "year": 2019,
+        "n": 61,
+        "edge_pp": 11.86
+      },
+      {
+        "year": 2020,
+        "n": 53,
+        "edge_pp": 18.15
+      },
+      {
+        "year": 2021,
+        "n": 69,
+        "edge_pp": 1.09
+      },
+      {
+        "year": 2022,
+        "n": 18,
+        "edge_pp": -27.35
+      },
+      {
+        "year": 2023,
+        "n": 53,
+        "edge_pp": -8.23
+      },
+      {
+        "year": 2024,
+        "n": 70,
+        "edge_pp": -6.86
+      },
+      {
+        "year": 2025,
+        "n": 49,
+        "edge_pp": 11.99
+      },
+      {
+        "year": 2026,
+        "n": 27,
+        "edge_pp": -18.65
+      }
+    ]
+  },
+  {
+    "cell": [
+      "b_20_80",
+      "dif_gt_zero",
+      "fixed_5"
+    ],
+    "reason": "screened",
+    "search_edge_pp": 5.323728447897114,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 107,
+        "edge_pp": 6.16
+      },
+      {
+        "year": 2019,
+        "n": 181,
+        "edge_pp": 10.24
+      },
+      {
+        "year": 2020,
+        "n": 196,
+        "edge_pp": 11.87
+      },
+      {
+        "year": 2021,
+        "n": 187,
+        "edge_pp": -4.22
+      },
+      {
+        "year": 2022,
+        "n": 63,
+        "edge_pp": -20.46
+      },
+      {
+        "year": 2023,
+        "n": 173,
+        "edge_pp": -9.34
+      },
+      {
+        "year": 2024,
+        "n": 166,
+        "edge_pp": 2.39
+      },
+      {
+        "year": 2025,
+        "n": 160,
+        "edge_pp": 3.95
+      },
+      {
+        "year": 2026,
+        "n": 88,
+        "edge_pp": -9.06
+      }
+    ]
+  },
+  {
+    "cell": [
+      "b_20_80",
+      "none",
+      "death_cross"
+    ],
+    "reason": "user_named",
+    "search_edge_pp": -11.128438808423159,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 285,
+        "edge_pp": -6.29
+      },
+      {
+        "year": 2019,
+        "n": 307,
+        "edge_pp": -3.2
+      },
+      {
+        "year": 2020,
+        "n": 344,
+        "edge_pp": -5.8
+      },
+      {
+        "year": 2021,
+        "n": 346,
+        "edge_pp": -12.68
+      },
+      {
+        "year": 2022,
+        "n": 316,
+        "edge_pp": -23.69
+      },
+      {
+        "year": 2023,
+        "n": 288,
+        "edge_pp": -8.37
+      },
+      {
+        "year": 2024,
+        "n": 310,
+        "edge_pp": -6.58
+      },
+      {
+        "year": 2025,
+        "n": 315,
+        "edge_pp": -9.68
+      },
+      {
+        "year": 2026,
+        "n": 213,
+        "edge_pp": -19.23
+      }
+    ]
+  },
+  {
+    "cell": [
+      "b_20_80",
+      "both",
+      "death_cross"
+    ],
+    "reason": "user_named",
+    "search_edge_pp": -7.368091018422673,
+    "yearly_edge": [
+      {
+        "year": 2018,
+        "n": 51,
+        "edge_pp": -14.07
+      },
+      {
+        "year": 2019,
+        "n": 95,
+        "edge_pp": -2.74
+      },
+      {
+        "year": 2020,
+        "n": 93,
+        "edge_pp": -5.88
+      },
+      {
+        "year": 2021,
+        "n": 92,
+        "edge_pp": -17.52
+      },
+      {
+        "year": 2022,
+        "n": 45,
+        "edge_pp": -19.19
+      },
+      {
+        "year": 2023,
+        "n": 76,
+        "edge_pp": -21.81
+      },
+      {
+        "year": 2024,
+        "n": 77,
+        "edge_pp": -14.58
+      },
+      {
+        "year": 2025,
+        "n": 64,
+        "edge_pp": -4.78
+      },
+      {
+        "year": 2026,
+        "n": 40,
+        "edge_pp": -19.7
+      }
+    ]
+  }
+]
