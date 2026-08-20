@@ -40,6 +40,18 @@
   `sync_to_git.command` 提交前自动重建。manifest 不含时间戳，数据无变更时重跑逐字节相同。
 - **数据源 ≠ 交易场所**：`common/paths.py` 的 `DATA_SOURCES`（binance/okx/t212）
   与 `VENUES`（okx/t212）分开。binance 只供数据，不下单。
+- **T212 回测框架 v0 已建成**（2026-08-20，工作树分支
+  `claude/trading212-backtest-framework-b729c3`，未提交）：事件驱动 bar 级引擎
+  `backtest/engine/`（8 模块）+ T212 适配 `backtest/t212/`（7 模块，含 16 类
+  平台故障注入），71 项单测 + 真实数据冒烟 6 项判别力断言全过。设计计划与
+  裁定在 `fixplans/`（9 份，含变更记录）；权威凭据在 `data/reference/`
+  （T212 OpenAPI v0 规范 + api.md 镜像 + 5 份调研 JSON，均 2026-08-20 取回）；
+  9 个参考仓库浅克隆于 `vendor/`（已 gitignore，清单与 commit 见
+  `fixplans/framework/01_architecture.md` §8）。
+- **已实证的 t212 bar 语义**（S5，判别力样本）：日内 ts = bar 开始时刻；
+  日线 ts = 交易所本地零点转 UTC，伦敦标的与 GBPUSD=X 在 BST 期间落在
+  **前一 UTC 日 23:00**——跨标的日线对齐必须按交易所本地日期。已补记
+  `docs/data/t212/DATA_SPEC.md` §3。
 
 ## 未决项
 
@@ -57,6 +69,9 @@
 | 10 | ~~`data/binance/` 无 `raw/` 层~~ | 已决 | 2026-08-20 用户选 (a)：权威 raw 就在 `data.binance.vision`，本地只留 curated，重建凭据落 `docs/data/<source>/MANIFEST.jsonl`。已实现并验证 |
 | 11 | `data/` 的备份（≠ 版本管理，git 已排除） | 用户 | **挂起：等外置磁盘就位**（用户 2026-08-20 明言）。重下载代价实测约 11.9 小时（66.7 GB ÷ 1.6 MB/s，并发不提升）。磁盘就位后应跑一次 `build_data_manifest.py --hash-local` 建立本地基线，此后可检出位腐 |
 | 12 | manifest 的 `sha256_upstream` 字段目前全为 null | 可选 | 填满需 9,317 次 `.CHECKSUM` 请求（免费公共服务）。取回函数已单测通过。价值有限：下载时 `fetch_to_frame(verify=True)` 已逐个校验过。真正该做的是 `--hash-local`（见未决项 11） |
+| 13 | T212 费用细节的经验校验：FX 费与税费的舍入规则、PTM 对 ETF 是否实收、最小订单值现行值（帮助页已下线，仅 Wayback + 员工帖）、下单数量精度现行上限（官方无文档，实测 4 位） | 用户 + demo 账户实测 | 待将来对 demo 环境下单后用 `GET /equity/history/orders` 的 walletImpact.taxes 逐项对账；回测成本列已按同一枚举命名以便对账 |
+| 14 | T212 API 的 POST→FILLED 实测延迟无公开数据（实盘 API 下单 2025-10-01 才开放）；故障注入的 p/q/r/k 概率参数全为推断值 | 用户裁定是否实测 + 敏感性 | 延迟档位与证据见 `fixplans/t212_faults/02_latency_model.md`；报告结论前须跑参数敏感性 |
+| 15 | 回测框架待办：F3 outage 抽样发生器（v0 仅显式窗口）；`avoid_first_bar` 由策略层承担；对账层故障目录（fault_catalog §4）待实盘执行层设计时启用 | 后续任务 | 见各 fixplan 变更记录 |
 
 ## 时间线
 
@@ -102,3 +117,8 @@
 | 2026-08-20 13:0x | `scripts/update_data.py` 去重：`_crypto_out` / `_existing_stamps` / `_drop_superseded_days` 三处内联路径拼接改为调用 `paths.binance_partition_*`（`/quant-code-standards` §4.7 一处定义）。回归验证：305 个样本覆盖全部 5 种分支组合，新旧构造 0 处不一致、构造出的路径 100% 存在于磁盘；负例（period 由 None 改 1h）既不等于旧实现也不存在于磁盘，证明该检验有判别力 |
 | 2026-08-20 13:1x | `sync_to_git.command` 改为两步：先用 `.venv/bin/python` 重建 manifest（需 pyarrow，系统 python3 没有），再用系统 python3 跑 `sync_to_git.py`（纯标准库）。manifest 失败只警告不阻断同步，理由：分区损坏是数据问题，不该连带阻止当天源码入库。新增 `--no-manifest`。⛔ `--overwrite-remote` 仍刻意不可由双击触发。回滚：还原该文件 |
 | 2026-08-20 13:1x | 验证（C 类官方源 + B 类本地数据）：manifest 反推的归档 URL 抽样 6/6 命中 200，覆盖 spot/um × daily/monthly × tag取period/取dataset × stem带横杠/不带；负例 4/4 按预期 404（freq 改错、market 改错、stamp 未展开横杠、klines 用 dataset 当 tag），证明四条推导分支每条都有判别力。行数 3/3 与全量读取一致且取值有 836 种（非常数）。`_meta` 汇总等于逐行求和。确定性：重跑三份 manifest 全部 sha256 不变。密钥闸在 .jsonl 内植入假密钥能命中（第 2 行），证明 3.19 MiB 的 manifest 是真扫了而非被跳过 |
+| 2026-08-20 15:3x | T212 回测框架开工（工作树 `claude/trading212-backtest-framework-b729c3`）。多智能体调研 5 研究员取回：T212 公开 API v0 完整契约（OpenAPI 规范落 `data/reference/t212_openapi_v0_20260820.yaml` 并本地抽验关键 schema）、费用与税费全表、延迟证据链（无官方 SLA；常规秒级~20s、拥堵 1–26 分钟、SETSqx 仅日内 5 次竞价、IB 中介宕机 2 例、GME 只减仓窗口）、30 条带来源的平台 bug 实例、9 框架源码级调研。bt 判不适用：`vendor/bt/bt/core.py:1633` 当根价即时成交、现金为单一无币种标量、默认整数股。9 仓库浅克隆 `vendor/`，`.gitignore` 增根锚定 `/vendor/` |
+| 2026-08-20 16:xx | `fixplans/` 建立（README + framework 5 份 + t212_faults 2 份 + validation 2 份）。本地实证 bar 语义两条（判别力样本）：日内 ts=bar 开始（AAPL 1h 首根夏 13:30/冬 14:30 UTC，随 DST 切换）；日线 ts=交易所本地零点转 UTC，伦敦标的 BST 期间落前一 UTC 日 23:00（SGLN.L 交易日 06-29 → ts 06-28 23:00Z）。后者补记入 `docs/data/t212/DATA_SPEC.md` §3。回滚：删 fixplans/ 与 DATA_SPEC 增补段 |
+| 2026-08-20 17:xx | 引擎代码落地：`backtest/engine/` 8 模块（types/feed/matching/ledger/engine/metrics/results/broker 协议）+ `backtest/t212/` 7 模块（data_source/instruments/costs/faults/admission/broker_sim/runner），16 类故障开关，`tests/backtest/` 判别力测试，`scripts/20260820_t212_backtest_smoke.py` 真实数据冒烟（BST 边界 + 2026-07-03 美假日窗口，6 项断言含 FX 前视判别）。`common/paths.py` 增 `equity_curated_root`/`equity_interval_dir`。ARCHITECTURE §1/§2.2 同步登记。回滚：整棵工作树未提交，`git checkout -- .` + 删除未跟踪件即回 |
+| 2026-08-20 23:2x | 对抗性审查工作流（4 查错员 ×39 发现，每条 2 反驳者验证；21 个验证员因会话限额中断，由本方逐条裁定）→ 修复 24 项。关键修复：混交易所 1h 时间轴 30 分钟前视泄漏（撮合资格由「合并时间轴步数」改为「时间」eligible_ts，引擎加日内成交时间断言；美股 1h 在 :30 网格、伦敦在 :00 网格，步数制会用到未形成的收盘信息）；止损限价可即成腿曾按 bar 未交易过的价格成交；卖侧止损限价曾采信触发前的 high；STOP 部分成交后丢失触发态；PTM 曾按笔而非按订单收；夏普与年化收益曾用不同日基底；重叠点差窗口未随 DST；F13 上限改按标的×bar 聚合；执行时资金闸曾可挪用他单冻结。三项按 fixplans 规则改计划留痕（F12 拒单+重提语义、F3 抽样发生器降待办、avoid_first_bar 归策略层）。broker_sim 超 400 行拆出 admission.py。终态：71 测试 + 冒烟 6/6 全过；全部 9 份 fixplan 补变更记录。回滚：同上一行 |
+| 2026-08-21 00:xx | 策略接入与双线数据源读取层：新增 `backtest/engine/strategy_loader.py`（按 (venue, name, version) 加载 `<venue>/strategy/` 模块，校验 STRATEGY_NAME/STRATEGY_VERSION 与 `compute_targets` 契约，契约文档 `fixplans/framework/06_strategy_plugin.md`）、`backtest/okx/data_source.py`（Binance 归档 spot klines → 引擎 bar schema，UTC 日对齐、USDT 计价；本地存量 9 个 USDT 对 × 1d/1m × 2017-08 起）；feed 计价币白名单参数化并纳入 USDT；`common/paths.py` 的 `binance_partition_dir` 增 data_root 注入。80 项测试全过；okx 读取层真实数据抽验（2024-02-25~03-05 跨闰日 10 行/标的）。待办：okx 撮合/成本适配器（OKX 费率等 S4 现查）+ 账本 `_gbp` 字段中性化（PATCH 级，须字节级等价证明）。回滚：删三个新文件与 06 号计划，还原 feed/paths 的新参数 |

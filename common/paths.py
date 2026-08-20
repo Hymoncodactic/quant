@@ -26,6 +26,8 @@ Public functions:
     binance_partition_dir(market, dataset, symbol, period)          Its parent directory
     equity_daily_path(group, symbol, year)          Daily bars for one calendar year
     equity_intraday_path(group, symbol, interval, start, end)  Intraday bars for one month
+    equity_curated_root(data_root=None)             t212 curated tree, root injectable
+    equity_interval_dir(group, symbol, interval, data_root=None)  One symbol-interval dir
     month_bounds(period_start, latest)              Calendar-anchored start and end labels
     stamp_freq(stamp)                               Classify a partition stamp daily/monthly
     docs_data_dir(source)                           Versioned documentation for one source
@@ -44,7 +46,8 @@ from __future__ import annotations
 __all__ = [
     "venue_dir", "config_dir", "data_dir", "bar_path",
     "binance_partition_path", "binance_partition_dir",
-    "equity_daily_path", "equity_intraday_path", "month_bounds", "stamp_freq",
+    "equity_daily_path", "equity_intraday_path",
+    "equity_curated_root", "equity_interval_dir", "month_bounds", "stamp_freq",
     "docs_data_dir", "data_spec_path", "manifest_path", "gaps_path",
     "ROOT", "DIR_DATA", "DIR_DOCS", "DIR_DOCS_DATA", "DIR_REFERENCE",
     "DIR_SECRETS", "DIR_LOGS", "DIR_REPORTS",
@@ -122,7 +125,8 @@ def data_dir(source: str, layer: str) -> Path:
 
 
 def binance_partition_dir(market: str, dataset: str, symbol: str,
-                          period: str | None) -> Path:
+                          period: str | None, *,
+                          data_root: Path | str | None = None) -> Path:
     """Return the directory holding one Binance dataset for one symbol.
 
     Layout: binance/curated/<market>/<dataset>/<symbol>/<leaf>/
@@ -136,9 +140,13 @@ def binance_partition_dir(market: str, dataset: str, symbol: str,
         dataset: Archive dataset name, e.g. "klines", "metrics", "bookTicker".
         symbol: Venue-native symbol, e.g. "BTCUSDT".
         period: Bar interval for the kline family, otherwise None.
+        data_root: Optional data-lake root override (code may run from a git
+            worktree while the lake lives beside the main working copy).
     """
     leaf = period if period else dataset
-    return data_dir("binance", "curated") / market / dataset / symbol / leaf
+    base = (Path(data_root) / "binance" / "curated") if data_root is not None \
+        else data_dir("binance", "curated")
+    return base / market / dataset / symbol / leaf
 
 
 def binance_partition_path(market: str, dataset: str, symbol: str,
@@ -216,6 +224,28 @@ def equity_intraday_path(group: str, symbol: str, interval: str,
     slug = _file_slug(symbol)
     return (DIR_DATA / "t212" / "curated" / group / symbol / interval
             / f"{slug}_{start}_{end}_{interval}.parquet")
+
+
+def equity_curated_root(data_root: Path | str | None = None) -> Path:
+    """Return the t212 curated tree, optionally under an injected data root.
+
+    The injection exists because code may run from a git worktree while the
+    data lake lives beside the main working copy; every consumer still gets
+    the layout from here rather than assembling "t212/curated" itself.
+    """
+    if data_root is not None:
+        return Path(data_root) / "t212" / "curated"
+    return data_dir("t212", "curated")
+
+
+def equity_interval_dir(group: str, symbol: str, interval: str,
+                        data_root: Path | str | None = None) -> Path:
+    """Return the directory of one symbol's bars for one interval.
+
+    Layout: <curated>/<group>/<symbol>/<interval>/ (files named per
+    equity_daily_path / equity_intraday_path).
+    """
+    return equity_curated_root(data_root) / group / symbol / interval
 
 
 def month_bounds(period_start, latest) -> tuple[str, str]:

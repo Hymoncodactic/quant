@@ -8,6 +8,9 @@ secrets/
 **/config/*.paper.yaml
 !**/config/*.example.yaml
 
+# ---- 第三方参考代码：浅克隆的开源仓库，只读参考，不入库 ----
+/vendor/
+
 # ---- 数据与运行产物 ----
 # 一律根锚定（前导 /）。未锚定的 `data/` 会匹配任意层级的同名目录，
 # 曾因此把 `docs/data/`（数据说明与重建 manifest，必须入库）一并排除。

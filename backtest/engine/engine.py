@@ -1,0 +1,219 @@
+"""Backtest main loop: settle fills, mark to market, call the strategy,
+submit the diff as orders.
+
+Responsibility: sequencing and the online no-lookahead assertions
+(fixplans/validation/01_no_lookahead.md). The fixed per-step order is:
+    1. broker.process_bar()  -- settle orders submitted at earlier steps
+    2. strategy(view, ...)   -- sees history up to and including now
+    3. diff -> submit        -- earliest fill one full interval later
+    4. ledger.mark()         -- valuation and occupancy sampling AFTER the
+       submissions, so cash frozen this step enters the capital peak
+Not responsible for: matching, costs, faults, metrics (their own modules).
+
+The strategy is a pure function (ARCHITECTURE.md section 2.0):
+    strategy(view: MarketView, portfolio: PortfolioView, params) ->
+        dict[symbol, Decimal target shares]
+
+Public classes and functions:
+    PortfolioView          Read-only account state handed to the strategy
+    RunResult              Frames + metadata of one finished run
+    BacktestEngine         run() drives the whole loop
+"""
+
+from __future__ import annotations
+
+__all__ = ["PortfolioView", "RunResult", "BacktestEngine"]
+
+from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_DOWN
+from typing import Any, Callable
+
+import pandas as pd
+
+from backtest.engine.feed import BarFeed, FxSeries, MarketView
+from backtest.engine.ledger import Ledger
+from backtest.engine.types import (INTERVAL_SECONDS, Bar, EngineConfig, Fill,
+                                   OrderSpec, OrderStatus)
+
+ZERO = Decimal("0")
+_QTY_STEP = Decimal("0.00000001")
+
+# to_base_ccy(price, quote_ccy, fx_mid) -> price in the account currency.
+# Injected by the venue runner so the engine holds no venue currency rules.
+BaseCcyConverter = Callable[[Decimal, str, Decimal | None], Decimal]
+StrategyFn = Callable[[MarketView, "PortfolioView", dict], dict[str, Decimal]]
+
+
+@dataclass(frozen=True)
+class PortfolioView:
+    """Account state a strategy may read: never the ledger object itself."""
+    cash_gbp: Decimal
+    available_cash_gbp: Decimal
+    positions: dict[str, Decimal]
+    pending_signed_qty: dict[str, Decimal]
+
+
+@dataclass
+class RunResult:
+    trades: pd.DataFrame
+    equity: pd.DataFrame
+    orders: pd.DataFrame
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+class BacktestEngine:
+    """One backtest run. Construct fresh per run; not reusable."""
+
+    def __init__(self, config: EngineConfig, feed: BarFeed, fx: FxSeries,
+                 broker, strategy: StrategyFn,
+                 to_base_ccy: BaseCcyConverter) -> None:
+        self.config = config
+        self.feed = feed
+        self.fx = fx
+        self.broker = broker
+        self.strategy = strategy
+        self.to_base = to_base_ccy
+        self.ledger = Ledger(initial_cash_gbp=config.initial_cash_gbp)
+        self.fills: list[Fill] = []
+        self._last_bar: dict[str, Bar] = {}
+
+    # ------------------------------------------------------------------
+    # [1] Main loop
+    # ------------------------------------------------------------------
+
+    def run(self) -> RunResult:
+        for step, key, bars in self.feed:
+            fills = self.broker.process_bar(step, key, bars, self.ledger)
+            self._assert_fill_timing(fills)
+            self.fills.extend(fills)
+            self._last_bar.update(bars)
+            view = self._market_view(key, bars)
+            targets = self.strategy(view, self._portfolio_view(), self.config.params)
+            for spec in self._diff_to_specs(targets):
+                self.broker.submit(spec, key, step, self.ledger)
+            # Mark AFTER submissions so cash frozen for orders placed this
+            # step enters the occupancy series; marking before would let a
+            # reservation that resolves next bar escape the capital peak
+            # (fixplans/framework/05_metrics_reporting.md section 1.1).
+            self.ledger.mark(step, key, self._valuation_prices(key))
+        return self._collect()
+
+    # ------------------------------------------------------------------
+    # [2] Per-step helpers
+    # ------------------------------------------------------------------
+
+    def _assert_fill_timing(self, fills: list[Fill]) -> None:
+        """Online lookahead guards, always on (fixplans/validation/
+        01_no_lookahead.md section 1.2).
+
+        Step guard: a fill in the same step its order was submitted is a
+        lookahead bug, full stop (backtest-discipline section 2.1).
+        Time guard (intraday): the decision at the submission key used that
+        bar's close, which only exists one full interval later; a fill bar
+        must not OPEN before that instant. Steps alone cannot express this on
+        a mixed-exchange timeline whose consecutive keys interleave closer
+        than one interval.
+        """
+        interval = pd.Timedelta(seconds=INTERVAL_SECONDS[self.config.interval])
+        daily = self.config.interval == "1d"
+        for fill in fills:
+            order = self.broker.orders[fill.order_id]
+            if fill.step <= order.submitted_step:
+                raise AssertionError(
+                    f"same-bar fill: order {order.order_id} submitted at step "
+                    f"{order.submitted_step}, filled at step {fill.step}")
+            if not daily and fill.ts < order.submitted_ts + interval:
+                raise AssertionError(
+                    f"fill before information exists: order {order.order_id} "
+                    f"decided at {order.submitted_ts} (close known "
+                    f"{order.submitted_ts + interval}), fill bar opens "
+                    f"{fill.ts}")
+
+    def _valuation_prices(self, key: pd.Timestamp) -> dict[str, Decimal]:
+        """GBP mid prices of every symbol seen so far, at the latest close."""
+        query = key.tz_localize("UTC") if key.tzinfo is None else key
+        prices: dict[str, Decimal] = {}
+        for symbol, bar in self._last_bar.items():
+            fx_mid = self.fx.rate_at(query) if bar.quote_ccy == "USD" else None
+            prices[symbol] = self.to_base(Decimal(str(bar.close)),
+                                          bar.quote_ccy, fx_mid)
+        return prices
+
+    def _market_view(self, key: pd.Timestamp,
+                     bars: dict[str, Bar]) -> MarketView:
+        probe = None
+        if self.config.lookahead_probe:
+            probe = {s: b for s in bars
+                     if (b := self.feed.peek(s)) is not None}
+        return MarketView(self.feed.history, key, probe)
+
+    def _portfolio_view(self) -> PortfolioView:
+        positions = {s: p.qty for s, p in self.ledger.positions.items()
+                     if p.qty != ZERO}
+        pending = {s: q for s in set(list(positions) + list(self._last_bar))
+                   if (q := self.broker.pending_signed_qty(s)) != ZERO}
+        return PortfolioView(cash_gbp=self.ledger.cash_gbp,
+                             available_cash_gbp=self.ledger.available_cash_gbp,
+                             positions=positions, pending_signed_qty=pending)
+
+    def _diff_to_specs(self, targets: dict[str, Decimal]) -> list[OrderSpec]:
+        """Target shares minus (held + pending) becomes market orders.
+
+        Deltas are floored to the VENUE's order-quantity step (the broker
+        knows it; e.g. 4 dp under the T212 precision fault) so a fractional
+        target is dust-truncated once instead of being resubmitted and
+        rejected on every bar. Sub-step dust is ignored rather than churned.
+        """
+        step_fn = getattr(self.broker, "order_quantity_step", None)
+        qty_step = step_fn() if step_fn else _QTY_STEP
+        specs: list[OrderSpec] = []
+        for symbol, target in targets.items():
+            current = self.ledger.position_qty(symbol) \
+                + self.broker.pending_signed_qty(symbol)
+            delta = target - current
+            sign = 1 if delta > ZERO else -1
+            magnitude = abs(delta).quantize(qty_step, rounding=ROUND_DOWN)
+            if magnitude == ZERO:
+                continue
+            specs.append(OrderSpec(symbol=symbol, quantity=sign * magnitude))
+        return specs
+
+    # ------------------------------------------------------------------
+    # [3] Collection
+    # ------------------------------------------------------------------
+
+    def _collect(self) -> RunResult:
+        # Each trade row is self-describing (fixplans/framework/
+        # 05_metrics_reporting.md section 4.2): submission time, side and the
+        # order's terminal state ride along with the fill.
+        trades = pd.DataFrame([{
+            "order_id": f.order_id, "symbol": f.symbol, "ts": f.ts,
+            "step": f.step, "quantity": float(f.quantity),
+            "side": "BUY" if f.quantity > ZERO else "SELL",
+            "submitted_ts": self.broker.orders[f.order_id].submitted_ts,
+            "order_status": self.broker.orders[f.order_id].status.value,
+            "order_reason": self.broker.orders[f.order_id].reason,
+            "price": float(f.price), "quote_ccy": f.quote_ccy,
+            "fx_mid": float(f.fx_mid) if f.fx_mid is not None else None,
+            "cash_delta_gbp": float(f.cash_delta_gbp),
+            **{f"cost_{k}": float(v) for k, v in f.costs_gbp.items()},
+        } for f in self.fills])
+        orders = pd.DataFrame([{
+            "order_id": o.order_id, "symbol": o.spec.symbol,
+            "quantity": float(o.spec.quantity),
+            "type": o.spec.order_type.value, "status": o.status.value,
+            "reason": o.reason, "submitted_step": o.submitted_step,
+            "eligible_ts": str(o.eligible_ts),
+            "filled_qty": float(o.filled_qty),
+        } for o in self.broker.orders.values()])
+        equity = self.ledger.records_frame()
+        rejected = int((orders["status"] == OrderStatus.REJECTED.value).sum()) \
+            if not orders.empty else 0
+        meta = {
+            "fills": len(self.fills),
+            "orders_total": len(orders),
+            "orders_rejected": rejected,
+            "buy_outlays_gbp": [str(x) for x in self.ledger.buy_outlays_gbp],
+            "final_cash_gbp": str(self.ledger.cash_gbp),
+        }
+        return RunResult(trades=trades, equity=equity, orders=orders, meta=meta)
