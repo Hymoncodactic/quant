@@ -81,6 +81,7 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `engine/engine.py` | 主循环：结算成交 → 估值 → 调策略 → 差分下单 |
 | `engine/metrics.py` | 业绩率与风险比率（口径见 `fixplans/framework/05_metrics_reporting.md`） |
 | `engine/results.py` | trades / equity / meta 三件套落地 |
+| `engine/report.py` | 每轮图表（净值 mid/清算双线 + 在场底色 + 逐标的开仓区间横道） |
 | `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `fixplans/framework/06_strategy_plugin.md`） |
 | `okx/data_source.py` | 读 Binance 归档 spot klines（`data/binance/curated/`，经 `common/paths`，可注入 data_root）；okx 撮合/成本适配器待建 |
 | `t212/data_source.py` | 读 `data/t212/curated/` parquet（经 `common/paths`，可注入 data_root） |

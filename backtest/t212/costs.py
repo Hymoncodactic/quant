@@ -83,13 +83,24 @@ class CostConfig:
     spread_session_multiplier: Decimal = Decimal("2")  # INFERRED, section 4.4
     ptm_levy_on_etf: bool = True           # unverified whether T212 charges; conservative
     min_order_value_gbp: Decimal = MIN_ORDER_VALUE_GBP
+    # Cooldown (backtest-discipline hard list item 7): minimum bar intervals
+    # between fills of DIFFERENT orders on one symbol. 1 is the structural
+    # floor (bar granularity plus the no-same-bar rule already spaces fills
+    # one interval apart); the WORST tier defaults to 2 because per-bar
+    # volume budgets reset every bar and consecutive-bar re-entry would
+    # otherwise re-eat a book the replay can never deplete. A result that
+    # improves sharply when this drops is capacity illusion and must be
+    # downgraded (the skill's 教训条款).
+    cooldown_bars: int = 2
 
     @staticmethod
     def actual_tier() -> "CostConfig":
         """The measured-costs comparison tier: no extra slippage, no session
-        widening. Spread itself stays on (it is a measurement, not a stress)."""
+        widening, structural-floor cooldown. Spread itself stays on (it is a
+        measurement, not a stress)."""
         return CostConfig(slippage_bps=Decimal("0"),
-                          spread_session_multiplier=Decimal("1"))
+                          spread_session_multiplier=Decimal("1"),
+                          cooldown_bars=1)
 
 
 # ============================================================================

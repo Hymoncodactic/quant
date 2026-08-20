@@ -62,9 +62,11 @@ def zero_spread(monkeypatch):
 
 
 def cost_cfg_clean() -> CostConfig:
-    """No slippage, no session widening: exact expected fill prices."""
+    """No slippage, no session widening, structural-floor cooldown: exact
+    expected fill prices and timings for unit tests."""
     return CostConfig(slippage_bps=Decimal("0"),
-                      spread_session_multiplier=Decimal("1"))
+                      spread_session_multiplier=Decimal("1"),
+                      cooldown_bars=1)
 
 
 def faults_off(**overrides) -> FaultConfig:

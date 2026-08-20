@@ -143,8 +143,20 @@ class Ledger:
         return total
 
     def mark(self, step: int, key: pd.Timestamp,
-             prices_gbp: dict[str, Decimal]) -> None:
-        """Append one row to the equity/occupancy record."""
+             prices_gbp: dict[str, Decimal],
+             prices_liq_gbp: dict[str, Decimal] | None = None) -> None:
+        """Append one row to the equity/occupancy record.
+
+        prices_liq_gbp values positions at what a market EXIT would fetch
+        (bid side, conversion fee, sell taxes -- the venue adapter builds
+        them). The mid mark stays the diagnostic column; drawdown and final
+        equity in the authoritative tier read the liquidation column
+        (fixplans/framework/05_metrics_reporting.md). Without a liquidation
+        valuer the column equals the mid mark.
+        """
+        equity_mid = float(self.equity_gbp(prices_gbp))
+        equity_liq = float(self.equity_gbp(prices_liq_gbp)) \
+            if prices_liq_gbp is not None else equity_mid
         self._records.append({
             "step": step,
             "ts": key,
@@ -152,7 +164,8 @@ class Ledger:
             "reserved_gbp": float(self.reserved_gbp),
             "invested_cost_gbp": float(self.invested_cost_gbp),
             "occupied_gbp": float(self.occupied_gbp),
-            "equity_gbp": float(self.equity_gbp(prices_gbp)),
+            "equity_gbp": equity_mid,
+            "equity_liq_gbp": equity_liq,
         })
 
     def records_frame(self) -> pd.DataFrame:

@@ -112,15 +112,16 @@ def test_signed_and_absolute_medians_are_separate():
     # Signed median hides the dispersion: [-10, +2, +10] has signed median 2
     # but absolute deviation median 8. An implementation reporting one number
     # for both cannot satisfy the pair.
+    days = pd.date_range("2026-01-05", periods=4, freq="D", tz="UTC")
     trades = pd.DataFrame([
         {"step": 1, "order_id": 1, "symbol": "A", "quantity": 3.0,
-         "cash_delta_gbp": -30.0},
+         "cash_delta_gbp": -30.0, "ts": days[0]},
         {"step": 2, "order_id": 2, "symbol": "A", "quantity": -1.0,
-         "cash_delta_gbp": 0.0},
+         "cash_delta_gbp": 0.0, "ts": days[1]},
         {"step": 3, "order_id": 3, "symbol": "A", "quantity": -1.0,
-         "cash_delta_gbp": 12.0},
+         "cash_delta_gbp": 12.0, "ts": days[2]},
         {"step": 4, "order_id": 4, "symbol": "A", "quantity": -1.0,
-         "cash_delta_gbp": 20.0},
+         "cash_delta_gbp": 20.0, "ts": days[3]},
     ])
     equity = _equity_frame([30, 30, 30, 0])
     metrics = compute_metrics(equity, trades, 1000.0, 252)

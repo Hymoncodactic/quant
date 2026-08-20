@@ -22,16 +22,27 @@ Floats are acceptable here: metrics are statistics, not ledger money
 Public functions:
     compute_metrics(equity, trades, initial_cash, annualization_days)
     realized_pnl_per_sell(trades)      Average-cost realized PnL replay
+    holding_episodes(trades, final_ts) Per-symbol open-position spans
 """
 
 from __future__ import annotations
 
-__all__ = ["compute_metrics", "realized_pnl_per_sell"]
+__all__ = ["compute_metrics", "realized_pnl_per_sell", "holding_episodes",
+           "naive_utc"]
 
 import math
 
 import numpy as np
 import pandas as pd
+
+_SECONDS_PER_DAY = 86400.0
+
+
+def naive_utc(ts: pd.Timestamp) -> pd.Timestamp:
+    """Strip time zone (converting to UTC first) so daily-mode naive keys and
+    tz-aware fill timestamps can be subtracted on one axis."""
+    ts = pd.Timestamp(ts)
+    return ts.tz_convert("UTC").tz_localize(None) if ts.tzinfo else ts
 
 
 def realized_pnl_per_sell(trades: pd.DataFrame) -> list[float]:
@@ -60,6 +71,46 @@ def realized_pnl_per_sell(trades: pd.DataFrame) -> list[float]:
         out.append(cash - released)
         basis[row.symbol] = (held_qty - sold, held_cost - released)
     return out
+
+
+def holding_episodes(trades: pd.DataFrame,
+                     final_ts: pd.Timestamp) -> list[dict]:
+    """Per-symbol spans during which a position was open.
+
+    An episode starts when a symbol's cumulative filled quantity leaves zero
+    and ends when it returns to zero; an episode still open at the end of the
+    window is closed at final_ts and flagged open_at_end (censored duration,
+    never silently dropped).
+
+    Returns:
+        [{symbol, start_ts, end_ts, days, open_at_end}], chronological per
+        symbol. days is a float of calendar days.
+    """
+    episodes: list[dict] = []
+    if trades.empty:
+        return episodes
+    ordered = trades.sort_values(["step", "order_id"])
+    for symbol, group in ordered.groupby("symbol", sort=True):
+        qty, start = 0.0, None
+        for row in group.itertuples(index=False):
+            before = qty
+            qty += float(row.quantity)
+            if before == 0.0 and qty != 0.0:
+                start = naive_utc(row.ts)
+            elif before != 0.0 and abs(qty) < 1e-12 and start is not None:
+                end = naive_utc(row.ts)
+                episodes.append({
+                    "symbol": symbol, "start_ts": start, "end_ts": end,
+                    "days": (end - start).total_seconds() / _SECONDS_PER_DAY,
+                    "open_at_end": False})
+                qty, start = 0.0, None
+        if start is not None:
+            end = naive_utc(final_ts)
+            episodes.append({
+                "symbol": symbol, "start_ts": start, "end_ts": end,
+                "days": (end - start).total_seconds() / _SECONDS_PER_DAY,
+                "open_at_end": True})
+    return episodes
 
 
 def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame,
@@ -98,11 +149,8 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame,
     # between.
     span = daily.loc[online_mask]
     rets = span["equity_gbp"].diff().dropna() / capital
-    if len(rets) >= 2 and float(rets.std(ddof=1)) > 0:
-        out["sharpe_rf0"] = (float(rets.mean()) / float(rets.std(ddof=1))
-                             * math.sqrt(annualization_days))
-    else:
-        out["sharpe_rf0"] = None
+    out.update(_ratio_stats(rets, annualization_days))
+    out["exposure_time_fraction"] = online_days / len(daily)
 
     curve = equity["equity_gbp"].to_numpy()
     peak = np.maximum.accumulate(curve)
@@ -112,6 +160,10 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame,
     ann = out["annualized_return_rate"]
     out["calmar"] = (ann / out["max_drawdown_on_capital"]
                      if out["max_drawdown_on_capital"] > 0 else None)
+    out["longest_drawdown_days"] = _longest_drawdown_days(equity)
+    out.update(_liquidation_stats(equity, initial_cash_gbp, final_equity,
+                                  capital))
+    out.update(_holding_stats(trades, equity["ts"].iloc[-1]))
 
     pnls = realized_pnl_per_sell(trades)
     out.update(_trade_stats(pnls))
@@ -146,6 +198,84 @@ def _daily_equity(equity: pd.DataFrame) -> pd.DataFrame:
     return frame.groupby("date").last()
 
 
+def _ratio_stats(rets: pd.Series, annualization_days: int) -> dict:
+    """Sharpe, Sortino, annualized volatility from the daily return-on-capital
+    series over online days. Risk-free rate fixed at 0 (metadata rule:
+    fixplans/framework/05_metrics_reporting.md section 2)."""
+    out: dict = {"sharpe_rf0": None, "sortino_rf0": None,
+                 "annualized_volatility_on_capital": None}
+    if len(rets) < 2:
+        return out
+    std = float(rets.std(ddof=1))
+    mean = float(rets.mean())
+    if std > 0:
+        out["sharpe_rf0"] = mean / std * math.sqrt(annualization_days)
+        out["annualized_volatility_on_capital"] = std * math.sqrt(
+            annualization_days)
+    downside = rets[rets < 0]
+    if len(downside) >= 2:
+        dstd = float(np.sqrt((downside ** 2).mean()))
+        if dstd > 0:
+            out["sortino_rf0"] = mean / dstd * math.sqrt(annualization_days)
+    return out
+
+
+def _liquidation_stats(equity: pd.DataFrame, initial_cash_gbp: float,
+                       final_equity_mid: float, capital: float) -> dict:
+    """Liquidation-valued counterparts of return and drawdown.
+
+    equity_liq_gbp marks positions at exit value (bid side, FX fee, sell
+    taxes). The AUTHORITATIVE headline numbers are these; the mid-mark
+    versions stay as diagnostics (fixplans/framework/05_metrics_reporting.md).
+    Absent column (no venue liquidation valuer) yields no keys.
+    """
+    if "equity_liq_gbp" not in equity.columns:
+        return {}
+    liq = equity["equity_liq_gbp"].to_numpy()
+    peak = np.maximum.accumulate(liq)
+    dd = liq - peak
+    return {
+        "final_equity_liquidation_gbp": float(liq[-1]),
+        "total_return_liquidation_gbp": float(liq[-1]) - initial_cash_gbp,
+        "total_return_liquidation_rate_on_capital":
+            (float(liq[-1]) - initial_cash_gbp) / capital,
+        "max_drawdown_liq_gbp": float(-dd.min()),
+        "max_drawdown_liq_on_capital": float(-dd.min()) / capital,
+        "exit_costs_at_end_gbp": final_equity_mid - float(liq[-1]),
+    }
+
+
+def _longest_drawdown_days(equity: pd.DataFrame) -> float | None:
+    """Longest peak-to-recovery stretch of the equity curve, calendar days."""
+    curve = equity["equity_gbp"].to_numpy()
+    ts = [naive_utc(t) for t in equity["ts"]]
+    longest, peak_i = 0.0, 0
+    for i in range(1, len(curve)):
+        if curve[i] >= curve[peak_i]:
+            peak_i = i
+        else:
+            span = (ts[i] - ts[peak_i]).total_seconds() / _SECONDS_PER_DAY
+            longest = max(longest, span)
+    return longest
+
+
+def _holding_stats(trades: pd.DataFrame, final_ts: pd.Timestamp) -> dict:
+    """Average, median and extreme holding durations across episodes."""
+    episodes = holding_episodes(trades, final_ts)
+    if not episodes:
+        return {"holding_episodes": 0}
+    days = np.asarray([e["days"] for e in episodes], dtype=float)
+    return {
+        "holding_episodes": len(episodes),
+        "holding_episodes_open_at_end": int(sum(e["open_at_end"]
+                                                for e in episodes)),
+        "avg_holding_days": float(days.mean()),
+        "median_holding_days": float(np.median(days)),
+        "max_holding_days": float(days.max()),
+        "min_holding_days": float(days.min()),
+    }
+
+
 def _trade_stats(pnls: list[float]) -> dict:
     """Closed-trade statistics; signed and absolute medians kept apart."""
     if not pnls:
@@ -159,7 +289,21 @@ def _trade_stats(pnls: list[float]) -> dict:
         "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
         "avg_win_over_avg_loss": (float(wins.mean()) / float(-losses.mean())
                                   if wins.size and losses.size else None),
+        "expectancy_gbp": float(arr.mean()),
+        "largest_win_gbp": float(arr.max()),
+        "largest_loss_gbp": float(arr.min()),
+        "max_consecutive_wins": _longest_run(arr > 0),
+        "max_consecutive_losses": _longest_run(arr < 0),
         "pnl_median_signed_gbp": float(np.median(arr)),
         "pnl_median_abs_deviation_gbp": float(
             np.median(np.abs(arr - np.median(arr)))),
     }
+
+
+def _longest_run(mask: np.ndarray) -> int:
+    """Length of the longest consecutive True run."""
+    longest = current = 0
+    for hit in mask:
+        current = current + 1 if hit else 0
+        longest = max(longest, current)
+    return longest

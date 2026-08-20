@@ -188,6 +188,14 @@ class EngineConfig:
     fee_tier: str = "worst"         # "worst" | "actual" (fixplans 04 section 6)
     seed: int = 20260820
     lookahead_probe: bool = False   # diagnostic only; results are stamped PROBE
+    # Hard guard against zombie holdings: a HELD symbol whose feed produces
+    # no bar for more than this many calendar days (while the timeline keeps
+    # advancing) aborts the run instead of marking the position at its last
+    # price forever -- a suspended or delisted holding never losing value is
+    # survivorship bias in valuation form (backtest-discipline hard list
+    # item 8). Wall-time, not key counts: cross-exchange intraday timelines
+    # legitimately skip hundreds of keys while one venue is closed.
+    max_stale_days_with_position: int = 5
     strategy_name: str = "unnamed"
     strategy_version: str = "0.0.1"
     params: dict[str, Any] = field(default_factory=dict)

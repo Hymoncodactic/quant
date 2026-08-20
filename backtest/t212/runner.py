@@ -14,27 +14,32 @@ whatever is used is serialized into the run metadata.
 Public functions:
     run_t212_backtest(config, strategy, ...)   Returns (result, metrics, paths)
     daily_data_gaps(frames)                    Same-exchange daily gap counts
+    liquidation_valuer(broker)                 Per-share exit-value closure
 """
 
 from __future__ import annotations
 
-__all__ = ["run_t212_backtest", "daily_data_gaps"]
+__all__ = ["run_t212_backtest", "daily_data_gaps", "liquidation_valuer"]
 
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 
 from backtest.engine.engine import BacktestEngine, RunResult, StrategyFn
 from backtest.engine.feed import BarFeed, FxSeries, trading_key
-from backtest.engine.metrics import compute_metrics
+from backtest.engine.report import write_chart
 from backtest.engine.results import write_run
-from backtest.engine.types import EngineConfig
+from backtest.engine.metrics import compute_metrics
+from backtest.engine.types import Bar, EngineConfig
 from backtest.t212.broker_sim import T212BrokerSim
-from backtest.t212.costs import CostConfig, price_to_gbp
+from backtest.t212.costs import CostConfig, apply_spread, fill_cash_and_costs, \
+    price_to_gbp
 from backtest.t212.data_source import load_bars, load_fx
 from backtest.t212.faults import BAR_SECONDS, FaultConfig
-from backtest.t212.instruments import T212_ANNUALIZATION_DAYS, exchange_tz
+from backtest.t212.instruments import (T212_ANNUALIZATION_DAYS, exchange_tz,
+                                       security_kind)
 
 
 def daily_data_gaps(frames: dict[str, pd.DataFrame]) -> dict[str, int]:
@@ -63,6 +68,34 @@ def daily_data_gaps(frames: dict[str, pd.DataFrame]) -> dict[str, int]:
         span = {d for d in peers if min(own) <= d <= max(own)}
         gaps[symbol] = len(span - own)
     return gaps
+
+
+def liquidation_valuer(broker: T212BrokerSim):
+    """Per-share exit value closure injected into the engine.
+
+    Values one share at what a market SELL would fetch right now: bid side
+    of the spread (session-widened where applicable), worst-tier slippage,
+    the FX fee on the conversion, and the per-share US sell fees -- computed
+    by pricing a one-share sell through the real cost stack, so the exit
+    mark can never drift from the fill mechanics. The flat PTM levy has no
+    per-share form and is disclosed as unmodeled in the liquidation column.
+
+    The mid mark stays the diagnostic column; the authoritative tier reads
+    equity_liq_gbp for drawdown and final equity (backtest-discipline
+    section 2.10: unrealizable marks must not carry the headline).
+    """
+    def to_liquidation(symbol: str, bar: Bar, key: pd.Timestamp) -> Decimal:
+        exec_price = apply_spread(Decimal(str(bar.close)), False,
+                                  broker.half_spread(symbol, key),
+                                  broker.cost_cfg.slippage_bps)
+        fx_mid = None
+        if bar.quote_ccy == "USD":
+            fx_mid = broker.fx.rate_at(broker.fx_query_ts(key))
+        cash_delta, _, _ = fill_cash_and_costs(
+            Decimal("-1"), exec_price, bar.quote_ccy, fx_mid,
+            security_kind(symbol), symbol.endswith(".L"), broker.cost_cfg)
+        return cash_delta
+    return to_liquidation
 
 
 def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
@@ -99,15 +132,26 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
     feed = BarFeed(frames, exchange_tz, daily)
     fx = FxSeries(fx_frame, fx_duration)
     broker = T212BrokerSim(cost_cfg, fault_cfg, config.interval, fx, daily)
-    engine = BacktestEngine(config, feed, fx, broker, strategy, price_to_gbp)
+    engine = BacktestEngine(config, feed, fx, broker, strategy, price_to_gbp,
+                            to_liquidation=liquidation_valuer(broker))
     result: RunResult = engine.run()
 
     metrics = compute_metrics(result.equity, result.trades,
                               float(config.initial_cash_gbp),
                               T212_ANNUALIZATION_DAYS)
+    armed_empty = [fid for fid, keys in (
+        ("F3_outage_window", fault_cfg.outage_windows),
+        ("F4_reduce_only_window", fault_cfg.reduce_only_windows),
+        ("F11_stale_ticker", fault_cfg.stale_tickers),
+        ("F14_auth_outage_window", fault_cfg.auth_outage_windows),
+    ) if fault_cfg.on(fid) and not keys]
     extra = {
         "cost_config": asdict(cost_cfg),
         "fault_config": asdict(fault_cfg),
+        # Honesty stamp: these switches are ON but have nothing configured,
+        # so no outage/restriction stress actually fired in this run. The
+        # report layer must not claim it did.
+        "fault_switches_armed_but_empty": armed_empty,
         "data_gaps_daily": daily_data_gaps(frames) if daily else "not_computed",
         "fx_bar_duration_sec": fx_duration,
     }
@@ -115,4 +159,8 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
     if write:
         paths = write_run(result, config, metrics, extra_meta=extra,
                           out_dir=out_dir)
+        chart_path = Path(str(paths["meta"]).replace(".meta.json",
+                                                     ".chart.html"))
+        paths["chart"] = write_chart(
+            result, f"{chart_path.stem.replace('.chart', '')}", chart_path)
     return result, metrics, paths

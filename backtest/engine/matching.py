@@ -41,20 +41,23 @@ def match_market(bar: Bar) -> Decimal:
 def match_limit(is_buy: bool, limit: Decimal, bar: Bar) -> Decimal | None:
     """Limit order evaluation. Returns the raw fill price or None.
 
-    Buy: fills when the bar trades at or below the limit. If the bar OPENS
-    below the limit the fill is the (better) open; otherwise, if the low
-    reaches the limit, the fill is exactly the limit -- never better, which is
-    the conservative reading of an OHLC bar. Sell is the mirror image.
+    Buy: a gap open at or through the limit fills at the (better) open.
+    Otherwise the bar must trade STRICTLY through the limit (low < limit) to
+    fill, and then exactly at the limit -- never better. A bare touch
+    (low == limit) does NOT fill: a resting order at the bar's exact extreme
+    sits at the back of a queue that a one-tick touch rarely clears, so
+    granting the fill would systematically harvest bar extremes
+    (fixplans/framework/03_order_lifecycle.md section 2.1). Sell mirrors.
     """
     if is_buy:
         if _d(bar.open) <= limit:
             return _d(bar.open)
-        if _d(bar.low) <= limit:
+        if _d(bar.low) < limit:
             return limit
         return None
     if _d(bar.open) >= limit:
         return _d(bar.open)
-    if _d(bar.high) >= limit:
+    if _d(bar.high) > limit:
         return limit
     return None
 
@@ -98,11 +101,13 @@ def match_stop_limit(is_buy: bool, stop: Decimal, limit: Decimal,
     the whole bar via match_limit.
 
     Non-marketable leg (buy: limit < stop; sell: limit > stop): the fill
-    needs the bar to come back through the limit AFTER the trigger. Under
-    O-H-L-C, for a buy the trigger is on the way up (high) and the low prints
-    after it, so low <= limit is valid post-trigger evidence; for a sell the
-    trigger is on the way down (low) and the only post-trigger print is the
-    close, so the high must NOT be used -- the fill requires close >= limit.
+    needs the bar to come back STRICTLY through the limit AFTER the trigger
+    (a bare touch does not clear a resting queue, same rule as match_limit).
+    Under O-H-L-C, for a buy the trigger is on the way up (high) and the low
+    prints after it, so low < limit is valid post-trigger evidence; for a
+    sell the trigger is on the way down (low) and the only post-trigger print
+    is the close, so the high must NOT be used -- the fill requires
+    close > limit.
     """
     if is_buy:
         opened_through = _d(bar.open) >= stop
@@ -113,7 +118,7 @@ def match_stop_limit(is_buy: bool, stop: Decimal, limit: Decimal,
             return True, match_limit(True, limit, bar)
         if limit >= stop:
             return True, stop
-        return True, (limit if _d(bar.low) <= limit else None)
+        return True, (limit if _d(bar.low) < limit else None)
     opened_through = _d(bar.open) <= stop
     triggered = opened_through or _d(bar.low) <= stop
     if not triggered:
@@ -122,4 +127,4 @@ def match_stop_limit(is_buy: bool, stop: Decimal, limit: Decimal,
         return True, match_limit(False, limit, bar)
     if limit <= stop:
         return True, stop
-    return True, (limit if _d(bar.close) >= limit else None)
+    return True, (limit if _d(bar.close) > limit else None)

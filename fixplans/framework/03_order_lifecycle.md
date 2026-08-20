@@ -73,8 +73,8 @@ REJECTED。LOCAL/UNCONFIRMED/CONFIRMED 三个前置态在 bar 粒度不可分辨
 | 类型 | 成交条件与定价 |
 |---|---|
 | MARKET | t+1 开盘价 ± 半点差 ± 滑点（买加卖减）。闭市提交则为下一交易时段首根 bar 开盘 |
-| LIMIT 买 | open < limit → open 成交；否则 low ≤ limit → limit 成交。成交价再加半点差不劣于 limit（限价保障） |
-| LIMIT 卖 | 镜像 |
+| LIMIT 买 | open ≤ limit → open 成交（跳空即成）；否则须**严格穿透**（low < limit）才按 limit 成交，触及（low = limit）不成交——bar 极值上的挂单排在队尾，触及即全成会系统性收割 bar 极值。成交价加半点差后以 limit 封顶（限价保障） |
+| LIMIT 卖 | 镜像（high > limit 严格穿透） |
 | STOP 买 | high ≥ stop 触发 → max(open, stop) + 半点差 + 滑点。触发为单向转换：部分成交或延迟后余量按市价腿继续，不再复验 stop；执行延迟在**触发时**抽取（提交时抽取会漏掉延迟窗内的触发事件） |
 | STOP 卖 | 镜像 |
 | STOP_LIMIT | 触发同 STOP，触发后转 LIMIT。**可即成腿**（买 limit ≥ stop / 卖 limit ≤ stop）bar 内触发按 stop 触及价成交，禁止给出 bar 未交易过的价格；**非可即成腿**须触发后证据：买用 low ≤ limit（O-H-L-C 下 L 在触发之后），卖只能用 close ≥ limit（high 在触发之前，不得采信） |
@@ -118,3 +118,4 @@ AccountSummary.Cash），冻结额计入占用资金序列，用于本金口径
 |---|---|
 | 2026-08-20 | 初版 |
 | 2026-08-20 | 审查后修订：§2.1 STOP 触发单向持久化 + 触发时抽延迟；STOP_LIMIT 可即成/非可即成两种腿的撮合语义（卖侧只认 close 证据）；§2.2.7 限频语义定为拒单 + 引擎差分重试；撤单竞态一次性裁决（不逐 bar 重掷）；执行时资金闸扣除其它挂单的冻结额 |
+| 2026-08-21 | 保守性二次复核：挂单（LIMIT 与 STOP_LIMIT 非可即成腿）由「触及即成」改为「严格穿透才成」——触及即全成属成交概率乐观（复核发现 2）；新增不同订单间冷却期（§2.2 准入后、撮合资格处强制，参数见 04 §3 冷却行） |

@@ -32,6 +32,7 @@ import pandas as pd
 
 from backtest.engine.feed import BarFeed, FxSeries, MarketView
 from backtest.engine.ledger import Ledger
+from backtest.engine.metrics import naive_utc
 from backtest.engine.types import (INTERVAL_SECONDS, Bar, EngineConfig, Fill,
                                    OrderSpec, OrderStatus)
 
@@ -41,6 +42,9 @@ _QTY_STEP = Decimal("0.00000001")
 # to_base_ccy(price, quote_ccy, fx_mid) -> price in the account currency.
 # Injected by the venue runner so the engine holds no venue currency rules.
 BaseCcyConverter = Callable[[Decimal, str, Decimal | None], Decimal]
+# to_liquidation(symbol, bar, key) -> per-share EXIT value in the account
+# currency (bid side, conversion fee, sell taxes). Optional; venue-supplied.
+LiquidationValuer = Callable[[str, Bar, pd.Timestamp], Decimal]
 StrategyFn = Callable[[MarketView, "PortfolioView", dict], dict[str, Decimal]]
 
 
@@ -66,16 +70,19 @@ class BacktestEngine:
 
     def __init__(self, config: EngineConfig, feed: BarFeed, fx: FxSeries,
                  broker, strategy: StrategyFn,
-                 to_base_ccy: BaseCcyConverter) -> None:
+                 to_base_ccy: BaseCcyConverter,
+                 to_liquidation: LiquidationValuer | None = None) -> None:
         self.config = config
         self.feed = feed
         self.fx = fx
         self.broker = broker
         self.strategy = strategy
         self.to_base = to_base_ccy
+        self.to_liquidation = to_liquidation
         self.ledger = Ledger(initial_cash_gbp=config.initial_cash_gbp)
         self.fills: list[Fill] = []
         self._last_bar: dict[str, Bar] = {}
+        self._last_seen_key: dict[str, pd.Timestamp] = {}
 
     # ------------------------------------------------------------------
     # [1] Main loop
@@ -87,6 +94,7 @@ class BacktestEngine:
             self._assert_fill_timing(fills)
             self.fills.extend(fills)
             self._last_bar.update(bars)
+            self._guard_stale_positions(key, bars)
             view = self._market_view(key, bars)
             targets = self.strategy(view, self._portfolio_view(), self.config.params)
             for spec in self._diff_to_specs(targets):
@@ -95,8 +103,15 @@ class BacktestEngine:
             # step enters the occupancy series; marking before would let a
             # reservation that resolves next bar escape the capital peak
             # (fixplans/framework/05_metrics_reporting.md section 1.1).
-            self.ledger.mark(step, key, self._valuation_prices(key))
+            self.ledger.mark(step, key, self._valuation_prices(key),
+                             self._liquidation_prices(key))
         return self._collect()
+
+    @property
+    def last_bars(self) -> dict[str, Bar]:
+        """Latest bar seen per symbol; the venue runner values end-of-run
+        positions (liquidation estimate) from these."""
+        return dict(self._last_bar)
 
     # ------------------------------------------------------------------
     # [2] Per-step helpers
@@ -138,6 +153,38 @@ class BacktestEngine:
             prices[symbol] = self.to_base(Decimal(str(bar.close)),
                                           bar.quote_ccy, fx_mid)
         return prices
+
+    def _liquidation_prices(self, key: pd.Timestamp) -> dict[str, Decimal] | None:
+        """Per-share exit values from the venue's liquidation valuer."""
+        if self.to_liquidation is None:
+            return None
+        return {symbol: self.to_liquidation(symbol, bar, key)
+                for symbol, bar in self._last_bar.items()}
+
+    def _guard_stale_positions(self, key: pd.Timestamp,
+                               bars: dict[str, Bar]) -> None:
+        """Abort when a held symbol's feed has died (wall-time threshold).
+
+        A position marked forever at its last pre-suspension price is
+        survivorship bias in valuation form; the run must fail loudly and be
+        handled explicitly, never priced silently. Weekends and cross-venue
+        closed hours stay far below the day threshold by construction.
+        """
+        now = naive_utc(key)
+        limit = pd.Timedelta(days=self.config.max_stale_days_with_position)
+        for symbol, pos in self.ledger.positions.items():
+            if pos.qty == ZERO:
+                self._last_seen_key.pop(symbol, None)
+                continue
+            if symbol in bars:
+                self._last_seen_key[symbol] = now
+                continue
+            last_seen = self._last_seen_key.get(symbol)
+            if last_seen is not None and now - last_seen > limit:
+                raise RuntimeError(
+                    f"held symbol {symbol} produced no bar since {last_seen} "
+                    f"(now {now}, threshold {limit}); feed died while a "
+                    f"position is open -- handle the suspension explicitly")
 
     def _market_view(self, key: pd.Timestamp,
                      bars: dict[str, Bar]) -> MarketView:

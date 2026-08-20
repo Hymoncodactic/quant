@@ -55,15 +55,15 @@ class T212BrokerSim:
         self._pending_submits = 0
         self._current_step = -1
         self._current_key: pd.Timestamp | None = None
-        # One bar interval as wall time. Order eligibility is expressed in
-        # TIME because merged multi-exchange timelines interleave: on 1h data
-        # the US :30 grid and the LSE :00 grid put consecutive STEPS only 30
-        # minutes apart, so counting steps would let a fill use the decision
-        # bar's close half an interval before it exists.
+        # One bar interval as wall time. Eligibility is TIME-based: merged
+        # multi-exchange timelines interleave (US :30 grid vs LSE :00 grid),
+        # so step counts would leak the decision bar's unfinished close.
         self._interval = pd.Timedelta(seconds=self.faults.bar_seconds)
         # F13 volume participation is capped per SYMBOL per bar across all
         # orders (zipline's per-asset semantics), not per order.
         self._bar_volume_used: dict[str, Decimal] = {}
+        # Cooldown bookkeeping: last fill (key, order_id) per symbol.
+        self._last_fill: dict[str, tuple[pd.Timestamp, int]] = {}
 
     # ------------------------------------------------------------------
     # [1] Queries
@@ -83,13 +83,10 @@ class T212BrokerSim:
                     if o.remaining_qty < ZERO), ZERO)
 
     def order_quantity_step(self) -> Decimal:
-        """Smallest order-quantity increment the venue accepts right now.
-
-        4 dp while F8 is on (community evidence, catalog F8); otherwise the
-        8 dp holding grid. The engine floors order deltas to this step so a
-        fractional target is dust-truncated once instead of being rejected
-        with quantity_precision_mismatch on every bar forever.
-        """
+        """Smallest order-quantity increment the venue accepts right now:
+        4 dp while F8 is on (catalog F8), else the 8 dp holding grid. The
+        engine floors order deltas to this so a fractional target is
+        dust-truncated once, not rejected on every bar forever."""
         decimals = self.faults.qty_decimals()
         return Decimal(1).scaleb(-decimals) if decimals is not None else _QTY_STEP
 
@@ -236,7 +233,8 @@ class T212BrokerSim:
         merged-timeline steps; see __init__ for why steps are not intervals.
         """
         raw = None
-        if bar is not None and key >= order.eligible_ts:
+        if bar is not None and key >= order.eligible_ts \
+                and self._cooldown_ok(order, key):
             raw = self._raw_price(order, bar, key)
         if order.cancel_requested:
             # A cancel resolves exactly once: either it wins now, or it loses
@@ -251,6 +249,19 @@ class T212BrokerSim:
         if raw is None:
             return None
         return self._fill(order, bar, raw, step, key, ledger)
+
+    def _cooldown_ok(self, order: Order, key: pd.Timestamp) -> bool:
+        """Cooldown between fills of DIFFERENT orders on one symbol (hard
+        list item 7; knob in CostConfig). 1 = structural floor, always
+        passes; same-order F13 rollover is one execution episode, exempt."""
+        cooldown = self.cost_cfg.cooldown_bars
+        last = self._last_fill.get(order.spec.symbol)
+        if cooldown <= 1 or last is None:
+            return True
+        last_key, last_order_id = last
+        if last_order_id == order.order_id:
+            return True
+        return key >= last_key + cooldown * self._interval
 
     def _cap_allows(self, order: Order, bar: Bar | None) -> bool:
         """Whether the per-symbol bar volume budget still admits any shares."""
@@ -362,6 +373,7 @@ class T212BrokerSim:
             order.ptm_charged = True
         if cap is not None:
             self._bar_volume_used[spec.symbol] = used + abs(qty)
+        self._last_fill[spec.symbol] = (key, order.order_id)
         if is_buy:
             spent = -cash_delta
             remaining_res = max(ZERO, order.reserved_gbp - spent)
