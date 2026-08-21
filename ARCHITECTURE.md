@@ -18,6 +18,8 @@
 | `data/` | 全部落地数据 | gitignore，见 §3 |
 | `docs/data/<source>/` | 数据的**说明与重建凭据**：`DATA_SPEC.md`、`MANIFEST.jsonl`、`GAPS.csv` | 入库。见 §3 |
 | `research/` | `prereg/` 预注册、`decisions/` 裁定、`notes/` 笔记 | |
+| `fixplans/` | 回测框架建设计划（framework / t212_faults / validation 三类） | 代码实现以计划为准，先改计划再改代码 |
+| `vendor/` | 第三方参考代码的浅克隆，只读参考 | gitignore（`/vendor/`），不入库 |
 | `reports/` `logs/` `scripts/` `tests/` `secrets/` | 见下 | |
 
 ## 2. 代码分层
@@ -66,6 +68,29 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `backtest/okx/` | OKX 适配：费率档、资金费率、滑点假设、年化因子 365 |
 | `backtest/t212/` | T212 适配：佣金、印花税、FX 费、交易日历、年化因子 252 |
 | `backtest/results/` | 结果落地，参数进文件名，gitignore |
+
+模块登记（定位索引，设计依据见 `fixplans/`）：
+
+| 模块 | 职责 |
+|---|---|
+| `engine/types.py` | 枚举与数据结构：Bar、Order、Fill、EngineConfig、INTERVAL_SECONDS |
+| `engine/broker.py` | BrokerSim 协议（typing.Protocol）：回测模拟器与将来实盘适配器的同一接口 |
+| `engine/feed.py` | 多标的 bar 流对齐、质量闸、FX 序列、MarketView（cutoff 视图） |
+| `engine/matching.py` | 纯撮合规则：各订单类型的触发判定与原始成交价（O-H-L-C 序） |
+| `engine/ledger.py` | GBP 现金（Decimal）、持仓、占用资金序列、权益估值 |
+| `engine/engine.py` | 主循环：结算成交 → 估值 → 调策略 → 差分下单 |
+| `engine/metrics.py` | 业绩率与风险比率（口径见 `fixplans/framework/05_metrics_reporting.md`） |
+| `engine/results.py` | trades / equity / meta 三件套落地 |
+| `engine/report.py` | 每轮图表（净值 mid/清算双线 + 在场底色 + 逐标的开仓区间横道） |
+| `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `fixplans/framework/06_strategy_plugin.md`） |
+| `okx/data_source.py` | 读 Binance 归档 spot klines（`data/binance/curated/`，经 `common/paths`，可注入 data_root）；okx 撮合/成本适配器待建 |
+| `t212/data_source.py` | 读 `data/t212/curated/` parquet（经 `common/paths`，可注入 data_root） |
+| `t212/instruments.py` | 交易所时区映射、半点差表、印花税适用性、年化因子 252 |
+| `t212/costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数（依据均注明出处） |
+| `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212_faults/01_fault_catalog.md`） |
+| `t212/admission.py` | 订单准入检查（固定顺序）与最坏成本预估，供 broker_sim 调用 |
+| `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、成交定价、费用、延迟 |
+| `t212/runner.py` | 组装点：数据 → feed → broker → engine → metrics → 落地，一次调用 |
 
 纪律见 `/backtest-discipline`。
 

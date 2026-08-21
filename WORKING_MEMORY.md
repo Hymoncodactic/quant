@@ -40,6 +40,18 @@
   `sync_to_git.command` 提交前自动重建。manifest 不含时间戳，数据无变更时重跑逐字节相同。
 - **数据源 ≠ 交易场所**：`common/paths.py` 的 `DATA_SOURCES`（binance/okx/t212）
   与 `VENUES`（okx/t212）分开。binance 只供数据，不下单。
+- **T212 回测框架 v0 已建成**（2026-08-20，工作树分支
+  `claude/trading212-backtest-framework-b729c3`，未提交）：事件驱动 bar 级引擎
+  `backtest/engine/`（8 模块）+ T212 适配 `backtest/t212/`（7 模块，含 16 类
+  平台故障注入），71 项单测 + 真实数据冒烟 6 项判别力断言全过。设计计划与
+  裁定在 `fixplans/`（9 份，含变更记录）；权威凭据在 `data/reference/`
+  （T212 OpenAPI v0 规范 + api.md 镜像 + 5 份调研 JSON，均 2026-08-20 取回）；
+  9 个参考仓库浅克隆于 `vendor/`（已 gitignore，清单与 commit 见
+  `fixplans/framework/01_architecture.md` §8）。
+- **已实证的 t212 bar 语义**（S5，判别力样本）：日内 ts = bar 开始时刻；
+  日线 ts = 交易所本地零点转 UTC，伦敦标的与 GBPUSD=X 在 BST 期间落在
+  **前一 UTC 日 23:00**——跨标的日线对齐必须按交易所本地日期。已补记
+  `docs/data/t212/DATA_SPEC.md` §3。
 
 - **股票方向已开工（2026-08-20）**：美股做多、科技股、日频。第一轮
   KDJ 入场 + MACD 筛选 + KDJ 死叉出场裁定**不通过**
@@ -70,10 +82,13 @@
 | 10 | ~~`data/binance/` 无 `raw/` 层~~ | 已决 | 2026-08-20 用户选 (a)：权威 raw 就在 `data.binance.vision`，本地只留 curated，重建凭据落 `docs/data/<source>/MANIFEST.jsonl`。已实现并验证 |
 | 11 | `data/` 的备份（≠ 版本管理，git 已排除） | 用户 | **挂起：等外置磁盘就位**（用户 2026-08-20 明言）。重下载代价实测约 11.9 小时（66.7 GB ÷ 1.6 MB/s，并发不提升）。磁盘就位后应跑一次 `build_data_manifest.py --hash-local` 建立本地基线，此后可检出位腐 |
 | 12 | manifest 的 `sha256_upstream` 字段目前全为 null | 可选 | 填满需 9,317 次 `.CHECKSUM` 请求（免费公共服务）。取回函数已单测通过。价值有限：下载时 `fetch_to_frame(verify=True)` 已逐个校验过。真正该做的是 `--hash-local`（见未决项 11） |
-| 13 | KDJ+MACD 手算实际规则与预注册规则不符（预注册规则为空集） | 用户 | 需用户说明手算时的实际条件（K<30 是判在哪一根、MACD 是否同 bar 判），定位后重跑；结论 2~5 不受影响 |
-| 14 | ~~research 研究件是否入库~~ | 已决 | 用户 2026-08-20 经 create-PR 命令裁定入库：PR #1（branch claude/suspicious-ramanujan-73071a），70 文件 |
-| 15 | ~~数据申请（Norgate / Polygon）~~ | 已决 | 用户 2026-08-20 裁定**不购买**付费数据，迭代限本地数据 |
-| 16 | A0 接入 `backtest/` 框架做横向对比回测（含换手率、平均/中位持仓时间） | 本方待执行 | **前置：等另一会话完成对 `/Users/hb/Desktop/quant/backtest` 的框架修正**。构想：框架读 `trading212/strategy/` 下的信号模块即插即用（ARCHITECTURE §2.0 信号唯一副本） |
+| 13 | T212 费用细节的经验校验：FX 费与税费的舍入规则、PTM 对 ETF 是否实收、最小订单值现行值（帮助页已下线，仅 Wayback + 员工帖）、下单数量精度现行上限（官方无文档，实测 4 位） | 用户 + demo 账户实测 | 待将来对 demo 环境下单后用 `GET /equity/history/orders` 的 walletImpact.taxes 逐项对账；回测成本列已按同一枚举命名以便对账 |
+| 14 | T212 API 的 POST→FILLED 实测延迟无公开数据（实盘 API 下单 2025-10-01 才开放）；故障注入的 p/q/r/k 概率参数全为推断值 | 用户裁定是否实测 + 敏感性 | 延迟档位与证据见 `fixplans/t212_faults/02_latency_model.md`；报告结论前须跑参数敏感性 |
+| 15 | 回测框架待办：F3 outage 抽样发生器（v0 仅显式窗口）；`avoid_first_bar` 由策略层承担；对账层故障目录（fault_catalog §4）待实盘执行层设计时启用 | 后续任务 | 见各 fixplan 变更记录 |
+| 16 | KDJ+MACD 手算实际规则与预注册规则不符（预注册规则为空集） | 用户 | 需用户说明手算时的实际条件（K<30 是判在哪一根、MACD 是否同 bar 判），定位后重跑；结论 2~5 不受影响 |
+| 17 | ~~research 研究件是否入库~~ | 已决 | 用户 2026-08-20 经 create-PR 命令裁定入库：PR #1（branch claude/suspicious-ramanujan-73071a），70 文件 |
+| 18 | ~~数据申请（Norgate / Polygon）~~ | 已决 | 用户 2026-08-20 裁定**不购买**付费数据，迭代限本地数据 |
+| 19 | A0 接入 `backtest/` 框架做横向对比回测（含换手率、平均/中位持仓时间） | 本方待执行 | **前置：等另一会话完成对 `/Users/hb/Desktop/quant/backtest` 的框架修正**。构想：框架读 `trading212/strategy/` 下的信号模块即插即用（ARCHITECTURE §2.0 信号唯一副本） |
 
 ## 时间线
 
@@ -132,8 +147,19 @@
 | 2026-08-20 13:1x | `sync_to_git.command` 改为两步：先用 `.venv/bin/python` 重建 manifest（需 pyarrow，系统 python3 没有），再用系统 python3 跑 `sync_to_git.py`（纯标准库）。manifest 失败只警告不阻断同步，理由：分区损坏是数据问题，不该连带阻止当天源码入库。新增 `--no-manifest`。⛔ `--overwrite-remote` 仍刻意不可由双击触发。回滚：还原该文件 |
 | 2026-08-20 13:1x | 验证（C 类官方源 + B 类本地数据）：manifest 反推的归档 URL 抽样 6/6 命中 200，覆盖 spot/um × daily/monthly × tag取period/取dataset × stem带横杠/不带；负例 4/4 按预期 404（freq 改错、market 改错、stamp 未展开横杠、klines 用 dataset 当 tag），证明四条推导分支每条都有判别力。行数 3/3 与全量读取一致且取值有 836 种（非常数）。`_meta` 汇总等于逐行求和。确定性：重跑三份 manifest 全部 sha256 不变。密钥闸在 .jsonl 内植入假密钥能命中（第 2 行），证明 3.19 MiB 的 manifest 是真扫了而非被跳过 |
 | 2026-08-20 15:2x | 用户开启第三轮（S6）：策略复杂化，HF 划分市场状态 + LF 出信号，日内小时频以下，零成本信号层验证，目标年化>=30% 且 MaxDD<=20%，标的框死本地数据，可申请新数据。文献综述工作流启动（7 方向并行） |
+| 2026-08-20 15:3x | T212 回测框架开工（工作树 `claude/trading212-backtest-framework-b729c3`）。多智能体调研 5 研究员取回：T212 公开 API v0 完整契约（OpenAPI 规范落 `data/reference/t212_openapi_v0_20260820.yaml` 并本地抽验关键 schema）、费用与税费全表、延迟证据链（无官方 SLA；常规秒级~20s、拥堵 1–26 分钟、SETSqx 仅日内 5 次竞价、IB 中介宕机 2 例、GME 只减仓窗口）、30 条带来源的平台 bug 实例、9 框架源码级调研。bt 判不适用：`vendor/bt/bt/core.py:1633` 当根价即时成交、现金为单一无币种标量、默认整数股。9 仓库浅克隆 `vendor/`，`.gitignore` 增根锚定 `/vendor/` |
 | 2026-08-20 15:4x | 新建 `research/regime_lab/`（data/vol/metrics/rigor/engine/configs/run_search/validate_rv_proxy/acceptance 九模块）。**HF 代理桥验证**：Yang-Zhang(20d) 对小时线 RV 在 711 重叠日 Pearson 0.93~0.98、应激分类一致 0.87~0.97（7 标的），日线状态层合法（`regime_lab/results/rv_proxy_validation.csv`）。acceptance 7/7（SPA 检验水平 2/20@10%、DSR 幸运儿 0.43/真技能 0.999、去 shift 作弊臂 +20.1% 年化） |
 | 2026-08-20 16:0x | 预注册 `research/prereg/20260820_regime_lf_prereg.md` 冻结：家族 450 配置（3 收益流×5 信号×5 波动闸×2 趋势闸×3 波动目标）、两段式 S=2000-2017 / V=2018-2026、选择=S Calmar 前5、判据=目标线+SPA+DSR；冻结前查看过 EW18 基准指标已在预注册 §7 披露并禁其入围 |
 | 2026-08-20 16:1x | **第三轮裁定：目标判据不通过——差之毫厘且性质清楚**。入围第一 on·tsmom252·p80x0·qqq200：V 段 CAGR 29.32%（差 0.68pp）/ MaxDD 10.91% / Sharpe 2.01 / 2022 全年 -0.7%。S→V Calmar 秩相关 0.873。归因：收益=隔夜异象+存活者池（裸隔夜 EW18 已 27.3%），双闸只压回撤（36.6%→10.9%）；SPA p=0.53 无平均收益边际；QQQ 单资产对照 15.5%/11.3%（存活者-free 下 30% 不成立）；隔夜流成交额约 168 倍本金/年，全项目最成本脆弱的结论。未入围邻格 on·always·p80x0·qqq200 字面过线（32.0%/13.9%）但拒绝事后采纳，登记为下轮先验候选 |
-| 2026-08-20 17:0x | 两工作流收口：文献综述 76 篇落 `research/notes/20260820_regime_lf_literature.md`（隔夜异象在指数级 2015 后衰减、730 天小时线仅够确认不够搜索、分钟 RV 对状态层仅 +0.02 夏普增量）；对抗验证 6 审计员 5 confirmed + 1 发现 SPA p_lower 居中缺陷（应 min(mean,0)，原实现方向保守），已修复重跑：仅 p_lower 0.5445→0.3670，其余逐位不变。数据申请两项待用户裁定（未决项 #15） |
+| 2026-08-20 16:xx | `fixplans/` 建立（README + framework 5 份 + t212_faults 2 份 + validation 2 份）。本地实证 bar 语义两条（判别力样本）：日内 ts=bar 开始（AAPL 1h 首根夏 13:30/冬 14:30 UTC，随 DST 切换）；日线 ts=交易所本地零点转 UTC，伦敦标的 BST 期间落前一 UTC 日 23:00（SGLN.L 交易日 06-29 → ts 06-28 23:00Z）。后者补记入 `docs/data/t212/DATA_SPEC.md` §3。回滚：删 fixplans/ 与 DATA_SPEC 增补段 |
+| 2026-08-20 17:0x | 两工作流收口：文献综述 76 篇落 `research/notes/20260820_regime_lf_literature.md`（隔夜异象在指数级 2015 后衰减、730 天小时线仅够确认不够搜索、分钟 RV 对状态层仅 +0.02 夏普增量）；对抗验证 6 审计员 5 confirmed + 1 发现 SPA p_lower 居中缺陷（应 min(mean,0)，原实现方向保守），已修复重跑：仅 p_lower 0.5445→0.3670，其余逐位不变。数据申请两项待用户裁定（未决项 #18） |
 | 2026-08-20 17:1x | 用户四项裁定（S6）：(a) 入围第一名命名 **A0 策略**，已写入私有长期记忆（strategy-a0-definition.md），后续实施并迭代；(b) 不购买付费数据；(c) 三轮研究件经 create-PR 入库：PR https://github.com/Hymoncodactic/quant/pull/1（密钥扫描与体积检查通过，42MB parquet 被 *.parquet 规则排除）；(d) 新任务排队：等另一会话完成 backtest/ 框架修正后，把 A0 接入该框架做对比回测，输出含换手率、平均/中位持仓时间的全套评判数据，信号放 trading212/strategy/ |
+| 2026-08-20 17:xx | 引擎代码落地：`backtest/engine/` 8 模块（types/feed/matching/ledger/engine/metrics/results/broker 协议）+ `backtest/t212/` 7 模块（data_source/instruments/costs/faults/admission/broker_sim/runner），16 类故障开关，`tests/backtest/` 判别力测试，`scripts/20260820_t212_backtest_smoke.py` 真实数据冒烟（BST 边界 + 2026-07-03 美假日窗口，6 项断言含 FX 前视判别）。`common/paths.py` 增 `equity_curated_root`/`equity_interval_dir`。ARCHITECTURE §1/§2.2 同步登记。回滚：整棵工作树未提交，`git checkout -- .` + 删除未跟踪件即回 |
+| 2026-08-20 23:2x | 对抗性审查工作流（4 查错员 ×39 发现，每条 2 反驳者验证；21 个验证员因会话限额中断，由本方逐条裁定）→ 修复 24 项。关键修复：混交易所 1h 时间轴 30 分钟前视泄漏（撮合资格由「合并时间轴步数」改为「时间」eligible_ts，引擎加日内成交时间断言；美股 1h 在 :30 网格、伦敦在 :00 网格，步数制会用到未形成的收盘信息）；止损限价可即成腿曾按 bar 未交易过的价格成交；卖侧止损限价曾采信触发前的 high；STOP 部分成交后丢失触发态；PTM 曾按笔而非按订单收；夏普与年化收益曾用不同日基底；重叠点差窗口未随 DST；F13 上限改按标的×bar 聚合；执行时资金闸曾可挪用他单冻结。三项按 fixplans 规则改计划留痕（F12 拒单+重提语义、F3 抽样发生器降待办、avoid_first_bar 归策略层）。broker_sim 超 400 行拆出 admission.py。终态：71 测试 + 冒烟 6/6 全过；全部 9 份 fixplan 补变更记录。回滚：同上一行 |
+| 2026-08-21 00:3x | 用户四项裁定（S6）：(a) 回测框架并入 main —— 工作树分支提交 `adcb85b` 并快进合并，`backtest/` 与 `fixplans/` 已在主目录；(b) 股票线接入三个分组（uk_tradable/us_equity/us_etf）；(c) 股票线周期 1h；(d) crypto 线数据源 = binance spot 1m K 线 + um bookTicker L1。裁定与限定（1h 仅约 730 天、us_etf 仅研究、us_equity 存活者偏差、crypto 撮合适配器未建）落 `research/decisions/20260821_backtest_data_sources.md`。混交易所 1h 配置真实数据验证通过：AAPL+VUSA.L 两笔成交均恰在提交后 1 整小时的 bar 成交（时间制资格生效）。待办：okx 撮合/成本适配器（先 S4 取证 OKX 费率）。回滚：`git revert adcb85b` |
+| 2026-08-21 00:xx | 策略接入与双线数据源读取层：新增 `backtest/engine/strategy_loader.py`（按 (venue, name, version) 加载 `<venue>/strategy/` 模块，校验 STRATEGY_NAME/STRATEGY_VERSION 与 `compute_targets` 契约，契约文档 `fixplans/framework/06_strategy_plugin.md`）、`backtest/okx/data_source.py`（Binance 归档 spot klines → 引擎 bar schema，UTC 日对齐、USDT 计价；本地存量 9 个 USDT 对 × 1d/1m × 2017-08 起）；feed 计价币白名单参数化并纳入 USDT；`common/paths.py` 的 `binance_partition_dir` 增 data_root 注入。80 项测试全过；okx 读取层真实数据抽验（2024-02-25~03-05 跨闰日 10 行/标的）。待办：okx 撮合/成本适配器（OKX 费率等 S4 现查）+ 账本 `_gbp` 字段中性化（PATCH 级，须字节级等价证明）。回滚：删三个新文件与 06 号计划，还原 feed/paths 的新参数 |
+| 2026-08-21 01:2x | A0 接入回测框架完成（等待前一会话框架修正结束后执行）。信号唯一副本落 `trading212/strategy/a0_v0_0_1.py`（v0.0.1，held 适配：日频下隔夜腿不可表达，引擎次 bar 开盘成交），参数基线 `trading212/config/strategies/a0_v0_0_1.yaml`，入口 `scripts/20260821_a0_framework_backtest.py`。4 臂消融（a0/tsmom/ma200/bh）× 2 费率档全量 2010-2026（2018 实盘化）。净值口径：a0-actual CAGR 20.97%/回撤 21.85%/Sharpe 1.10/2022 年 -10.9%，bh 35.47%/45.68%；持仓均值 60.6 天、中位 22 天、双边换手 3.06 倍/年、8.6 年成本 £1,854（FX 费为主，~25bp/年）。裁定 `research/decisions/20260821_a0_framework_comparison.md`（含框架口径与净值口径并列的理由：占用本金口径对永不卖出的 bh 不可横比） |
+| 2026-08-21 01:2x | 框架两处修正（80 测试全过后落地）：feed.validate_frame 的 OHLC 次序检验加相对容差 1e-9（实测复权股票违规全为 1 ULP 浮点伪影，INTC 137 根等；超容差仍中止）；data_source 对 GBPUSD=X 读入 H/L 包络（Yahoo FX 收盘异截面，103 根 ≤6e-4，引擎只读 FX 收盘，零数字影响）。fixplans/framework/02 已补变更记录。回滚：还原两文件该两处 |
+| 2026-08-21 01:5x | 保守性二次复核（自查 + 独立对抗复核 agent，6 条乐观路径确认）并修正，合并 `22e450a` 进 main：挂单改严格穿透才成交；权益增清算价值列 `equity_liq_gbp`（卖侧点差/滑点/FX费/卖侧税逐份估值），权威回撤与终值改读清算列；冷却期 `cooldown_bars`（worst 2 / actual 1，同订单结转豁免）；持仓中数据断供 >5 天硬报错；F3/F4/F11/F14 开而空配在元数据标注；股息毛额复权乐观量级（美股约 20–25bp/年）写入 04 §7。产出扩展：指标全集 33 键（含 sortino、持仓时长均值/中位/删失、expectancy、连胜连亏、最长回撤时长、清算版收益回撤、单笔占用统计）+ 每轮 `<stem>.chart.html`（净值双线 + 在场底色 + 逐标的开仓区间横道）。说明文档三份：`backtest/README.md`（通用接入 + 十条保守清单符合性表）、`backtest/t212/README.md`、`backtest/okx/README.md`。89 测试 + 冒烟 6/6 全过。回滚：`git revert 22e450a` |
+| 2026-08-21 10:0x | 用户问 A0 能否用 £1000 起步实盘。**资金规模实测**（`backtest/results/a0_capital_scaling_20260821.csv`）：£1000 与 £10000 的 CAGR 20.93% vs 20.97%、回撤同为 21.85%、成本拖累同为 3.4%，最小成交 £46 > T212 £1 下限——**规模无关，£1000 机械可行**。但 £55/槽**买不起 18 只中任何一只的整股**（最便宜 INTC £67.7），**碎股支持是承重假设**；已取证支持（S4：T212 帮助中心 Wayback 2024-12-15，碎股内部撮合、不加点差、仅 0.15% FX 费）。**上线阻塞项（非策略问题）**：`trading212/execution/` 0 行、无 `client.py`、无 paper/live 配置（模板 rest_base 为空）、A0 从未跑过模拟盘（违反 CLAUDE.md §3.3）、T212 API 无行情接口需另接数据管线。**手动执行可行性**：8.6 年 960 笔 = 111 笔/年，仅 313 个交易日有动作（约 36 天/年），其中 215 天只有 1 笔；但闸切换日会一次性 9~18 笔（最大 18）。裁定：工程可行性已答，是否投入真金由用户裁定（本方不提供投资建议、不代下单）|
+| 2026-08-21 10:4x | A0 £1,000 交互式图表交付（`/html-report` 三件套：`research/regime_lab/report/{make_a0_report_data.py,a0_report_template.html,build_a0_report.py}` → `reports/a0_cap1000_20260821.html`，4.8MB 自包含）。锚定断言对 `a0_capital_scaling_20260821.csv` 四项全过（CAGR/回撤/夏普/末值）。图为三格共轴：净值+开仓区间底纹+买卖成交点 / 持仓占比 / 回撤。配色走 dataviz 校验器：浅色模式绿↔红 CVD ΔE 7.2 落入警告带，已用**形状**（▲/▼）作二级编码满足规则；暗色全 PASS。视觉 QA：5 trace、27 shape、无横向溢出、跨块一致（末值 £5,446.98 == KPI；最深 −21.85% == KPI）、交互冒烟 6 项全过、控制台零报错。修掉三处缺陷：模板无效三元表达式、暗色回撤填充硬编码浅色、主题按钮 fixed 定位压正文。**新发现**：最深回撤不在 2022 年（该年 −10.9%，闸生效），而在 **2024-07-10→09-06 的 −21.85%**——闸对慢熊有效、对急跌无预警 |
