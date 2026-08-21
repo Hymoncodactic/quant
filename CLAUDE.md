@@ -310,6 +310,7 @@ quant/
 | `.claude/skills/<name>/` | 不需要，`SKILL.md` 本身即说明 |
 | 项目根目录 | 不需要，由 `ARCHITECTURE.md` 与 `CLAUDE.md` 覆盖 |
 | gitignore 的运行时产物目录：`logs/`、`reports/`、`backtest/results/`、`data/`、`secrets/` | 不需要，放进去也不入库。其职责在 `ARCHITECTURE.md` §1 与父目录 `README.md` 中登记，允许其在磁盘上为空 |
+| 父目录 `README.md` 已逐个列出其全部文件的子目录 | 不需要，例如 `fixplans/framework/`、`fixplans/t212_faults/`、`fixplans/validation/` 三者的每个文件均已在 `fixplans/README.md` 中登记。此时另写子目录 `README.md` 属双份维护，反而会失同步 |
 
 固定结构，六节，缺一不可：
 
