@@ -23,13 +23,23 @@
   且并发不提升（单连接 1.66、4 连接 1.54 MB/s）。灌满 500 GB 需约 90 小时。
   选数据集应按「每小时下载能换到多少研究价值」排序，不是按 GB。
 - 本机内存仅 8 GB；bookTicker 单日 2665 万行，解析峰值约 1 GB/worker，故 workers=4。
-- **bookTicker 过夜任务运行中**：可断电续传，用 `scripts/resume_bookticker.command`
-  双击恢复；或 `caffeinate -i ./.venv/bin/python -u scripts/20260819_ingest_crypto_bookticker.py`。
+- **bookTicker 已 100% 完成**：640/640 文件，BTC+ETH 各 320 天（2023-05-16 ~ 2024-03-30），
+  81.9 亿行，66.7 GB，零缺口零交叉盘口。该数据集已停更，不再需要更新。
+- **日常更新入口**：双击根目录 `update_data.command`，或
+  `./.venv/bin/python -u scripts/update_data.py`。可反复运行、可随时中断。
 - 已纳入 git 版本管理，remote `origin` = `https://github.com/Hymoncodactic/quant.git`，
   分支 `main`。同步入口：`python3 scripts/sync_to_git.py`（每日手动执行）。
 - **该 GitHub 仓库为 PUBLIC**（用户 2026-08-19 明确裁定保持公开）。今后一切入库内容
   全网可读且被永久缓存：策略逻辑、参数、口径裁定入库前须自行判断是否可公开。
-  `.gitignore` 已排除 `secrets/`、`data/`、`logs/`、`reports/`、`*.live.yaml`、`*.paper.yaml`。
+  `.gitignore` 已排除 `secrets/`、`/data/`、`/logs/`、`/reports/`、`*.live.yaml`、`*.paper.yaml`。
+- **字节与说明分离已落地**（2026-08-20 裁定）：`data/` 整棵不入库、预期迁往外置盘；
+  说明与重建凭据一律在仓库内 `docs/data/<source>/`（`DATA_SPEC.md` + `MANIFEST.jsonl`）。
+  两份 DATA_SPEC 已从 `data/*/curated/` 移出。布局见 `ARCHITECTURE.md` §3。
+- **manifest 已生成**：binance 9,317 分区 / 64.0 GiB / 90.16 亿行，t212 3,784 分区 / 167.7 万行。
+  重建入口 `scripts/build_data_manifest.py`，全量扫描约 4 秒（只读 parquet footer），
+  `sync_to_git.command` 提交前自动重建。manifest 不含时间戳，数据无变更时重跑逐字节相同。
+- **数据源 ≠ 交易场所**：`common/paths.py` 的 `DATA_SOURCES`（binance/okx/t212）
+  与 `VENUES`（okx/t212）分开。binance 只供数据，不下单。
 
 - **股票方向已开工（2026-08-20）**：美股做多、科技股、日频。第一轮
   KDJ 入场 + MACD 筛选 + KDJ 死叉出场裁定**不通过**
@@ -57,10 +67,13 @@
 | 8 | LSE 上的 UCITS 替代品（SGLN/IB01/IDTL/XSPS）在 T212 是否真的可买 | 用户在 App 内确认 | `trading212.com` 对自动化请求一律 403，无法程序化验证 |
 | 9 | 磁盘：当前可用 146 GB，完整计划需 250 GB+，录制 L2 需 1 TB+ | 用户 | 是否加外置盘 |
 | 6 | ~~是否 `git init` 纳入版本管理~~ | 已决 | 2026-08-19 已 init 并首推，见时间线 |
-| 10 | KDJ+MACD 手算实际规则与预注册规则不符（预注册规则为空集） | 用户 | 需用户说明手算时的实际条件（K<30 是判在哪一根、MACD 是否同 bar 判），定位后重跑；结论 2~5 不受影响 |
-| 11 | ~~research 研究件是否入库~~ | 已决 | 用户 2026-08-20 经 create-PR 命令裁定入库：PR #1（branch claude/suspicious-ramanujan-73071a），70 文件 |
-| 12 | ~~数据申请（Norgate / Polygon）~~ | 已决 | 用户 2026-08-20 裁定**不购买**付费数据，迭代限本地数据 |
-| 13 | A0 接入 `backtest/` 框架做横向对比回测（含换手率、平均/中位持仓时间） | 本方待执行 | **前置：等另一会话完成对 `/Users/hb/Desktop/quant/backtest` 的框架修正**。构想：框架读 `trading212/strategy/` 下的信号模块即插即用（ARCHITECTURE §2.0 信号唯一副本） |
+| 10 | ~~`data/binance/` 无 `raw/` 层~~ | 已决 | 2026-08-20 用户选 (a)：权威 raw 就在 `data.binance.vision`，本地只留 curated，重建凭据落 `docs/data/<source>/MANIFEST.jsonl`。已实现并验证 |
+| 11 | `data/` 的备份（≠ 版本管理，git 已排除） | 用户 | **挂起：等外置磁盘就位**（用户 2026-08-20 明言）。重下载代价实测约 11.9 小时（66.7 GB ÷ 1.6 MB/s，并发不提升）。磁盘就位后应跑一次 `build_data_manifest.py --hash-local` 建立本地基线，此后可检出位腐 |
+| 12 | manifest 的 `sha256_upstream` 字段目前全为 null | 可选 | 填满需 9,317 次 `.CHECKSUM` 请求（免费公共服务）。取回函数已单测通过。价值有限：下载时 `fetch_to_frame(verify=True)` 已逐个校验过。真正该做的是 `--hash-local`（见未决项 11） |
+| 13 | KDJ+MACD 手算实际规则与预注册规则不符（预注册规则为空集） | 用户 | 需用户说明手算时的实际条件（K<30 是判在哪一根、MACD 是否同 bar 判），定位后重跑；结论 2~5 不受影响 |
+| 14 | ~~research 研究件是否入库~~ | 已决 | 用户 2026-08-20 经 create-PR 命令裁定入库：PR #1（branch claude/suspicious-ramanujan-73071a），70 文件 |
+| 15 | ~~数据申请（Norgate / Polygon）~~ | 已决 | 用户 2026-08-20 裁定**不购买**付费数据，迭代限本地数据 |
+| 16 | A0 接入 `backtest/` 框架做横向对比回测（含换手率、平均/中位持仓时间） | 本方待执行 | **前置：等另一会话完成对 `/Users/hb/Desktop/quant/backtest` 的框架修正**。构想：框架读 `trading212/strategy/` 下的信号模块即插即用（ARCHITECTURE §2.0 信号唯一副本） |
 
 ## 时间线
 
@@ -91,21 +104,36 @@
 | 2026-08-19 18:3x | 修复 `write_table` 潜伏缺陷：`column_encoding` 与 `use_dictionary=True` 冲突（pyarrow 报 ValueError）。Phase 1 未触发是因其 `ts` 为 timestamp 类型不满足 `is_integer`；bookTicker 的 `update_id` 是 int64，会在每个文件上崩溃。现改为两集合互斥。回滚：删 `dictionary_columns` 与 `use_dictionary=` 参数 |
 | 2026-08-19 18:4x | bookTicker 脚本加断点续传：`_prune_damaged()` 恢复时逐个读 footer，损坏件删除并重排；SIGINT/SIGTERM 设停止标志，在途文件写完后退出。三项测试均以故障注入验证通过 |
 | 2026-08-19 18:5x | **修复高错误率**：`binance_archive._get()` 原本无任何重试，实测错误率 55%（30/55）。改为 5 次指数退避重试，404 立即抛出不重试；`TIMEOUT_SEC` 120→180。故障注入三例验证通过。回滚：把 `_get` 改回单次 `urlopen`——会重现 55% 丢失率 |
+| 2026-08-20 09:xx | 用户双击续传时昨晚任务未停，产生两个实例抢带宽，错误率由 0 升至 13/560。杀掉重复实例后错误停止增长。教训：`resume_bookticker.command` 未做单实例保护，后续应加锁文件 |
 | 2026-08-20 10:0x | 股票方向开工。用户裁定四项口径（S6）：入场 K 上穿 D 且 K<30；筛选 DIF>DEA 且 DIF>0；出场 KDJ 死叉；先跑 NVDA/AAPL/MSFT/META/AMD 五只。不计滑点与手续费亦为用户明言，属偏离 `/backtest-discipline` §二.3/§二.4 的保守默认，已在预注册 §2.6 与裁定 §8 登记 |
 | 2026-08-20 10:1x | 预注册 `research/prereg/20260820_kdj_macd_daily_prereg.md` 先于任何回测代码运行冻结。新建 `research/factor_kdj_macd/`：data / indicators / rules / engine / benchmark / run_backtest / acceptance / diagnose_grid / diagnose_entry 九个模块。回滚：删该目录与 `research/prereg,decisions/20260820_*` |
 | 2026-08-20 10:2x | **裁定：不通过**，见 `research/decisions/20260820_kdj_macd_daily_ruling.md`。三条核心事实：(a) 预注册规则在两窗口成交笔数为零，K<30 与 DIF>0 结构互斥（W1 五只标的逐条件筛剩 236/242/233/227/228 → 40/49/36/46/46 → 4/1/1/0/3 → 全 0）；(b) 两个拆解臂胜率显著低于同持有期无条件基准，W1 边际 -14.57 与 -12.85 个百分点，W2 -17.44 与 -10.39，20 个「窗口×臂×标的」单元格无一为正；(c) 负边际来自**出场规则**，入场信号单独看的边际约为零（固定持有期事件研究 1~60 日边际在 ±2.5 个百分点内摆动） |
 | 2026-08-20 10:2x | 放松网格 60 格（5 档 K 上界 × 6 种 MACD 模式 × 2 窗口）**无一格边际为正**，最好 -7.70 个百分点。故结论 2~5 不依赖「用户手算的实际规则究竟是哪一条」 |
 | 2026-08-20 10:2x | 方法学留痕：前视对照臂具备判别力（指标前移一期后胜率由 0.4347 升至 0.8693），指标因果性以前缀重算逐位验证（45 个信号 bar 全等），该技术本身的判别力以居中滚动均值反证。`acceptance.py` 11 项验收全部通过。引擎两次重构（MACD 分派表、抽出 `run_spec`）后 21 个结果文件逐字节不变（`/backtest-discipline` §七.2） |
 | 2026-08-20 10:2x | 关键结论供后续：若继续这条线，方向是**换出场规则**而非调入场参数。死叉出场的持有期是内生的，恰在价格转弱时结束持仓，系统性把终点选在不利位置 |
+| 2026-08-20 10:xx | 股票改为五档周期（1m/2m/5m/1h/1d）。实测确认 Yahoo 合法周期枚举中**无任何亚分钟粒度**，秒级美股在此源不可得；1m 硬上限为「单次 8 天、总计 30 天」。15m/30m/90m 不存（可由 5m 与 1h 精确聚合） |
+| 2026-08-20 10:xx | 用户裁定命名规则：日内文件起始**固定为当月 1 号**（原用实际首根 K 线日期，遇假期会漂成 02）。新增 `common/paths.month_bounds()`；1,489 个既有文件已重命名。回滚：删 `month_bounds` 并改回用 `frame.ts.min()` |
+| 2026-08-20 10:xx | 取数与写入逻辑抽到 `trading212/ingest/yahoo_bars.py`，ingest 与 updater 共用一份，避免 §4.7 的复制粘贴 |
+| 2026-08-20 11:xx | 新增 `scripts/update_data.py` + `update_data.command` 手动更新入口。股票走「全窗口重取」（复权是追溯性的，追加会在拆股日造成序列断裂），加密走真增量。回滚：删这两个文件 |
+| 2026-08-20 11:xx | 更新器试跑暴露真实缺口：Binance 月度文件月末才发布，故当月数据完全未被覆盖（现货 K 线停在 08-01）。已改为「当月用日度文件补齐，月度文件到货后删除被取代的日度件」，三项逻辑测试通过 |
+| 2026-08-20 11:xx | 用户裁定：策略命名须带版本号，起点 V0.0.1。写入 `/quant-code-standards` §4.5.1（MAJOR=信号逻辑变 / MINOR=参数变 / PATCH=重构且须证明输出逐字节不变），`ARCHITECTURE.md` §2.0.1 同步 |
 | 2026-08-20 12:2x | 用户授权出场规则与 MACD 模式的显式搜索（S6，含点名格 b_20_80×death_cross 与「金叉后最高点出场」）。预注册 `research/prereg/20260820_kdj_exit_search_prereg.md` 先于运行冻结：378 格（6 K带位×7 MACD模式×9 出场）、两段式（S=核心5标的 2000-2017 搜索；V1=同标的 2018-2026；V2=13只全新标的 2018-2026）、筛选与定级判据全部先冻结。「最高点出场」以因果代理落地（trail 回撤 / K转跌 / K>=80） |
 | 2026-08-20 12:3x | 引擎扩展：rules.py 加 k_min 与 dif_rising 模式、新增 exits.py（9 种出场注册表）、engine.py 新增 extract_trades_spec（旧 extract_trades 冻结不动）。扩展后第一轮 21 个结果文件逐字节重现。acceptance 16 项全过（新增 trail/fixed/带位边界/搜索窗封闭/新旧引擎等价 5 项）。回滚：`git checkout` 删 exits.py/search.py/diagnose_exit_attribution.py 并还原 rules/engine/acceptance |
 | 2026-08-20 12:3x | 修复 `_summarize` n_open 缺陷：空标的拼接后 closed 列变 object dtype，`~True` 按 Python 语义得 -2，n_open 出现负数。改为 astype(bool) 后计数；只影响 n_open 列，第一轮汇总文件逐字节不变 |
 | 2026-08-20 12:4x | 修复 `_return_baseline` 窗口缺陷：基准起点硬编码 201 使 V 段收益基准混入 2000-2017。修复后策略相对收益差从 -0.28/-0.36pp 扩大到 -0.53/-0.65pp，方向不变 |
 | 2026-08-20 12:4x | **第二轮裁定落笔**（20260820_kdj_exit_search_ruling.md）：k_over_80 两格胜率口径通过但归因在出场停时、收益口径为负、左尾深；fixed_5 一格不通过一格探索性通过（不跟进）；用户点名死叉格样本外 -10.4/-12.4pp 不通过。关键方法学发现：**胜率判据本身可被「只在局部强势卖出」的停时规则刷高**，与死叉出场（终点挑在不利位置）互为镜像；后续判据须换收益口径。7 名独立审计员的对抗验证工作流已启动，结果回来后补裁定 §7 |
 | 2026-08-20 12:5x | 对抗验证工作流完成：7 名独立审计员 7/7 confirmed（两名按文字规格重写全流程逐笔重现、引擎前视审计、统计复算、搜索窗封闭探针、筛选器 378 格重放、基准公允性、头条数字复算）。三点措辞修正并入裁定：归因改「出场占 54~85%、入场真实增量 +4~8pp」；日历对照被单持仓步进吞掉 30~38% 排程（方向保守）；收益差点估计为负但未显著。裁定 §7 已补记，第二轮收口 |
+| 2026-08-20 12:5x | 裁定：`data/`（实测 64 GiB / 13126 文件）**不入 git，维持 .gitignore 排除**。依据非偏好而是硬限制：229 个文件超过 GitHub 的 100 MiB 硬性拒绝线（最大 300.9 MB，`data/binance/curated/um/bookTicker/ETHUSDT/.../20240229.parquet`），604 个超 50 MiB 警告线；仓库 64 GiB 对 GitHub「理想 <1 GB，强烈建议 <5 GB」；Git LFS 在 Free/Pro 仅含 10 GiB 存储 + 10 GiB 流量，且本仓库 PUBLIC 会使数据一并公开。另经实测，`data.binance.vision` 至今仍供给同一批归档（`HEAD .../BTCUSDT-bookTicker-2024-02-29.zip` → 200，474,096,996 字节，last-modified 2024-03-01），故该数据集可重建，应入库的是重建器与 manifest 而非字节。现状已正确：`git ls-files data/` 为 0，`.gitignore:12` 生效，同步器 10 MiB 单文件闸兜底 |
+| 2026-08-20 13:0x | 用户裁定三项：(a) 两份 `DATA_SPEC.md` 移出 `data/`，建 `docs/data/<source>/`；(b) manifest 现在就做，落在仓库内；(c) binance 认定为**数据源**而非交易场所。原因：`data/` 整棵不入库且将迁往外置盘，说明件放在字节旁边会跟磁盘一起走，仓库将不剩任何关于这批数据的记录 |
+| 2026-08-20 13:0x | **修复 `.gitignore` 的未锚定缺陷**：第 12 行 `data/` 未加前导斜杠，匹配任意层级同名目录，把新建的 `docs/data/` 一并排除（`git check-ignore -v docs/data/binance/MANIFEST.jsonl` 命中 `.gitignore:12:data/`）。改为 `/data/` `/logs/` `/reports/` `/backtest/results/`。验证：`data/` 下真实 parquet 仍被忽略、`secrets/` 仍被忽略、`docs/data/` 三份文件均已可入库。回滚：去掉前导斜杠即回到旧行为，但 `docs/data/` 会再次消失 |
+| 2026-08-20 13:0x | 新增 `scripts/build_data_manifest.py`：扫 curated 树生成重建凭据。每分区一条 JSONL，含坐标、上游 URL、本地字节数与行数。行数取自 parquet footer 不读数据；按字节数缓存，无变更时复用；上游 `.CHECKSUM` 与本地 sha256 均为按需开关（`--fetch-checksums` / `--hash-local`）。**不含时间戳**，保证无变更时重跑逐字节相同，否则每天同步都会提交无信息量 diff。回滚：删该脚本 + 删 `docs/data/*/MANIFEST.jsonl` |
+| 2026-08-20 13:0x | `common/paths.py` 扩展：新增 `DATA_SOURCES`（binance/okx/t212，区别于只含 okx/t212 的 `VENUES`）、`DIR_DOCS`、`docs_data_dir()` / `data_spec_path()` / `manifest_path()` / `gaps_path()`（后两者**从 `data/` 下改指 `docs/data/<source>/`**，原位置在 gitignore 内故永不入库）、`binance_partition_path()` / `binance_partition_dir()` / `stamp_freq()`。`data_dir()` 的校验由 `_check_venue` 改为 `_check_source`。改动前确认这些函数**零外部调用点**（`grep -rn` 仅命中 paths.py 自身）。回滚：还原 paths.py 并把 update_data.py 的路径构造改回内联 |
+| 2026-08-20 13:0x | `scripts/update_data.py` 去重：`_crypto_out` / `_existing_stamps` / `_drop_superseded_days` 三处内联路径拼接改为调用 `paths.binance_partition_*`（`/quant-code-standards` §4.7 一处定义）。回归验证：305 个样本覆盖全部 5 种分支组合，新旧构造 0 处不一致、构造出的路径 100% 存在于磁盘；负例（period 由 None 改 1h）既不等于旧实现也不存在于磁盘，证明该检验有判别力 |
+| 2026-08-20 13:1x | `sync_to_git.command` 改为两步：先用 `.venv/bin/python` 重建 manifest（需 pyarrow，系统 python3 没有），再用系统 python3 跑 `sync_to_git.py`（纯标准库）。manifest 失败只警告不阻断同步，理由：分区损坏是数据问题，不该连带阻止当天源码入库。新增 `--no-manifest`。⛔ `--overwrite-remote` 仍刻意不可由双击触发。回滚：还原该文件 |
+| 2026-08-20 13:1x | 验证（C 类官方源 + B 类本地数据）：manifest 反推的归档 URL 抽样 6/6 命中 200，覆盖 spot/um × daily/monthly × tag取period/取dataset × stem带横杠/不带；负例 4/4 按预期 404（freq 改错、market 改错、stamp 未展开横杠、klines 用 dataset 当 tag），证明四条推导分支每条都有判别力。行数 3/3 与全量读取一致且取值有 836 种（非常数）。`_meta` 汇总等于逐行求和。确定性：重跑三份 manifest 全部 sha256 不变。密钥闸在 .jsonl 内植入假密钥能命中（第 2 行），证明 3.19 MiB 的 manifest 是真扫了而非被跳过 |
 | 2026-08-20 15:2x | 用户开启第三轮（S6）：策略复杂化，HF 划分市场状态 + LF 出信号，日内小时频以下，零成本信号层验证，目标年化>=30% 且 MaxDD<=20%，标的框死本地数据，可申请新数据。文献综述工作流启动（7 方向并行） |
 | 2026-08-20 15:4x | 新建 `research/regime_lab/`（data/vol/metrics/rigor/engine/configs/run_search/validate_rv_proxy/acceptance 九模块）。**HF 代理桥验证**：Yang-Zhang(20d) 对小时线 RV 在 711 重叠日 Pearson 0.93~0.98、应激分类一致 0.87~0.97（7 标的），日线状态层合法（`regime_lab/results/rv_proxy_validation.csv`）。acceptance 7/7（SPA 检验水平 2/20@10%、DSR 幸运儿 0.43/真技能 0.999、去 shift 作弊臂 +20.1% 年化） |
 | 2026-08-20 16:0x | 预注册 `research/prereg/20260820_regime_lf_prereg.md` 冻结：家族 450 配置（3 收益流×5 信号×5 波动闸×2 趋势闸×3 波动目标）、两段式 S=2000-2017 / V=2018-2026、选择=S Calmar 前5、判据=目标线+SPA+DSR；冻结前查看过 EW18 基准指标已在预注册 §7 披露并禁其入围 |
 | 2026-08-20 16:1x | **第三轮裁定：目标判据不通过——差之毫厘且性质清楚**。入围第一 on·tsmom252·p80x0·qqq200：V 段 CAGR 29.32%（差 0.68pp）/ MaxDD 10.91% / Sharpe 2.01 / 2022 全年 -0.7%。S→V Calmar 秩相关 0.873。归因：收益=隔夜异象+存活者池（裸隔夜 EW18 已 27.3%），双闸只压回撤（36.6%→10.9%）；SPA p=0.53 无平均收益边际；QQQ 单资产对照 15.5%/11.3%（存活者-free 下 30% 不成立）；隔夜流成交额约 168 倍本金/年，全项目最成本脆弱的结论。未入围邻格 on·always·p80x0·qqq200 字面过线（32.0%/13.9%）但拒绝事后采纳，登记为下轮先验候选 |
-| 2026-08-20 17:0x | 两工作流收口：文献综述 76 篇落 `research/notes/20260820_regime_lf_literature.md`（隔夜异象在指数级 2015 后衰减、730 天小时线仅够确认不够搜索、分钟 RV 对状态层仅 +0.02 夏普增量）；对抗验证 6 审计员 5 confirmed + 1 发现 SPA p_lower 居中缺陷（应 min(mean,0)，原实现方向保守），已修复重跑：仅 p_lower 0.5445→0.3670，其余逐位不变。数据申请两项待用户裁定（未决项 #12） |
+| 2026-08-20 17:0x | 两工作流收口：文献综述 76 篇落 `research/notes/20260820_regime_lf_literature.md`（隔夜异象在指数级 2015 后衰减、730 天小时线仅够确认不够搜索、分钟 RV 对状态层仅 +0.02 夏普增量）；对抗验证 6 审计员 5 confirmed + 1 发现 SPA p_lower 居中缺陷（应 min(mean,0)，原实现方向保守），已修复重跑：仅 p_lower 0.5445→0.3670，其余逐位不变。数据申请两项待用户裁定（未决项 #15） |
 | 2026-08-20 17:1x | 用户四项裁定（S6）：(a) 入围第一名命名 **A0 策略**，已写入私有长期记忆（strategy-a0-definition.md），后续实施并迭代；(b) 不购买付费数据；(c) 三轮研究件经 create-PR 入库：PR https://github.com/Hymoncodactic/quant/pull/1（密钥扫描与体积检查通过，42MB parquet 被 *.parquet 规则排除）；(d) 新任务排队：等另一会话完成 backtest/ 框架修正后，把 A0 接入该框架做对比回测，输出含换手率、平均/中位持仓时间的全套评判数据，信号放 trading212/strategy/ |
