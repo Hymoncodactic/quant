@@ -75,7 +75,18 @@ def _read_symbol(data_root: Path | str | None, symbol: str, interval: str,
     local_day = frame["ts"].dt.tz_convert(exchange_tz(symbol)).dt.date
     mask = (local_day >= pd.Timestamp(start).date()) & \
            (local_day <= pd.Timestamp(end).date())
-    return frame.loc[mask].reset_index(drop=True)
+    frame = frame.loc[mask].reset_index(drop=True)
+    if symbol == FX_SYMBOL:
+        # Yahoo stamps the FX daily close from a different session cut than
+        # the high/low, leaving close outside [low, high] by up to ~6e-4
+        # relative (103 bars measured 2026-08-21). The engine consumes only
+        # the FX CLOSE (strategy sizing via the feed, conversion via
+        # FxSeries); the high/low are never read, so enveloping them over
+        # open/close changes no number anywhere -- it only lets the frame
+        # pass the ordering gate instead of failing on a field nothing uses.
+        frame["high"] = frame[["high", "open", "close"]].max(axis=1)
+        frame["low"] = frame[["low", "open", "close"]].min(axis=1)
+    return frame
 
 
 def load_bars(symbols: list[str], interval: str, start: str, end: str,

@@ -57,8 +57,16 @@ def validate_frame(frame: pd.DataFrame, symbol: str,
     ts = frame["ts"]
     if not ts.is_monotonic_increasing or ts.duplicated().any():
         raise ValueError(f"{symbol}: ts not strictly increasing")
-    bad_hl = (frame["high"] < frame[["open", "close"]].max(axis=1)) | \
-             (frame["low"] > frame[["open", "close"]].min(axis=1))
+    # Relative tolerance for the ordering test: Yahoo's adjusted prices carry
+    # 1-ULP inconsistencies (measured 2026-08-21: equity violations are all
+    # ~1e-16 relative, e.g. close exceeding high by one float step after the
+    # adjustment multiply). Those are representation noise, not data errors;
+    # anything beyond the tolerance still stops the run.
+    tol = 1e-9
+    upper = frame[["open", "close"]].max(axis=1)
+    lower = frame[["open", "close"]].min(axis=1)
+    bad_hl = (frame["high"] < upper - tol * upper.abs()) | \
+             (frame["low"] > lower + tol * lower.abs())
     if bad_hl.any():
         raise ValueError(f"{symbol}: OHLC ordering violated on "
                          f"{int(bad_hl.sum())} bars, first at "
