@@ -1,7 +1,69 @@
-"""Ledger and metrics tests. Discrimination design:
-fixplans/validation/02_test_plan.md U1 (Decimal exactness), U13 (peak
-concurrent occupancy vs cumulative outlay), and the signed-vs-absolute
-median separation of CLAUDE.md section 2.3."""
+"""Ledger and metrics tests: cash exactness, occupancy definition and the two
+medians.
+
+Responsibility: pin the parts of backtest/engine/ledger.py and
+backtest/engine/metrics.py whose definition decides the magnitude and the
+honesty of every reported number. Cash is Decimal, so a sequence that a float
+ledger would leave with a trailing remainder must come out exact. The ledger
+refuses to sell more than is held and refuses to drive cash negative, and it
+releases cost basis in proportion to the shares that leave. Capital is the
+peak concurrent occupancy rather than the cumulative outlay: the overlapping
+and the sequential deployment in these tests have the same cumulative outlay
+of 200 and different peaks of 200 and 100, so an implementation that sums
+outlays cannot satisfy both. Days in market count only the days on which
+occupancy was positive. Realized profit and loss is replayed on an
+average-cost basis. The signed median and the median absolute deviation are
+separate numbers, as required by CLAUDE.md section 2.3: the sample used here
+has signed median 2 and absolute deviation median 8, so reporting one number
+for both cannot pass. A reservation reduces available cash without changing
+the cash balance. Discrimination design is recorded in
+fixplans/validation/02_test_plan.md items U1 and U13.
+
+Out of scope: what causes the fills, which is covered by
+tests/backtest/test_broker.py; the liquidation-valued metrics added by the
+2026-08-21 review, covered by
+tests/backtest/test_conservatism_and_metrics.py; the shared fixtures, which
+this module does not use because its inputs are single fills and hand-built
+frames rather than whole runs.
+
+Public functions:
+    test_cash_arithmetic_is_exact()
+        Two fills of 0.1 and 0.2 leave exactly 0.7 cash and 0.3 of cost basis.
+    test_sell_beyond_holdings_refused()
+        Selling more than is held raises rather than going short.
+    test_negative_cash_refused()
+        A fill that would drive cash negative raises.
+    test_average_cost_release()
+        Selling a quarter of the shares releases a quarter of the cost basis.
+    test_capital_is_peak_not_cumulative()
+        Overlapping deployment reports a peak of 200, sequential deployment a
+        peak of 100.
+    test_online_days_counts_occupied_days_only()
+        Days with zero occupancy are not counted as days in market.
+    test_realized_pnl_average_cost()
+        Two sells against one buy replay to plus ten and minus ten.
+    test_signed_and_absolute_medians_are_separate()
+        The signed median and the median absolute deviation come out as two
+        different numbers.
+    test_reservation_affects_available_not_cash()
+        A reservation lowers available cash and raises occupancy while the
+        cash balance is unchanged, and releasing it restores availability.
+
+Public classes: None.
+
+Constants:
+    D
+        Alias of decimal.Decimal. The exactness case depends on the ledger
+        holding Decimal rather than float, so the tests must construct Decimal
+        values too.
+
+Inputs: None. Fills, equity curves and trade frames are built in process; no
+path under data/ is read.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+"""
 
 from __future__ import annotations
 

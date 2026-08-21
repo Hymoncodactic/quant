@@ -1,33 +1,111 @@
 #!/usr/bin/env python3
-"""Daily manual git synchroniser: stage every change, scan for credentials, commit, push.
+"""Daily manual git synchronizer: stage every change, gate it, commit, push.
 
-Function index (start here when changing behaviour):
+Responsibility: bring the repository's committed state up to the working tree in
+one manually invoked pass, refusing to proceed whenever a gate is not satisfied.
+The run proceeds in this order:
 
-    Configuration constants   EXPECTED_REMOTE / SECRET_PATH_PATTERNS / ...
-    Command-line entry        main()
-    Argument parsing          build_arg_parser()
-    Repository location       find_repo_root() / ensure_repo_initialised() / verify_remote()
-    Commit identity check     verify_identity()
-    Staging                   stage_all()
-    Credential gate (core)    scan_staged_for_secrets() / iter_staged_files()
-                              / classify_path() / scan_blob_text() / looks_like_secret_value()
-    Size gate                 scan_staged_for_large_files()
-    Commit and push           make_commit() / push()
-    git call wrappers         git() / git_ok()
+    1. Locate the repository from this file's own position, not from the
+       current working directory (find_repo_root()).
+    2. Initialize the repository and attach origin when .git is absent
+       (ensure_repo_initialised()).
+    3. Verify that origin is exactly EXPECTED_REMOTE (verify_remote()), that a
+       commit identity is configured (verify_identity()), and that the
+       repository is not part-way through a merge, rebase or cherry-pick
+       (verify_clean_state()).
+    4. Stage every change, with .gitignore applying as usual (stage_all(),
+       whose --name-status -z output is parsed by _parse_name_status_z()).
+    5. Run the size gate over every staged blob
+       (scan_staged_for_large_files()).
+    6. Run the credential gate: refuse by path (classify_path()), then scan the
+       blob text for unambiguous vendor tokens and private-key blocks and for
+       the soft rule that requires both a credential-looking field name and a
+       credential-looking value (scan_staged_for_secrets(), scan_blob_text(),
+       looks_like_secret_value()).
+    7. Commit and push (make_commit(), push()).
 
-Design constraints (see CLAUDE.md):
-    3.1  This script only synchronises version control. It never touches a venue
-         API and never submits an order.
-    3.2  The credential gate is a hard gate: a hit aborts the run and nothing is
-         pushed. .gitignore is the first line of defence and this scan is the
-         second; both must pass before a push happens.
-    3.4  Nothing under data/ is modified. Only the git index is read.
+Three constraints from CLAUDE.md govern the design. Under §3.1 this script only
+synchronizes version control: it never touches a venue API and never submits an
+order. Under §3.2 the credential gate is a hard gate, a hit aborts the run and
+nothing is pushed; .gitignore is the first line of defense and this scan is the
+second, and both must pass before a push happens. Under §3.4 nothing under data/
+is modified, because only the git index is read.
 
-Exit codes:
-    0  Success, including the "no changes" case
-    1  Usage or environment error (git missing, identity unset, wrong remote,
-       push rejected)
-    2  Credential gate or size gate hit; aborted without committing or pushing
+Out of scope: deciding what belongs in version control, which is .gitignore's
+job; rebuilding the data manifest before a sync, which belongs to
+scripts/build_data_manifest.py and is invoked by the double-click entry
+sync_to_git.command; any credential storage, which belongs to secrets/ and
+common/secrets.py and must never reach this repository at all.
+
+Public functions:
+    main(argv=None)                            Command-line entry point;
+                                               returns the exit code.
+    scan_staged_for_secrets(repo, staged)      Run the credential gate over
+                                               everything staged; an empty list
+                                               means the gate passes.
+    scan_staged_for_large_files(repo, staged)  Run the per-file size gate.
+    looks_like_secret_value(value)             Report whether one value looks
+                                               like a real credential. A value
+                                               qualifies when it is a UUID, a
+                                               long hexadecimal string, or at
+                                               least 16 characters carrying at
+                                               least three character classes.
+                                               The character-class rule is what
+                                               keeps a reference name such as
+                                               "secret_name: trading212_api_key"
+                                               out of the results.
+
+Constants:
+    EXPECTED_REMOTE        str    The only permitted push target. An actual
+                                  origin that differs aborts the run, which is
+                                  what stops the project being pushed to the
+                                  wrong repository. Source: set in this file;
+                                  changing the target means editing it here.
+    DEFAULT_BRANCH         str    Branch pushed unless --branch overrides it,
+                                  "main".
+    MAX_BLOB_BYTES         int    Per-file size ceiling, 10 MiB. data/ is
+                                  already excluded by .gitignore, so this gate
+                                  only guards against a misconfiguration.
+    SECRET_PATH_PATTERNS   tuple  Path-level credential gate. These paths are
+                                  refused even if they slip past .gitignore.
+    HARD_CONTENT_PATTERNS  tuple  Content-level credential gate, unambiguous
+                                  hits: private-key blocks and known vendor
+                                  token prefixes, each paired with its label.
+    SECRET_FIELD_RE        Pattern Field names that look like a credential.
+                                  Neither end carries a word boundary on
+                                  purpose: the underscore in OKX_API_KEY is
+                                  itself a word character, so a boundary anchor
+                                  would miss PREFIX_API_KEY, the most common
+                                  naming of all. Confirmed by a negative test.
+    ASSIGN_VALUE_RE        Pattern Captures the right-hand side of
+                                  "field: value", "field = value" and
+                                  'field="value"'.
+    PLACEHOLDER_RE         Pattern Values that are plainly placeholders or
+                                  references rather than real secrets, let
+                                  straight through.
+    UUID_RE, HEX_RE        Pattern Value shapes that count as a credential on
+                                  their own.
+
+Inputs:
+    The git index and object store of the repository containing this file, read
+    through git rev-parse, git diff --cached and git show. Nothing under data/
+    is read or modified.
+    Command line: python scripts/sync_to_git.py [-m MESSAGE] [--branch BRANCH]
+        [--dry-run] [--overwrite-remote] [--yes]
+        [--i-have-verified-no-secrets]
+Outputs:
+    A commit on the local branch and a push to origin, unless a gate aborted the
+        run or --dry-run was given.
+    stdout and stderr carry the staged list, the gate results and the outcome.
+    Exit codes: 0 on success, including the "no changes" case; 1 on a usage or
+        environment error, that is git missing, identity unset, wrong remote, or
+        push rejected; 2 when the credential gate or the size gate hit, in which
+        case nothing was committed or pushed and the index is left staged.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Removed git_ok(): zero call sites, not in __all__, and
+                git(check=False) already covers the same need.
 """
 
 from __future__ import annotations
@@ -152,15 +230,6 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
             f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
     return proc.stdout.strip()
-
-
-def git_ok(repo: Path, *args: str) -> bool:
-    """Run a git command and report only whether it succeeded."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True,
-    )
-    return proc.returncode == 0
 
 
 # --------------------------------------------------------------------------

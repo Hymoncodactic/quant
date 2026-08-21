@@ -1,5 +1,9 @@
 """Client for the Binance public bulk archive at data.binance.vision.
 
+Responsibility: compose archive object URLs, discover which dates a dataset
+actually covers, download one object with retries, verify its SHA-256 sidecar,
+unzip it, and parse it into a typed pandas frame using that dataset's layout.
+
 The archive is a plain public S3 bucket behind CloudFront. It needs no
 credentials and, unlike api.binance.com which answers HTTP 451 from the UK, it is
 not geo-restricted. Verified from this host on 2026-08-19.
@@ -16,15 +20,55 @@ Three facts about the bucket that a naive crawler gets wrong:
        is the filename for klines, markPriceKlines, indexPriceKlines and
        premiumIndexKlines alike. Only the directory distinguishes them.
 
-Public functions:
-    build_url(market, freq, dataset, symbol, period, date_str)  Compose an object URL
-    list_prefix(prefix)                     Enumerate one prefix, following pagination
-    head_size(url)                          Object size in bytes, or None if absent
-    fetch_to_frame(...)                     Download, verify checksum, parse to a frame
-    available_dates(market, freq, dataset, symbol, period)      Dates actually present
+Out of scope: the column layouts and the timestamp-unit rule, which live in
+crypto_trading/ingest/schemas.py; persistence to parquet, which the entry
+scripts under scripts/ perform through common/store.py; partition path
+construction, which belongs to common/paths.py; the retry back-off curve
+itself, which belongs to common/net.py.
 
-Public constants:
-    CDN_BASE, S3_LIST_BASE
+Public functions:
+    build_url(market, freq, dataset, symbol, date_str, period)
+        Compose one object URL.
+    list_prefix(prefix, max_pages)
+        Enumerate one prefix, following pagination, excluding .CHECKSUM sidecars.
+    head_size(url)
+        Object size in bytes, or None when the object does not exist.
+    fetch_to_frame(market, freq, dataset, symbol, date_str, period, verify)
+        Download, verify the checksum, parse into a frame; None when absent.
+    available_dates(market, freq, dataset, symbol, period)
+        Dates for which the dataset actually has files.
+
+Public classes: None.
+
+Constants:
+    CDN_BASE        str  Object host, "https://data.binance.vision". Verified
+                         reachable from this host on 2026-08-19.
+    S3_LIST_BASE    str  Enumeration host, the S3 endpoint of the same bucket.
+                         Only this host answers ListObjects XML; the CDN host
+                         returns a single-page app.
+    USER_AGENT      str  Identifier sent on every request. Source unknown, needs
+                         verification.
+    TIMEOUT_SEC     int  Seconds, 180. Per-socket-operation timeout, not a
+                         whole-transfer budget; it bounds a single stalled read.
+    GET_ATTEMPTS    int  Attempts per object including the first, 5. With the
+                         exponential back-off in common.net this spans roughly
+                         45 seconds of retrying.
+    MAX_CONCURRENCY int  Advisory ceiling on parallel requests, 8. No documented
+                         rate limit exists for the archive and none was observed
+                         under 40 concurrent requests. No code in this module or
+                         elsewhere in the repository reads this value.
+
+Inputs:
+    GET https://data.binance.vision/<prefix>/<symbol>-<tag>-<date>.zip
+    GET the same URL with a ".CHECKSUM" suffix, holding a SHA-256 digest
+    GET https://s3-ap-northeast-1.amazonaws.com/data.binance.vision
+        with query "delimiter=/&prefix=<prefix>" and an optional "marker"
+Outputs:
+    None. Every function returns in-memory values; no file system path is
+    written here.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

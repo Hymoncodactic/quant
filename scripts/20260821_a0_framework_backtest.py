@@ -1,24 +1,62 @@
-"""A0 versus comparison arms through the T212 backtest framework, daily bars.
+"""A0 and its comparison arms through the T212 backtest framework on daily bars.
 
-Entry layer for the comparison the user ordered on 2026-08-20: load the A0
-strategy module (single copy, trading212/strategy/a0_v0_0_1.py), derive the
-ablation arms from its baseline yaml with explicit overrides, run every arm
-under both fee tiers, and post-process holding-time and turnover statistics
-from the fill records.
+Responsibility: entry layer for the ablation comparison. Load the single copy of
+the A0 strategy from trading212/strategy/a0_v0_0_1.py together with its baseline
+parameters, derive each comparison arm from those parameters by explicit
+override, run every arm under both fee tiers, post-process holding-time and
+turnover statistics from the fill records, and write one comparison table.
 
-Arms (fixed up front; no tuning against the output):
-    a0        the true A0: tsmom252 + vol gate + trend gate
-    tsmom     tsmom252 only, both gates off
-    ma200     per-symbol 200-day MA, both gates off
-    bh        always long, both gates off (equal-slot buy and hold)
+The arms are fixed up front and nothing is tuned against the output. Arm "a0" is
+the true A0, that is tsmom252 with the volatility gate and the trend gate; arm
+"tsmom" is tsmom252 alone with both gates off; arm "ma200" replaces the signal
+with a per-symbol 200-day moving average and turns both gates off; arm "bh" is
+always long with both gates off, which is an equal-slot buy and hold.
 
-Window: engine 2010-01-04 .. 2026-08-19 with live_from 2018-01-01, so the
-state-symbol history inside the view is ~2000 bars by go-live (the vol gate
-needs 756 vol observations); metrics cover the whole run but capital is only
-occupied from 2018.
+The engine window runs 2010-01-04 to 2026-08-19 with live_from at 2018-01-01, so
+the state symbol has roughly 2000 bars of history inside the view by go-live,
+which the volatility gate needs because it requires 756 volatility observations.
+Metrics cover the whole run, but capital is occupied only from 2018.
 
-Usage:
-    python scripts/20260821_a0_framework_backtest.py [--quick]
+Out of scope: the signal itself, whose only copy is
+trading212/strategy/a0_v0_0_1.py; parameter values, which are external in
+trading212/config/strategies/a0_v0_0_1.yaml; the engine, the cost model and the
+metric definitions, which live under backtest/; the ruling drawn from these
+numbers, which is research/decisions/20260821_a0_framework_comparison.md.
+
+Public functions:
+    holding_stats(trades)  Per-position holding durations derived from the fill
+                           record. A position opens when a symbol's cumulative
+                           quantity leaves zero and closes when it returns to
+                           numerically zero; durations are calendar days between
+                           the opening and closing fills, and positions still
+                           open at the end of the run are counted separately
+                           rather than folded into the closed-duration figures.
+    main()                 Run every arm under both fee tiers, print the table,
+                           and return the exit code.
+
+Constants:
+    ROOT           Path  Repository root, the parent of this file's directory.
+    RESULTS_DIR    Path  backtest/results/, where the comparison table is
+                         written.
+    ARM_OVERRIDES  dict  Arm name mapped to the explicit parameter overrides
+                         applied on top of the baseline yaml.
+    FEE_TIERS      tuple Fee tiers run for every arm, "actual" and "worst".
+
+Inputs:
+    Command line: python scripts/20260821_a0_framework_backtest.py [--quick]
+        --quick shortens the window to 2016-01-04 through 2019-12-31 with
+        live_from 2019-01-02, drops PLTR because it lists in 2020 and an empty
+        frame is a hard validation stop by design, and writes no files.
+    trading212/config/strategies/a0_v0_0_1.yaml  Baseline strategy parameters.
+    data/t212/curated/, through backtest.t212.data_source.
+Outputs:
+    backtest/results/a0_comparison_20260821.csv  One row per arm and fee tier.
+    backtest/results/<run>.trades.parquet, <run>.equity.parquet and
+        <run>.meta.json, written by the runner for every arm and tier.
+    stdout carries the per-run progress lines and the final table.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

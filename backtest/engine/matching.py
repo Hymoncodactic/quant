@@ -1,22 +1,44 @@
-"""Venue-neutral matching rules: does an order trade against this bar, and at
-what raw price, before any venue cost adjustment.
+"""Venue-neutral matching rules: whether an order trades against this bar, and
+at what raw price before any venue cost adjustment.
 
-Responsibility: the pure trigger/price logic of
-fixplans/framework/03_order_lifecycle.md section 2.1.
-Not responsible for: spread, slippage, fees, volume caps, latency (broker
-simulator applies those on top of the raw price returned here).
+Responsibility: the pure trigger and price logic of
+fixplans/framework/03_order_lifecycle.md section 2.1. Three conventions hold
+throughout: the intra-bar sequence is open, high, low, close, which is the
+NautilusTrader convention adopted in
+fixplans/framework/01_architecture.md section 3.3; an ambiguous bar resolves
+against the strategy; prices are returned as Decimal in the bar's quote
+currency. Two conservative rules follow from that. A resting limit order fills
+only when the bar trades strictly through the limit, because a bare touch
+rarely clears a queue and granting the fill would systematically harvest bar
+extremes. A stop order that gaps fills at the open, which is the side worse for
+the strategy.
 
-Conventions:
-    - Intra-bar sequence is O -> H -> L -> C (NautilusTrader convention,
-      fixplans/framework/01_architecture.md section 3.3).
-    - An ambiguous bar resolves against the strategy.
-    - Prices returned as Decimal in the bar's quote currency.
+Out of scope: spread, slippage, fees, taxes, volume caps, latency and fault
+injection. The broker simulator applies all of those on top of the raw price
+returned here (backtest/t212/broker_sim.py, backtest/t212/costs.py,
+backtest/t212/faults.py).
 
 Public functions:
-    match_market(bar)                       Raw fill price of a market order
-    match_limit(is_buy, limit, bar)         Trigger and raw price of a limit order
-    match_stop(is_buy, stop, bar)           Trigger and raw price of a stop order
-    match_stop_limit(is_buy, stop, limit, bar)  Two-step stop-limit evaluation
+    match_market(bar)                           Raw fill price of a market
+                                                order eligible on this bar: the
+                                                bar open.
+    match_limit(is_buy, limit, bar)             Raw fill price of a limit
+                                                order, or None when it does not
+                                                fill.
+    match_stop(is_buy, stop, bar)               Raw fill price of a stop order
+                                                after a last-traded-price
+                                                trigger, or None.
+    match_stop_limit(is_buy, stop, limit, bar)  Two-step stop-limit
+                                                evaluation; returns
+                                                (triggered, raw price or None).
+
+Constants: None.
+
+Inputs: None.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

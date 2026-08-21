@@ -113,3 +113,25 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 `broker_sim.py`（实现 `backtest/engine/broker.py` 的 BrokerSim 协议）+
 一个 runner 组装点。年化因子、日历语义、清算估值全部由适配层注入，
 引擎零默认值。
+
+## 9. 文件清单
+
+本节按 `CLAUDE.md` §4.3 登记本目录直属文件。子目录的文件清单在各自 `README.md` 中。
+
+| 文件 | 作用 | 存在必要性 | 谁在用 |
+|---|---|---|---|
+| `__init__.py` | 把 `backtest` 声明为常规包，模块头说明本包分层 | 全项目 `from backtest.X import ...` 以它为包根；删除后包导入失效 | `tests/backtest/` 全部测试、`scripts/` 下三个回测入口 |
+| `README.md` | 本文件。引擎接入方式与引擎对外保证 | 唯一说明「怎么用引擎」与「引擎保证什么」的文档；口径裁定在 `fixplans/`，二者不重复 | 新增市场适配层时的入口文档 |
+
+## 10. 子目录索引
+
+| 子目录 | 内容 | 说明文档 |
+|---|---|---|
+| `engine/` | 场所无关的事件驱动引擎，11 个模块 | `backtest/engine/README.md` |
+| `okx/` | crypto 线适配层，当前只有数据读取 | `backtest/okx/README.md` |
+| `t212/` | 股票线适配层，数据、成本、故障、撮合、组装 | `backtest/t212/README.md` |
+| `results/` | 每轮结果落地位置 | gitignore，不放 `README.md`（`CLAUDE.md` §4.3），命名与内容见 §5 |
+
+## 11. 变更记录
+
+2026-08-22 按 `CLAUDE.md` §4.3 补 §9 文件清单、§10 子目录索引与本节。原有 §1 至 §8 未改动。

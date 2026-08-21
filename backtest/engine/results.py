@@ -1,17 +1,43 @@
-"""Result persistence: trades / equity / meta triplet per run.
+"""Result persistence: the trades, equity and meta triplet of one run.
 
-Responsibility: deterministic, self-describing result files under
-backtest/results/ (fixplans/framework/05_metrics_reporting.md section 4).
-Not responsible for: computing anything (engine, metrics).
+Responsibility: write deterministic, self-describing result files under
+backtest/results/ (fixplans/framework/05_metrics_reporting.md section 4), and
+derive the canonical file-name stem that carries the strategy name and version,
+the arm, the window, the fee tier and the seed. Determinism is the point: no
+wall-clock timestamp enters any file, so re-running an identical configuration
+on one commit reproduces byte-identical parquet and JSON, which is what the
+baseline byte-compare discipline of backtest-discipline section 7.2 depends on.
+A lookahead-probe run is branded with a PROBE suffix so it can never be
+mistaken for a reportable result.
 
-Determinism: no wall-clock timestamp enters any file, so re-running an
-identical configuration reproduces byte-identical parquet and JSON; the
-baseline byte-compare discipline of backtest-discipline section 7.2 depends
-on this.
+Out of scope: computing anything. The frames come from engine.py and the
+statistics from metrics.py. The quick-look chart belongs to report.py and is
+deliberately excluded from the byte-identity guarantee.
 
 Public functions:
-    run_name(config)              Canonical file-name stem, parameters embedded
-    write_run(result, config, metrics, out_dir=None)   Write the triplet
+    run_name(config)   Canonical file-name stem with the run parameters
+                       embedded (quant-code-standards section 4.5.1).
+    write_run(result, config, metrics, extra_meta, out_dir)
+                       Write the triplet and return the written paths.
+
+Constants: None.
+
+Inputs:
+    git rev-parse HEAD and git status --porcelain, run in ROOT by
+    _code_version() to stamp the producing revision. Failure yields None
+    instead of aborting the write.
+Outputs:
+    <out_dir>/<stem>.trades.parquet   One row per fill, sorted by step then
+                                      order_id.
+    <out_dir>/<stem>.equity.parquet   The per-step equity and occupancy record,
+                                      sorted by step.
+    <out_dir>/<stem>.meta.json        Configuration, metrics, run summary,
+                                      order audit and code version.
+    out_dir defaults to common.paths.DIR_BACKTEST_RESULTS, which is
+    backtest/results/. Empty frames are skipped rather than written.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

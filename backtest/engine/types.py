@@ -1,20 +1,50 @@
 """Core data structures for the event-driven backtest engine.
 
-Responsibility: enums and immutable-ish records shared by every engine module.
-Not responsible for: any behavior (matching, accounting, costs live elsewhere).
+Responsibility: the enums and records shared by every engine module and every
+venue adapter, namely the order type, order status and time-validity enums, one
+OHLCV bar, a strategy-side order request, broker-side order state, one
+execution with its itemized costs, and the complete run configuration. Order
+semantics mirror the Trading 212 Public API v0 contract (a sell is a negative
+quantity, validity is DAY or GOOD_TILL_CANCEL, orders are quantity-only),
+verified 2026-08-20 from data/reference/t212_openapi_v0_20260820.yaml. Design
+source: fixplans/framework/01_architecture.md section 2.
 
-Design source: fixplans/framework/01_architecture.md section 2. Order semantics
-mirror the Trading 212 Public API v0 contract, verified 2026-08-20 from
-data/reference/t212_openapi_v0_20260820.yaml (sell = negative quantity,
-time validity DAY | GOOD_TILL_CANCEL, quantity-only orders).
+Out of scope: all behavior. Matching belongs to matching.py, cash and position
+accounting to ledger.py, sequencing to engine.py, and venue fee and tax rules
+to backtest/t212/costs.py.
 
-Public data structures:
-    OrderType, OrderStatus, TimeInForce   Enums mirroring the venue contract
-    Bar                                   One OHLCV bar, prices in source units
-    OrderSpec                             Strategy-side order request
-    Order                                 Broker-side order state
-    Fill                                  One execution with itemized GBP costs
-    EngineConfig                          Full run configuration
+Public classes:
+    OrderType      Order types offered by the venue: MARKET, LIMIT, STOP,
+                   STOP_LIMIT.
+    OrderStatus    Simulator lifecycle states; the venue's eleven states are
+                   reduced to five because the pre-activation ones are not
+                   distinguishable at bar granularity.
+    TimeInForce    DAY, which expires at exchange-local midnight, or
+                   GOOD_TILL_CANCEL.
+    Bar            One OHLCV bar; prices are floats in the source quote
+                   currency and ts is the bar open time.
+    OrderSpec      Strategy-side order request; quantity is signed, in shares.
+    Order          Broker-side order state, mutated only by the broker
+                   simulator; exposes remaining_qty and is_open.
+    Fill           One execution, with the signed GBP cash movement and the
+                   itemized cost breakdown keyed by the venue's tax names.
+    EngineConfig   Complete configuration of one run, serialized in full into
+                   the result metadata.
+
+Constants:
+    INTERVAL_SECONDS   dict[str, int]   Seconds per bar for every stored
+                       interval: 1m, 2m, 5m, 1h, 1d. Source:
+                       docs/data/t212/DATA_SPEC.md section 5. Order eligibility
+                       is measured in time rather than in merged-timeline
+                       steps, because mixed-exchange intraday grids interleave
+                       (US 1h bars on the half hour, LSE on the hour) and one
+                       step is therefore not one interval.
+
+Inputs: None.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

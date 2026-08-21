@@ -1,30 +1,80 @@
-"""Fetching and storing Yahoo bar data for the equity universe.
+"""Yahoo bar ingest for the Trading 212 equity universe.
 
-This is the single implementation of that logic. The initial ingest and the
-incremental updater both call it, so the partition layout and the naming rule
-cannot drift between them.
+Responsibility: fetch bars from Yahoo through yfinance, reduce them to the project
+schema (ts, open, high, low, close, volume, quote_ccy) and persist them as parquet
+partitions under data/t212/curated/. This is the single implementation of that logic:
+the initial ingest and the incremental updater both call it, so the partition layout
+and the naming rule cannot drift between them.
 
-Granularity is capped by the source. Measured 2026-08-19, Yahoo enumerates its
-valid intervals when rejecting anything else:
-[1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 4h, 1d, 5d, 1wk, 1mo, 3mo]. No sub-minute
-equity bar exists here at any price. Each interval carries its own history
-limit, verified by request:
-
-    1m   8 days per request, 30 days total; stitched from consecutive windows
-    2m   60 days
-    5m   60 days
-    1h   730 days
-    1d   the instrument's full listed history
+Out of scope: partition path construction, which belongs to common/paths.py; atomic
+parquet writing, which belongs to common/store.py; the schedule, the progress report
+and the choice of which tickers to refresh, which belong to scripts/update_data.py;
+field, unit and time zone documentation, which belongs to docs/data/t212/DATA_SPEC.md;
+trading decisions, which belong to trading212/strategy/.
 
 Public functions:
     fetch_interval(ticker, interval, lookback, chunk)  Bars for one ticker/interval
     write_daily(group, ticker, frame)                  Store daily bars, one file per year
     write_intraday(group, ticker, interval, frame)     Store intraday bars, one file per month
     latest_stored(group, ticker, interval)             Newest timestamp already on disk
-    quote_currency(ticker)                             Exchange quote currency
+    quote_currency(ticker)                             Exchange quote currency, cached
 
-Public constants:
-    INTERVALS, UNIVERSE
+Constants:
+    RETRY_BASE_SEC   float  Seconds to wait before retrying an empty or failed history
+                            call, 8.0, doubled on each further attempt. Source: measured
+                            on this host 2026-08-19. Yahoo throttles intermittently
+                            rather than by capability, returning 17,000 rows for one
+                            call and nothing for the next, so the cure is patience
+                            between attempts rather than more attempts in quick
+                            succession. Four attempts at a 2-second base left four
+                            intervals empty, and the same requests succeeded on the
+                            first try once given a longer gap.
+    RETRY_ATTEMPTS   int    Attempts per history call, 6. Same measurement.
+    PACE_SEC         float  Seconds of pause between the stitched 1m windows, 0.6.
+                            Source unknown, needs verification.
+    INTERVALS        list   Tuples of (interval, lookback in days or None for the full
+                            listed history, days per request or None). Source: measured
+                            against Yahoo 2026-08-19. Yahoo enumerates its valid
+                            intervals when rejecting anything else: 1m, 2m, 5m, 15m,
+                            30m, 60m, 90m, 1h, 4h, 1d, 5d, 1wk, 1mo, 3mo. No sub-minute
+                            equity bar exists here at any price. Each interval carries
+                            its own history limit, verified by request: 1m allows 8 days
+                            per request and 30 days in total, so it is stitched from
+                            consecutive windows; 2m and 5m allow 60 days; 1h allows 730
+                            days; 1d returns the instrument's full listed history. The
+                            per-request cap therefore binds on 1m only. 15m, 30m and 90m
+                            are omitted because they are exact aggregations of 5m and
+                            1h. Both 2m and 5m are kept because neither divides the
+                            other, so in the 30 to 60 day window each carries bars the
+                            other cannot reconstruct.
+    UNIVERSE         dict   Group name mapped to {ticker: description}. Three groups:
+                            us_equity with 24 US listings, us_etf with 17 US ETFs, and
+                            uk_tradable with 11 London listings including the GBPUSD=X
+                            spot pseudo-ticker used for currency conversion. Source
+                            unknown, needs verification: the selection criteria are not
+                            recorded in this file.
+
+Inputs:
+    Yahoo through yfinance, imported lazily inside quote_currency() and _history() so
+        that importing this module does not require the dependency to be installed.
+        yfinance.Ticker(ticker).history(...) returns the bars, and
+        yfinance.Ticker(ticker).get_info()["currency"] returns the quote currency. The
+        currency call is made only for London tickers ending in ".L", because London
+        lists in GBp, GBP and USD interchangeably and GBp is pence, so mistaking it
+        costs a factor of a hundred; US listings are uniformly USD.
+    data/t212/curated/<group>/<ticker>/<interval>/*.parquet, footer statistics only.
+        latest_stored() reads the row group statistics of the "ts" column and never
+        touches the data body, so probing the whole universe costs no data read.
+Outputs:
+    data/t212/curated/<group>/<ticker>/1d/<ticker>_<year>.parquet
+    data/t212/curated/<group>/<ticker>/<interval>/<ticker>_<start>_<end>_<interval>.parquet
+    Both paths come from common/paths.py through equity_daily_path(),
+    equity_intraday_path() and month_bounds(), and the files are written by
+    common/store.py::write_table(). An "=" in a ticker becomes "_" in the file name,
+    which affects GBPUSD=X only.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations
@@ -227,7 +277,7 @@ def write_intraday(group: str, ticker: str, interval: str,
     """Store intraday bars as one file per calendar month.
 
     The name is anchored to the calendar rather than to the data, so a month
-    whose first trading day is the 2nd is still labelled 01. The month in
+    whose first trading day is the 2nd is still labeled 01. The month in
     progress carries the latest date present instead of a future month end,
     which means its name changes as data accumulates; any earlier file for the
     same month is removed so a stale name cannot survive alongside the new one.

@@ -1,24 +1,78 @@
 """Static instrument facts for the T212 backtest adapter.
 
-Responsibility: per-symbol exchange time zone, measured half-spreads, security
-kind (drives stamp-duty and PTM applicability), and the venue's annualization
-factor.
-Not responsible for: fee math (costs.py) or fill logic (broker_sim.py).
+Responsibility: per-symbol exchange time zone, measured half spreads, security
+kind (which drives stamp-duty and PTM applicability), the venue's annualization
+factor, and the US/LSE simultaneous-open test that decides when an LSE half
+spread is widened. Sources are stated per constant. Where a value is an
+inference rather than a measurement it is marked INFERRED and must be treated
+as a sensitivity parameter, not a fact (fixplans/framework/04_cost_model.md
+section 4).
 
-Sources are stated per constant. Where a value is an inference rather than a
-measurement it is marked INFERRED and must be treated as a sensitivity
-parameter, not a fact (fixplans/framework/04_cost_model.md section 4).
+Out of scope: fee arithmetic, which belongs to backtest/t212/costs.py; fill
+logic, which belongs to backtest/t212/broker_sim.py; fault parameters, which
+belong to backtest/t212/faults.py.
 
 Public functions:
-    exchange_tz(symbol)          IANA zone of the symbol's exchange
-    half_spread_bps(symbol)      Half of the touch spread, basis points
-    security_kind(symbol)        "stock" | "etf" | "etc" | "fx"
-    in_us_overlap(ts_utc)        Whether both US and LSE regular sessions are open
+    exchange_tz(symbol)
+        IANA zone of the symbol's exchange.
+    half_spread_bps(symbol)
+        Half of the touch spread in basis points: measured where available,
+        the INFERRED default otherwise.
+    security_kind(symbol)
+        "stock" | "etf" | "etc" | "fx". An unmapped symbol defaults to
+        "stock", the conservative (taxed) assumption for UK lines.
+    in_us_overlap(ts_utc)
+        Whether an instant falls inside the US/LSE simultaneous-open window.
 
-Public constants:
-    T212_ANNUALIZATION_DAYS, EXCHANGE_TZ_LONDON, EXCHANGE_TZ_NEW_YORK,
-    HALF_SPREAD_BPS, DEFAULT_HALF_SPREAD_BPS_US, DEFAULT_HALF_SPREAD_BPS_LSE,
+Constants:
+    T212_ANNUALIZATION_DAYS
+        int, 252. UK equities trade 252 days a year. The factor lives in the
+        venue adapter so the engine cannot silently reuse it for crypto
+        (backtest-discipline section 5.2 and section 10).
+    EXCHANGE_TZ_LONDON, EXCHANGE_TZ_NEW_YORK
+        "Europe/London" and "America/New_York". The mapping was verified on
+        real data 2026-08-20: daily bars stamp exchange-local midnight, and the
+        observed midnights place .L suffixes and GBPUSD=X in London and
+        everything else in New York (fixplans/framework/02_data_layer.md
+        section 3.1).
+    HALF_SPREAD_BPS
+        dict of 10 LSE lines, from 0.36 bps (CSPX.L) to 8.94 bps (IBTL.L).
+        MEASURED: half of the touch spreads captured from the LSE's own
+        interface on 2026-08-19 at about 08:47 London time and recorded in
+        research/notes/20260819_t212_execution_and_liquidity.md section 2. T212
+        itself adds no spread; the fill pays the reference exchange's touch
+        (order-execution-policy.pdf sections 2 and 7, cited in
+        fixplans/framework/04_cost_model.md section 1).
+    DEFAULT_HALF_SPREAD_BPS_US
+        Decimal, 1.0 bps. INFERRED: large-cap US names quote around 1 to 2 bps
+        touch and no local measurement exists.
+    DEFAULT_HALF_SPREAD_BPS_LSE
+        Decimal, 9.0 bps. INFERRED: the worst measured LSE half spread
+        (IBTL.L, 8.94 bps) rounded up, so an unmeasured LSE line is never
+        assumed tighter than anything actually observed.
     SECURITY_KIND
+        dict of 11 symbols. Security kind drives UK tax applicability: SDRT
+        hits LSE STOCK buys only, while ETFs, ETCs, gilts and bonds are exempt
+        (helpcentre article 360007081637, official, cited in
+        fixplans/framework/04_cost_model.md section 3). Every current
+        uk_tradable symbol is an ETF or ETC (trading212/ingest/yahoo_bars.py
+        UNIVERSE), so SDRT is structurally zero for the present pool; the rule
+        stays implemented for future single-name UK stocks.
+    US_SESSION_OPEN_LOCAL, LSE_SESSION_CLOSE_LOCAL
+        09:30 America/New_York and 16:30 Europe/London. The overlap window is
+        the stretch in which US underlyings have live US quotes while the LSE
+        is still open, so London market makers stop pricing off futures
+        (research/notes/20260819_t212_execution_and_liquidity.md section 4.1).
+        It is defined by the two venues' LOCAL sessions because the UTC window
+        shifts twice a year on each side; a constant UTC window is wrong for
+        the GMT months.
+
+Inputs: None. Pure lookups over module-level tables; no file or network access.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec; each constant's source
+                note is carried over from the inline comments.
 """
 
 from __future__ import annotations

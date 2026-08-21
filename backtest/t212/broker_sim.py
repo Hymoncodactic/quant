@@ -1,18 +1,43 @@
 """T212 Invest broker simulator: order admission, lifecycle, fills and costs.
 
 Responsibility: everything between "the strategy wants an order" and "the
-ledger books a fill", faithful to the venue contract and its documented
-faults (fixplans/framework/03_order_lifecycle.md, fixplans/t212_faults/).
-Not responsible for: raw trigger/price rules (engine/matching.py), cost math
-(costs.py), fault parameters (faults.py), accounting (engine/ledger.py).
-
-Reject reasons follow the venue's observed error vocabulary where one exists
-(insufficient_free_for_stocks_buy, selling_equity_not_owned,
+ledger books a fill", faithful to the venue contract and its documented faults
+(fixplans/framework/03_order_lifecycle.md, fixplans/t212_faults/): submission
+with pacing counters and cash reservation, eligibility expressed as a TIME
+rather than a merged-timeline step count, DAY expiry at exchange-local
+midnight, the one-shot cancel-versus-fill race, the per-symbol per-bar volume
+participation budget, the cooldown between fills of different orders, the funds
+gate re-applied at execution, and the release or re-reservation of frozen cash
+after each fill. Reject reasons follow the venue's observed error vocabulary
+where one exists (insufficient_free_for_stocks_buy, selling_equity_not_owned,
 quantity_precision_mismatch, entity_not_found -- sources in
 fixplans/framework/03_order_lifecycle.md section 1.4).
 
+Out of scope: raw trigger and price rules (backtest/engine/matching.py); cost
+arithmetic (backtest/t212/costs.py); fault parameters and their evaluation
+(backtest/t212/faults.py); the submission checks themselves
+(backtest/t212/admission.py); cash and position accounting
+(backtest/engine/ledger.py).
+
 Public classes:
-    T212BrokerSim   The simulator; one instance per run
+    T212BrokerSim   The simulator, one instance per run; implements the
+                    BrokerSim protocol of backtest/engine/broker.py. Lifecycle
+                    entry points are submit, cancel and process_bar, alongside
+                    the query surface that the engine and admission.py read.
+
+Constants:
+    ZERO        Decimal("0"), so Decimal comparisons never mix in a float.
+    _QTY_STEP   Decimal("0.00000001"), that is 8 decimal places: the maximum
+                observed holding precision. It is the quantization grid for
+                volume-capped fills and the order quantity step whenever the
+                F8 precision fault is off.
+
+Inputs: None. Pure computation over the bars, ledger and FX series passed in;
+    no file or network access.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

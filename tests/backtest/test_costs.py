@@ -1,6 +1,78 @@
-"""Cost-model tests. Discrimination design: fixplans/validation/02_test_plan.md
-U2 (conversion direction), U7 (stamp duty three-way), U8 (FX fee three-way),
-U11 (two tiers differ), plus US sell-side fees and the PTM threshold."""
+"""Cost-model tests for the T212 adapter.
+
+Responsibility: pin the arithmetic of backtest/t212/costs.py, both the
+currency conversion and the per-fill fees and taxes. Conversion covers the
+three accepted quote currencies and the rejection of anything else. Fees cover
+the FX conversion fee, charged only on USD and worsening the customer on both
+sides; UK stamp duty, charged on LSE stock buys only; the PTM levy, with its
+principal threshold, its exchange-traded-fund flag and its once-per-order
+accumulation across partial fills; the US sell-side fees; the spread sign; the
+ordering of the two cost tiers; and the French financial transaction tax.
+Discrimination design is recorded in fixplans/validation/02_test_plan.md items
+U2, U7, U8 and U11: for example the conversion cases use a non-unity rate, so
+a swapped multiply and divide would yield 127 instead of about 78.74, and the
+partial-fill case splits 12,000 GBP into three fills none of which alone
+crosses the 10,000 GBP threshold, so per-fill logic would charge nothing.
+
+Out of scope: when a fill happens and at what price, which is covered by
+tests/backtest/test_broker.py; the cost figures used by a real run, which come
+from configuration rather than from these tests; the ledger's handling of the
+resulting cash deltas, covered by tests/backtest/test_ledger_metrics.py.
+
+Public functions:
+    test_usd_to_gbp_divides_by_rate()
+        A USD price converts by division by the GBPUSD rate.
+    test_gbp_pence_divides_by_100()
+        A GBp price converts by division by 100.
+    test_gbp_passthrough()
+        A GBP price passes through unchanged.
+    test_unknown_currency_rejected()
+        An unlisted currency raises ValueError rather than converting.
+    test_fx_fee_charged_on_usd_both_sides()
+        Both a USD buy and a USD sell pay the conversion fee, and the buy's
+        cash matches the official effective-rate mechanics.
+    test_no_fx_fee_on_gbp_or_pence()
+        Neither GBP nor GBp carries a conversion fee, and both reach the same
+        GBP notional.
+    test_stamp_duty_three_way()
+        An LSE stock buy pays the tax, the same stock's sell does not, an LSE
+        fund buy does not, and the tax visibly moves cash.
+    test_ptm_levy_threshold_and_etf_flag()
+        The levy is absent below the principal threshold, is a flat charge
+        above it, and follows the exchange-traded-fund flag.
+    test_us_sell_side_fees()
+        The two US fees appear on sells only and match their per-share and
+        per-value formulas.
+    test_worst_tier_strictly_worse_than_actual()
+        The worst tier's buy price is strictly above the actual tier's, which
+        is strictly above the raw price.
+    test_spread_signs()
+        A buy pays up by the half spread and a sell receives less by it.
+    test_ptm_levy_accumulates_across_partial_fills()
+        Three partial fills of one order charge the levy exactly once, on the
+        fill that carries the cumulative principal past the threshold.
+    test_french_ftt_on_qualifying_buys_only()
+        The French tax applies to qualifying French buys, not to their sells
+        and not to UK stock buys.
+
+Public classes: None.
+
+Constants:
+    D
+        Alias of decimal.Decimal, used so the tests exercise the same numeric
+        type as the production path.
+    CFG
+        Cost configuration with slippage_bps 0 and spread_session_multiplier
+        1. Both are neutralized so a failing assertion points at the fee
+        arithmetic under test and not at a spread or slippage term. The
+        remaining fields keep their defaults, which are the worst-tier values.
+
+Inputs: None. Every case is a direct call with literal arguments.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+"""
 
 from __future__ import annotations
 

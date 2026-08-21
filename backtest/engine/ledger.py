@@ -1,23 +1,44 @@
 """Ledger: GBP cash, positions at average cost, and the capital-occupancy
 series that defines the performance denominator.
 
-Responsibility: exact cash and position accounting in Decimal.
-Not responsible for: deciding fills or costs (broker), valuing performance
-(metrics).
+Responsibility: exact cash and position accounting in Decimal, covering cash
+reservations for pending buys, booking of fills, average-cost release of basis
+on sells, mark-to-market valuation, and the per-step equity and occupancy
+record that the metrics layer consumes. Cash is a single GBP balance by design:
+the venue API settles every order in the primary account currency
+(fixplans/framework/01_architecture.md section 4, official source cited there),
+so no foreign-currency balance can exist in an API-driven account. The book is
+long-only because the Invest account is a cash account; the broker rejects
+sells beyond holdings and the ledger enforces the same invariant defensively.
+Money discipline: every amount is Decimal (quant-code-standards section 5.1),
+and floats appear only in the mark-to-market records consumed by metrics and
+plots.
 
-Cash is a single GBP balance by design: the venue API settles every order in
-the primary account currency (fixplans/framework/01_architecture.md section 4,
-official source cited there), so no foreign-currency balance can exist in an
-API-driven account. Long-only: the Invest account is a cash account; the
-broker rejects sells beyond holdings, and the ledger enforces the same
-invariant defensively.
-
-Money discipline: every amount is Decimal (quant-code-standards section 5.1);
-floats appear only in the mark-to-market records consumed by metrics/plots.
+Out of scope: deciding which orders fill and what they cost, which belongs to
+the broker simulator (backtest/t212/broker_sim.py); computing performance
+statistics, which belongs to metrics.py; writing the record to disk, which
+belongs to results.py.
 
 Public classes:
-    Position   qty (shares) + GBP cost basis of the open quantity
-    Ledger     cash, reservations, fills, occupancy and equity records
+    Position   One open position: quantity in shares plus the total GBP outlay
+               attributed to it under average-cost accounting, which is what
+               capital occupied by this position means in the performance
+               denominator (fixplans/framework/05_metrics_reporting.md
+               section 1).
+    Ledger     Cash, reservations, fill booking, occupancy and the equity
+               record. mark() appends one row per step, holding both the mid
+               mark and the liquidation mark; records_frame() returns the rows
+               as a DataFrame.
+
+Constants:
+    ZERO   Decimal   Decimal("0"), the module's single zero literal, so no
+           float zero can leak into money arithmetic.
+
+Inputs: None.
+Outputs: None. The equity record is returned in memory by records_frame().
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

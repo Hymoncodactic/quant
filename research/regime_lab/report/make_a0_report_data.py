@@ -1,22 +1,78 @@
-"""Aggregate the A0 GBP-1000 run into one JSON for the report template.
+"""Aggregate one A0 GBP-1000 backtest run into a single JSON payload for the report.
 
-Responsibility: read the authoritative run files, derive the series and summary
-statistics the chart needs, verify every headline number against its recorded
-source, and emit a single JSON. Produces no new experiment results.
-Not responsible for: rendering (a0_report_template.html) or assembly
-(build_a0_report.py).
+Responsibility: read the authoritative result files of the run named by
+RUN_STEM, reduce the per-fill equity curve to a daily series by taking the last
+row of each calendar date and clipping it to the window starting at LIVE_FROM,
+derive position value, exposure, drawdown, CAGR, annualized volatility and
+Sharpe from that series, group fills by date and side into chart annotation
+markers, cut the dates whose position value exceeds FLAT_EPS into contiguous
+holding intervals, verify the headline numbers against the recorded scaling
+table, hash the evidence files, and write one JSON file. The anchored assertion
+follows /html-report section 2, item 1: computed CAGR, maximum drawdown, Sharpe
+and final equity are compared against the row of the scaling table that the
+ruling cites, and any deviation beyond ANCHOR_TOLERANCE raises SystemExit rather
+than shipping a report that disagrees with the ruling. Evidence files are read
+from disk for size, MD5 prefix and modification time only; a file that is absent
+is recorded as not found instead of failing the run. Run from the repository
+root as "python research/regime_lab/report/make_a0_report_data.py".
 
-Anchored assertions (html-report section 2.1): every number the report shows in
-its KPI row is compared against backtest/results/a0_capital_scaling_20260821.csv,
-the table the ruling cites. A mismatch exits non-zero rather than shipping a
-report that disagrees with the ruling.
-
-Usage:
-    python research/regime_lab/report/make_a0_report_data.py
+Out of scope: producing new experiment results, which belong to the backtest
+entry scripts under scripts/ that write into backtest/results/; rendering, which
+belongs to a0_report_template.html; assembling the delivered HTML, which belongs
+to build_a0_report.py in this directory. Project-wide path constants live in
+common/paths.py, but this script resolves its own paths from __file__ because it
+is a standalone command-line entry point that no module imports.
 
 Public functions:
-    build()          Assemble the payload dict
-    main()           Write results/a0_report_data.json
+    build()   Assemble and return the complete report payload as a dict.
+    main()    Write the payload to OUT and print a one-line summary.
+
+Constants:
+    RUN_STEM          str    File-name stem selecting the single run this report
+                             describes; it encodes strategy, capital tier, fee
+                             tier, window and seed. Source: the result file names
+                             present in backtest/results/.
+    LIVE_FROM         str    Chart window start, "2018-01-01". Signals go live on
+                             that date, and 2010 through 2017 is state
+                             accumulation with zero capital occupied. Source:
+                             comment at the declaration.
+    ANCHOR_TOLERANCE  float  Anchored-assertion tolerance, 5e-4, applied as the
+                             larger of the absolute and the relative bound.
+                             Source unknown, needs verification.
+    FLAT_EPS          float  Fraction of equity below which a position counts as
+                             flat, 1e-4, so float dust from a fully exited book
+                             does not paint a spurious holding interval. Source:
+                             comment at the declaration.
+    ROOT              Path   Repository root, resolved as parents[3] of this file.
+    RESULTS           Path   ROOT/backtest/results, the run output directory.
+    SCALING_CSV       Path   RESULTS/a0_capital_scaling_20260821.csv.
+    OUT               Path   Output JSON, written beside this file.
+
+Inputs:
+    backtest/results/<RUN_STEM>.equity.parquet   columns read: ts, equity_gbp,
+                                                 cash_gbp
+    backtest/results/<RUN_STEM>.trades.parquet   columns read: ts, symbol,
+                                                 quantity, cash_delta_gbp
+    backtest/results/<RUN_STEM>.meta.json        run configuration under
+                                                 "config"
+    backtest/results/a0_capital_scaling_20260821.csv   the row with cash 1000 and
+                                                 tier "actual", supplying cagr,
+                                                 maxdd, sharpe and final for the
+                                                 assertion and win_rate, pf,
+                                                 cost_drag_pct and costs_gbp for
+                                                 the KPI block
+    trading212/strategy/a0_v0_0_1.py                         hashed, not parsed
+    trading212/config/strategies/a0_v0_0_1.yaml              hashed, not parsed
+    research/decisions/20260820_regime_lf_ruling.md          hashed, not parsed
+    research/decisions/20260821_a0_framework_comparison.md   hashed, not parsed
+Outputs:
+    research/regime_lab/report/a0_report_data.json
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec. The previous header
+                stated that main() writes results/a0_report_data.json; OUT
+                resolves to this file's own directory, and the text now matches
+                the implementation.
 """
 
 from __future__ import annotations

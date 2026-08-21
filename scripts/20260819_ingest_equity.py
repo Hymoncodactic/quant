@@ -1,33 +1,76 @@
-"""Equity ingest: every bar resolution the source will give, partitioned for updates.
+"""One-off equity ingest: every bar resolution the source will give, partitioned for updates.
+
+Responsibility: download the configured intervals for a fixed three-group
+universe from Yahoo, reduce each frame to the project schema, tag every row with
+the exchange quote currency, and persist the result under the t212 curated
+layer. Daily bars are stored one file per calendar year and intraday bars one
+file per calendar month, so that a refresh rewrites only what changed; a single
+45-year daily file has to be rewritten in full on every update, which is the
+situation this layout replaces.
 
 Granularity is capped by the source, not by choice. Measured against Yahoo on
-2026-08-19, the valid intervals are exactly
-[1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 4h, 1d, 5d, 1wk, 1mo, 3mo] -- the API
-enumerates them when rejecting anything else -- so no sub-minute equity bar
-exists at any price here. Each interval also carries its own history limit,
-verified by request rather than assumed:
+2026-08-19 the valid intervals are exactly 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h,
+4h, 1d, 5d, 1wk, 1mo and 3mo, which the API enumerates when rejecting anything
+else, so no sub-minute equity bar exists here at any price. Only intervals that
+add information are stored: 15m, 30m and 90m are exact aggregations of 5m and 1h
+and are left to be computed on demand, while 2m and 5m are both kept because
+neither divides the other, so across the 30-to-60 day window each carries bars
+the other cannot reconstruct.
 
-    1m   8 days per request, and "the requested range must be within the last
-         30 days" verbatim from the API. Stitched from consecutive windows.
-    2m   60 days
-    5m   60 days
-    1h   730 days
-    1d   the instrument's full listed history, back to 1962 for the oldest names
-
-Only intervals that add information are stored. 15m, 30m and 90m are exact
-aggregations of 5m and 1h and are left to be computed on demand; 2m and 5m are
-both kept because neither divides the other, so for the 30-to-60 day window each
-carries bars the other cannot reconstruct.
-
-Partitioning is chosen so that a refresh rewrites only what changed:
-    daily     one file per calendar year
-    intraday  one file per calendar month
-
-A single 45-year daily file has to be rewritten in full on every update, which is
-the situation this layout replaces.
+Out of scope: incremental updates, which belong to scripts/update_data.py;
+partition path construction, which belongs to common/paths.py; atomic parquet
+writing, which belongs to common/store.py; field, unit and time-zone
+documentation, which belongs to docs/data/t212/DATA_SPEC.md. A known duplication
+is recorded in scripts/README.md section 2: the fetch and write logic here was
+later extracted into trading212/ingest/yahoo_bars.py, whose own header states it
+is the single implementation called by both the initial ingest and the
+incremental updater, while this script still carries an independent copy in
+_quote_currency(), _history(), _fetch_interval(), _write_daily() and
+_write_intraday() together with the INTERVALS and UNIVERSE constants. The two
+copies have not been checked for agreement.
 
 Public functions:
-    main()   Download and store every interval for the configured universe
+    main()   Download and store every configured interval for every instrument.
+
+Constants:
+    RETRY_BASE_SEC   float Base back-off before retrying an empty or failed
+                           history call, 8.0 seconds, doubled on each further
+                           attempt. Source: measured on this host 2026-08-19.
+                           Yahoo throttles intermittently rather than by
+                           capability, returning 17,000 rows for one call and
+                           nothing for the next, so the cure is patience between
+                           attempts rather than more attempts in quick
+                           succession. Four attempts at a 2-second base left
+                           four intervals empty, and the same requests succeeded
+                           on the first try once given a longer gap.
+    RETRY_ATTEMPTS   int   Attempts per history call, 6. Same measurement.
+    PACE_SEC         float Pause between requests, 0.6 seconds. Source unknown,
+                           needs verification.
+    INTERVALS        list  Tuples of (interval, lookback in days or None for the
+                           full listed history, days per request or None). The
+                           per-request cap binds on 1m only, where the source
+                           allows 8 days per request and states that the
+                           requested range must lie within the last 30 days; the
+                           other intervals return their whole window in one call.
+    UNIVERSE         dict  Group name mapped to {ticker: description}, for
+                           us_equity, us_etf and uk_tradable. Source unknown,
+                           needs verification: the selection criteria are not
+                           recorded in this file.
+    _CURRENCY_CACHE  dict  Ticker mapped to quote currency, memoized within a
+                           run. London lists in GBp, GBP and USD interchangeably
+                           and the price alone does not say which; GBp is pence,
+                           so mistaking it costs a factor of a hundred. US
+                           listings are uniformly USD, so the slow metadata call
+                           is made for London tickers only.
+
+Inputs:
+    Yahoo bars and ticker metadata, through the yfinance package.
+Outputs:
+    data/t212/curated/<group>/<symbol>/1d/<symbol>_<year>.parquet
+    data/t212/curated/<group>/<symbol>/<interval>/<symbol>_<start>_<end>_<interval>.parquet
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

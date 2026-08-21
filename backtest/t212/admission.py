@@ -2,17 +2,47 @@
 
 Responsibility: the fixed-order submission checks of
 fixplans/framework/03_order_lifecycle.md section 2.2, plus the worst-case
-buy-cost estimate they and the reservation logic share.
-Not responsible for: lifecycle, matching, fills (broker_sim.py).
+buy-cost estimate that those checks and the cash reservation logic share. The
+checks run in one place and in one order: fault windows and universe, zero
+quantity, quantity precision, market data presence, minimum order value, then
+the sell branch (owned quantity net of pending sells, residual above minimum)
+or the buy branch (estimated cost against effective buying power), then the
+pending-order cap and the per-bar submission pacing.
 
-Split out of broker_sim.py on 2026-08-20 to respect the 400-line module cap
-(quant-code-standards section 4.2); the functions take the broker as an
-explicit collaborator rather than duplicating its state.
+Out of scope: order lifecycle, matching and fills, which belong to
+backtest/t212/broker_sim.py; the cost arithmetic itself, which belongs to
+backtest/t212/costs.py; fault parameters and their evaluation, which belong to
+backtest/t212/faults.py; cash and position accounting, which belongs to
+backtest/engine/ledger.py.
 
 Public functions:
-    admission_reason(broker, spec, key, step, ledger)   First failing check or None
-    estimated_buy_cost(broker, spec, bar, key)          Worst-case GBP cost
-    mid_gbp(broker, bar, key)                           Last close in GBP at mid
+    admission_reason(broker, spec, key, step, ledger)
+        The first failing check as a reason string, or None when the order is
+        admitted. Reason strings follow the venue's observed error vocabulary.
+    estimated_buy_cost(broker, spec, bar, key)
+        Worst-case GBP cost of a buy, used for admission and for the cash
+        reservation. The reference price depends on order type: a limit or
+        stop-limit caps the spend at its limit; a buy STOP can only execute at
+        or above its stop, so the estimate takes max(stop, last close); a
+        market order takes the last close.
+    mid_gbp(broker, bar, key)
+        The bar's close converted to GBP at mid, for valuation only, no FX fee.
+
+Constants:
+    ZERO
+        Decimal("0"). Not a tunable parameter; it exists so Decimal
+        comparisons never mix in a float.
+
+Inputs: None. Pure computation over the broker, ledger and bar objects passed
+    in; no file or network access.
+Outputs: None.
+
+Change log:
+    2026-08-20  Split out of broker_sim.py to respect the 400-line module cap
+                (quant-code-standards section 4.2). The functions take the
+                broker as an explicit collaborator rather than duplicating its
+                state.
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

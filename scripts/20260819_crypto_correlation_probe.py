@@ -1,26 +1,55 @@
-"""Probe: measure realized correlations between liquid Binance pairs from daily bars.
+"""One-off probe measuring realized correlations between liquid Binance pairs.
 
-Purpose is to test the premise "a liquid crypto asset exists that is negatively
-correlated with BTC" against data rather than against literature. A correlation
-coefficient alone is not enough, so the probe also measures behavior in the
-drawdowns where a hedge is supposed to earn its keep.
+Responsibility: fetch daily bars for a fixed candidate list from the read-only
+Binance market-data mirror, compute the Pearson correlation of daily log returns
+against BTCUSDT, and print three views of the result: the whole window, the
+subsample of BTC's worst decile of days, and one coefficient per calendar year.
+The premise under test is that a liquid crypto asset exists which is negatively
+correlated with BTC. A coefficient alone cannot settle that, because a low
+whole-window number can coexist with heavy losses on exactly the days a hedge is
+supposed to pay, so the drawdown subsample and the year-by-year table are
+reported beside it. Stablecoins are included as a control group whose near-zero
+correlation is what gives the measurement discriminating power.
 
-Source: https://data-api.binance.vision/api/v3/klines
-    Read-only market-data mirror. Reachable from the UK and needs no credentials,
-    unlike api.binance.com which answers HTTP 451 from this location.
-
-Method: log returns of daily closes; Pearson correlation; measured over the whole
-window, over BTC's worst decile of days, and year by year.
-
-Known limitation: the endpoint caps a single request at 1000 bars, so the window
-starts in 2024 and excludes the 2021-2022 bear market. Extending it means pulling
-monthly archives from data.binance.vision, which reach back to 2017-08.
-
-One-off probe. Its conclusions belong in research/notes/; it is not part of the
-production pipeline.
+Out of scope: persisting anything to the data lake, which belongs to
+scripts/20260819_ingest_crypto_phase1.py; reusable archive access, which belongs
+to crypto_trading/ingest/binance_archive.py; the written conclusions, which
+belong to research/notes/20260819_negative_correlation_findings.md. This is a
+one-off probe and is not part of the production pipeline.
 
 Public functions:
-    main()   Fetch, compute and print the correlation results
+    main()   Fetch the panel, compute the three views, and print them.
+
+Constants:
+    BASE              str   Read-only market-data mirror host,
+                            https://data-api.binance.vision. It is reachable
+                            from this host without credentials, unlike
+                            api.binance.com, which answers HTTP 451 here.
+    INTERVAL          str   Bar period requested, "1d".
+    LIMIT             int   Bars per request, 1000. Source: the endpoint's own
+                            maximum, which is why the window starts in 2024 and
+                            excludes the 2021-2022 bear market. Extending it
+                            means pulling monthly archives from
+                            data.binance.vision, which reach back to 2017-08.
+    SLEEP_SEC         float Pause between requests, 0.25 seconds. Self-imposed
+                            throttle, far under the documented ceiling of 6000
+                            weight per minute.
+    MIN_OVERLAP_DAYS  int   Minimum overlapping days for a reported
+                            coefficient, 60. Below that a correlation is too
+                            noisy to report.
+    CRASH_QUANTILE    float Quantile defining the crisis subsample, 0.10, that
+                            is BTC's worst decile of daily returns.
+    CANDIDATES        list  Symbols probed: liquid majors, privacy coins,
+                            gold-backed tokens, and stablecoins as the control
+                            group.
+
+Inputs:
+    GET https://data-api.binance.vision/api/v3/klines
+Outputs:
+    stdout only. No file is written.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

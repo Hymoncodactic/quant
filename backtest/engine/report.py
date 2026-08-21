@@ -1,17 +1,34 @@
 """Per-run chart: equity curve with open-position interval shading.
 
-Responsibility: one self-contained HTML chart next to the result files --
-net-value curve on top, per-symbol holding intervals underneath, with the
-in-market stretches shaded on the curve. Quick visual inspection only; the
-formal report layer is the /html-report skill and reads the RESULT FILES,
-never this chart.
-Not responsible for: computing anything (metrics.py) or determinism -- the
-chart embeds the plotting library and is excluded from the byte-identity
-guarantee that covers trades/equity/meta.
+Responsibility: write one self-contained HTML chart next to the result files,
+with the net-value curves on top, the per-symbol holding intervals underneath,
+and the in-market stretches shaded on the curve. This is a quick visual
+inspection aid only. The formal report layer is the /html-report skill, and it
+reads the RESULT FILES, never this chart.
+
+Out of scope: computing anything, which belongs to metrics.py, and
+determinism, because the chart embeds the plotting library and is excluded from
+the byte-identity guarantee that covers the trades, equity and meta triplet
+written by results.py.
 
 Public functions:
-    in_market_spans(equity)              Consecutive occupied>0 stretches
-    write_chart(result, title, path)     Write the HTML chart, returns path
+    in_market_spans(equity)            Consecutive stretches of the equity
+                                       record where occupied capital is above
+                                       zero, returned as naive-UTC timestamp
+                                       pairs ready for shading.
+    write_chart(result, title, path)   Write the HTML chart for one finished
+                                       run and return the written path.
+
+Constants: None.
+
+Inputs: None. The run's frames are passed in as a RunResult.
+Outputs:
+    <path>   One self-contained HTML file at the caller-supplied path, with
+             plotly.js inlined. The venue runner names it <stem>.chart.html
+             alongside the result triplet. Parent directories are created.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

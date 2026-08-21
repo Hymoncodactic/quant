@@ -1,28 +1,52 @@
 """Performance metrics under the project's capital and rate conventions.
 
 Responsibility: turn one run's equity and trades frames into the mandatory
-statistics of fixplans/framework/05_metrics_reporting.md.
-Not responsible for: producing the frames (engine) or writing them (results).
+statistics of fixplans/framework/05_metrics_reporting.md. Five conventions are
+enforced here rather than left to the caller. Capital is the PEAK concurrent
+occupancy, cost basis plus reserved cash, never a planned allocation.
+Annualized return is total return divided by online days, times the
+annualization factor, divided by capital: simple scaling with no compounding.
+The annualization factor is an argument, because this module must stay
+venue-neutral and confusing 252 with 365 is a named failure mode. The signed
+median and the absolute-deviation median are reported as two separate numbers
+(CLAUDE.md section 2.3). Every statistic is an in-sample interval statistic and
+must be labeled as such by the caller's report rather than silently
+universalized. The authoritative headline return and drawdown read the
+liquidation-valued equity column when the venue supplies one; the mid-mark
+versions remain diagnostics. Floats are acceptable here because metrics are
+statistics, not ledger money (quant-code-standards section 5.1).
 
-Conventions enforced here:
-    - capital = PEAK concurrent occupancy (cost basis + reserved cash), never
-      a planned allocation;
-    - annualized return = total return / online days * factor / capital,
-      simple scaling, no compounding;
-    - the annualization factor is an argument -- this module must stay
-      venue-neutral (252 vs 365 confusion is a named failure mode);
-    - signed median and absolute-deviation median are separate numbers
-      (CLAUDE.md section 2.3);
-    - every statistic is an in-sample interval statistic and is labeled so by
-      the caller's report, not silently universalized.
-
-Floats are acceptable here: metrics are statistics, not ledger money
-(quant-code-standards section 5.1).
+Out of scope: producing the frames, which belongs to engine.py and ledger.py;
+writing them, which belongs to results.py; charting them, which belongs to
+report.py.
 
 Public functions:
-    compute_metrics(equity, trades, initial_cash, annualization_days)
-    realized_pnl_per_sell(trades)      Average-cost realized PnL replay
-    holding_episodes(trades, final_ts) Per-symbol open-position spans
+    compute_metrics(equity, trades, initial_cash_gbp, annualization_days)
+                                       All mandatory statistics of one run, as
+                                       a JSON-ready dict.
+    realized_pnl_per_sell(trades)      Average-cost replay of the fills; one
+                                       realized PnL per sell, matching the
+                                       ledger's accounting exactly so the two
+                                       cannot diverge.
+    holding_episodes(trades, final_ts) Per-symbol spans during which a position
+                                       was open; an episode still open at the
+                                       end of the window is closed at final_ts
+                                       and flagged open_at_end rather than
+                                       dropped.
+    naive_utc(ts)                      Strip the time zone, converting to UTC
+                                       first, so daily-mode naive keys and
+                                       tz-aware fill timestamps subtract on one
+                                       axis.
+
+Constants:
+    _SECONDS_PER_DAY   float   86400.0, the divisor turning a timedelta into
+                       calendar days for holding and drawdown durations.
+
+Inputs: None.
+Outputs: None. Statistics are returned in memory as a dict.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

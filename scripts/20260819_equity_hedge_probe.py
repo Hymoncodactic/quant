@@ -1,27 +1,48 @@
-"""Probe: test whether a liquid, negatively correlated equity hedge exists.
+"""One-off probe testing whether a liquid, negatively correlated equity hedge exists.
 
-Same question as the crypto probe, asked of US equities. The premise under test
-is that liquid instruments exist which are negatively correlated with the
-mega-caps and can therefore hedge them.
+Responsibility: download adjusted daily closes for a fixed US universe, then
+print three views against the benchmark: whole-window correlation, the subsample
+of the benchmark's worst decile of days, and one coefficient per calendar year.
+Two things are checked that a plain correlation matrix does not show. First,
+behavior in drawdowns: a hedge only pays if it rises when the market falls, so
+the mean return inside the worst decile matters more than the whole-window
+coefficient. Second, regime stability: the equity-bond correlation was reliably
+negative for two decades and turned positive during the 2022 inflation shock, so
+a single whole-window number would hide the very thing that matters.
 
-Two things this probe checks that a plain correlation matrix does not:
-    1. Behavior in drawdowns. A hedge only pays if it rises when the market
-       falls, so the mean return in the market's worst decile matters more than
-       the whole-window coefficient.
-    2. Regime stability. The equity-bond correlation was reliably negative for
-       two decades and turned positive during the 2022 inflation shock, so a
-       single whole-window number would hide the very thing that matters.
-
-Source: Yahoo Finance via yfinance. Measured limits on this machine, 2026-08-19:
-    1m granularity, 8 days per request and roughly 30 days of history;
-    5m, 60 days; 1h, 730 days; 1d, back to 1980. Daily is therefore the only
-    granularity deep enough for a regime study.
-
-Caveat: instrument availability to a UK retail investor is a separate question
-this probe does not answer. Several candidates here are US-domiciled ETFs.
+Out of scope: whether a candidate is available to a UK retail investor, which
+this probe does not answer and which several US-domiciled ETFs listed here would
+fail; persisting bars, which belongs to trading212/ingest/yahoo_bars.py; the
+written conclusions, which belong to
+research/notes/20260819_negative_correlation_findings.md. This is a one-off probe
+and is not part of the production pipeline.
 
 Public functions:
-    main()   Fetch, compute and print the hedge analysis
+    main()   Fetch the panel, then print the three views.
+
+Constants:
+    START             str   First date requested, "2015-01-01". Daily bars are
+                            the only granularity deep enough for a regime study.
+                            Source: limits measured against Yahoo on this host
+                            2026-08-19. At 1m granularity the source gives 8 days
+                            per request and roughly 30 days of history; 5m gives
+                            60 days; 1h gives 730 days; 1d reaches back to 1980.
+    CRASH_QUANTILE    float Quantile defining the crisis subsample, 0.10.
+    MIN_OVERLAP_DAYS  int   Minimum overlapping days for a reported
+                            coefficient, 120.
+    BENCHMARK         str   Benchmark symbol, "SPY".
+    UNIVERSE          dict  Ticker mapped to description. Mega-caps and their
+                            closest peers, the broad market, defensive sectors,
+                            gold, long and intermediate Treasuries, volatility,
+                            inverse index products, and the dollar.
+
+Inputs:
+    Yahoo Finance daily bars, through the yfinance package.
+Outputs:
+    stdout only. No file is written.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations
