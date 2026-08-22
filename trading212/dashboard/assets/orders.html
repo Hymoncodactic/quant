@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手动下单</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script>window.DASH_TOKEN = "__DASH_TOKEN__";</script>
+</head>
+<body>
+<header>
+  <h1 id="app-title">手动下单</h1>
+  <div class="statusbar" id="statusbar"></div>
+  <nav>
+    <a href="/" id="nav-dash">总览</a>
+    <a href="/orders" class="active" id="nav-orders">手动下单</a>
+  </nav>
+</header>
+
+<main>
+  <section class="panel">
+    <h2 id="orders-heading"></h2>
+    <div class="warnbox" id="orders-warning"></div>
+    <div class="infobox" id="orders-attribution"></div>
+
+    <div class="grid2">
+      <div>
+        <div class="field">
+          <label id="pick-label"></label>
+          <select id="pick"></select>
+        </div>
+        <div class="field">
+          <label id="custom-label"></label>
+          <input type="text" id="custom-ticker" placeholder="AAPL_US_EQ">
+        </div>
+      </div>
+      <div>
+        <div class="field">
+          <label id="qty-label"></label>
+          <div class="hint" id="qty-hint"></div>
+          <input type="text" id="qty" inputmode="decimal">
+        </div>
+        <div class="field">
+          <div class="switch">
+            <input type="checkbox" id="rehearse" checked>
+            <label for="rehearse" id="rehearse-label"></label>
+          </div>
+        </div>
+        <div class="field">
+          <div class="switch">
+            <input type="checkbox" id="confirm">
+            <label for="confirm" id="confirm-label"></label>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <button class="primary" id="submit-btn"></button>
+      <span id="outcome"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="history-heading"></h2>
+    <div id="history-wrap"></div>
+  </section>
+</main>
+
+<div class="modal-back hidden" id="modal-back">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p id="modal-line"></p>
+    <div class="row">
+      <button class="primary" id="modal-go"></button>
+      <button id="modal-cancel"></button>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/orders.js"></script>
+</body>
+</html>

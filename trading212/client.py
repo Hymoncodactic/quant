@@ -121,21 +121,31 @@ class T212Client:
             the live gate (common.config.assert_live_allowed) can run; may be
             None for read-only use.
         secret_name: Credential name for common.secrets.get_secret.
+        timeout_sec: Per-request timeout. The default suits a batch job that
+            would rather wait than fail; an interactive caller should pass a
+            short one so an unreachable venue cannot stall it.
+        max_attempts: Retry budget for IDEMPOTENT reads only. Order
+            placement is never retried whatever this is set to. Pass 1 for
+            an interactive caller: on a dead venue the default budget spends
+            close to a minute in back-off before giving up.
     """
 
     def __init__(self, env: str, cfg: dict[str, Any] | None = None,
-                 secret_name: str = "trading212_api_key") -> None:
+                 secret_name: str = "trading212_api_key",
+                 timeout_sec: float = TIMEOUT_REST_SEC,
+                 max_attempts: int = RETRY_MAX_ATTEMPTS) -> None:
         if env not in (ENV_PAPER, ENV_LIVE):
             raise ValueError(f"unknown env {env!r}")
         self.env = env
         self.base = T212_BASE_LIVE if env == ENV_LIVE else T212_BASE_PAPER
         self._cfg = cfg
+        self._max_attempts = max(1, int(max_attempts))
         key = get_secret(secret_name)
         assert key is not None
         self._session = httpx.Client(
             base_url=self.base,
             headers={"Authorization": key},
-            timeout=TIMEOUT_REST_SEC,
+            timeout=timeout_sec,
         )
         self._buckets = {name: TokenBucket(rate) for name, rate in RATE_LIMITS.items()}
         log.info("[client] env=%s base=%s key=%s", env, self.base, mask(key))
@@ -309,19 +319,19 @@ class T212Client:
     def _get_retrying(self, bucket: str, path: str,
                       params: dict[str, Any] | None = None) -> Any:
         """GET with token-bucket pacing and bounded retry (idempotent only)."""
-        for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        for attempt in range(1, self._max_attempts + 1):
             self._buckets[bucket].acquire()
             try:
                 response = self._session.get(path, params=params)
             except httpx.HTTPError as exc:
-                if attempt == RETRY_MAX_ATTEMPTS:
+                if attempt == self._max_attempts:
                     raise TransientError(f"GET {path}: {exc!r}") from exc
                 time.sleep(backoff_seconds(attempt))
                 continue
             if response.status_code == 200:
                 return response.json()
             if response.status_code in _RETRYABLE_STATUS:
-                if attempt == RETRY_MAX_ATTEMPTS:
+                if attempt == self._max_attempts:
                     raise RateLimitError(path) if response.status_code == 429 \
                         else TransientError(f"GET {path}: HTTP {response.status_code}")
                 time.sleep(backoff_seconds(attempt, self._retry_after(response)))

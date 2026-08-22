@@ -67,6 +67,19 @@
   （US 时段表无 CLOSE 事件，常规收盘=当日 AFTER_HOURS_OPEN 20:00Z，周末界=
   AFTER_HOURS_CLOSE，日历窗仅约 6 周滚动）。
 
+- **执行层已改为小时频（2026-08-22）**：依 `fixplans/t212/a0/02_execution.md`，
+  场次内 15:30（纽约）决策、信息止于 14:30 bar、收盘前 60 秒提交、成交落当日收盘价。
+  等价性由 `tests/execution/test_backtest_equivalence.py` 以真实数据守卫。
+- **本地看板已建成（2026-08-22）**：`trading212/dashboard/`，根目录双击件
+  `dashboard.command`。总览页（配置校验、秒更采集、资产曲线、持仓表）+ 独立手动下单页。
+  只读只画，不启停策略。界面中文，文案集中在 `assets/labels.json`，源码保持纯 ASCII。
+- **本机网络故障（2026-08-22 实测，阻塞实盘接入）**：机器在 Tailscale 上，系统 DNS
+  `100.100.100.100` 把 `live.trading212.com` 解析成 `31.13.94.7` / `199.59.149.244`
+  （Meta 与停放页 IP，TLS 出示 `*.internet.org` 证书）；`@1.1.1.1` 与 `@8.8.8.8` 均正确
+  返回 Cloudflare 的 `104.18.39.129` / `172.64.148.127`。GitHub 与 Yahoo 正常。
+  故 T212 全部接口当前不可达。**不得用硬编码 IP 绕过**；须由用户修 DNS（关 Tailscale
+  出口节点或 MagicDNS 覆盖，或加分流规则）。
+
 ## 未决项
 
 | # | 事项 | 需要谁定 | 备注 |
@@ -89,7 +102,10 @@
 | 16 | **账户 API 可见资金为 0**（totalValue=0、availableToTrade=0，2026-08-21 实调）——与「T212 存放英镑」的既有认知矛盾。资金是否在另一账户类型（API 仅覆盖 Invest 与 Stocks ISA）或需入金 | 用户 | 不阻塞 dry-run；阻塞模拟盘与实盘 |
 | 17 | A0 实盘参数三项：init-ledger 资金分配额度、`t212.live.yaml` risk 区块全部限额、执行排期（建议本地 08:30 settle→decide） | 用户 | 全零=失效关闭；见 `trading212/execution/README.md` §2 |
 | 18 | demo 账户 practice API key（现有 key 仅 live 有效）——上线路径第 3 步模拟盘的前提；顺带实测三件事：`walletImpact.netValue` 符号约定与税费包含关系（併入 13 号）、API 下单的 `initiatedFrom` 是否确为字面 `API`（归因机制依赖它，现仅有 schema 枚举证据）、POST 到成交的实际延迟 | 用户 | `QUANT_ENV=paper` 已预留 demo 主机 |
-| 19 | 执行层两项弱化设计需用户明示接受或另建：B4 日内亏损熔断（A0 日频单批次，未实现）；E5 CRITICAL 告警仅落日志，无外部触达通道 | 用户 | 见风险审查报告 |
+| 19 | 执行层两项弱化设计需用户明示接受或另建：B4 日内亏损熔断（A0 单场次单批次，未实现）；E5 CRITICAL 告警仅落日志，无外部触达通道 | 用户 | 见风险审查报告 |
+| 20 | **本机 DNS 把 trading212.com 解析错**（详见当前状态末条）。修好前实盘、模拟盘、看板的账户数字全部不可用 | 用户 | 看板已做优雅降级：券商栏显红「连不上」，账本与曲线照常 |
+| 21 | 小时频口径的两项用户裁定（`fixplans/t212/a0/02_execution.md` §10）：(1) same_close 与 next_open 取哪个为准（本方已按规格 §3 的权威口径实现 same_close）；(2) 现金不足拒单（回测 39.9%）是否接受为口径——执行层现按回测同构「同时提交卖与买」，若改「先卖后买」须重跑回测 | 用户 | 不阻塞 dry-run |
+| 22 | 看板需你裁定的两项：秒更间隔（现 5 秒采样 / 账户 10 秒 / 行情 30 秒）；手动下单页是否保留（它能绕过策略下真单） | 用户 | 现状已可用 |
 
 ## 时间线
 
@@ -155,4 +171,5 @@
 | 2026-08-22 10:2x | 密钥闸软规则定案，过程记录（三轮试错，全部由对抗验证驱动）。第一轮把「字段名与取值各自出现在行内即可」收窄为「字段名紧邻其支配的赋值」，自测 12 正例 11 反例全过，但四路对抗攻击（340 个构造样本、68 个 agent）查出下标赋值 `os.environ["OKX_API_KEY"] = "..."`、`cfg["okx"]["api_key"] = "..."` 全部漏检。第二轮放宽分隔符接受收尾引号与下标括号，复跑全部候选仍漏 48 个，暴露出更根本的两类：字段名带后缀（`API_KEY_OKX`、`api_keys`、`API_KEY2`）与 PEP 526 注解赋值（`api_key: str = "..."`）。第三轮判定「紧邻」这条路本身走不通——`vault.put("api_secret", value=...)`、argparse、XML、行尾注释里字段与取值本就不相邻——遂**回退到原有的双条件式**，改在取值侧治本：新增 `_looks_like_code()`，剔除含括号、反引号、CJK 或内部等号的取值（尾部 base64 填充与容器收尾标点先剥离）。原误报 `Order(order_id=self._next_id` 因含 `(` 被剔除。终检以 `git show HEAD:` 载入改动前的真实模块做三方对照：71 个对抗样本中 64 个两版都拦、0 个真实回归、唯一「当前不拦」的是原误报本身、6 个两版都漏的既有缺口已写进模块头 Known gaps。自测 12 正例全中、10 反例全放行；`broker_sim.py`/`common/README.md`/`sync_to_git.py`/`CLAUDE.md` 四个真实文件命中均为 0；pytest 101 passed；端到端 dry-run 由改前 exit=2 变为 exit=0。教训：自测样本由本方设计，对「收窄是否漏检」这类问题无判别力，必须由独立对手构造反例。回滚：`git revert` 本提交即恢复旧规则与旧误报 |
 | 2026-08-22 12:2x~13:0x | **A0 小时频执行规格 + 图表 + 全量统计交付**。规格 `fixplans/t212/a0/02_execution.md`（新建 `fixplans/live/`，README 已登记）：信号层逐条、时序、当日日线合成、复权拼接、数据需求、对账 5 项、限定 6 条、未决 5 项。**关键节 §3 成交映射**——用户指出实盘可提前 1 分钟下单以在收盘成交；该方案（B）与回测方案（A，次场次开盘成交）**信息集完全相同**（15:59 时最后一根完成的 1h bar 仍是 14:30 bar），唯一差别是成交落点。实测 311 笔逐笔比对：收盘成交相对次开成交 **均值 −11.84 bps，标准误 12.64，t=−0.94，p=0.349，95%CI [−36.6,+12.9]**——点估计方向为收盘略差（隔夜跳空在该窗口对本策略有利），但与 0 不可区分，**不得据此主张任一方案更优**。方案 B 未被回测验证，1h 粒度下框架无法表达（禁用当根收盘价成交），需 1h 出信号/1m 走执行的混频，而 1m 仅 21 日不够覆盖。**图表** `reports/a0_1h_20260822.html`（4.7MB 自包含，三格共轴：净值+开仓区间+成交点 / 持仓占比 / 回撤）；三件套 `research/regime_lab/report/{make_a0_1h_report_data.py,a0_1h_report_template.html,build_a0_1h_report.py}`，复用 v1 的 `_verify`/`_holding_intervals` 不复制；数据管线三处修正 C1 美股交易日历取自 AAPL 日线分区 / C2 纽约本地日期 / C3 权威列 equity_liq_gbp。锚定断言 CAGR/回撤/夏普/终值四项逐位一致。视觉 QA：5 trace、9 shape、三 y 轴、控制台零报错、解释卡与主题切换冒烟通过；修掉两处 v1 残留文案（限定段仍写 £1,000 与日频数字、图例起点 £1,000）。**全量统计** `backtest/results/a0_1h_full_stats_20260822.csv`（两臂 × 38 项：换手率年化 5.10 对 6.50 倍、平均持仓 78.26 对 63.81 天、中位 23 对 8 天、盈亏比 4.37 对 3.99、胜率 56.8% 对 57.1%、卡玛 1.32 对 1.60、成本 £497 对 £626）。⚠️ `exposure_time_fraction` 两臂不可比（对照臂分母是 2010-2026 全 feed）。**须持续强调的纠正**：43.63% 不是小时频带来的——同窗口日频对照 42.94%，频率仅贡献 +0.68pp；与既有 20.97% 之差几乎全部来自窗口不同，且该窗口非样本外。回滚：删 fixplans/live/、reports/a0_1h_20260822.html、report 三件套的 1h 版与统计 CSV，还原 fixplans/README.md 两行 |
 | 2026-08-22 12:4x | 用户裁定（S6）：策略用收盘价且可在收盘前 1 分钟下单，日频不必推迟到次日开盘成交。落为 `EngineConfig.fill_timing`（`next_open` 默认 / `same_close`），裁定与限定写 `research/decisions/20260822_close_execution_timing.md`；same_close 属对 `/backtest-discipline` §二.1/2 的声明式偏离，须在策略预注册写明，文件名带 `fill-same_close`。保守处理：收盘临近滑点 `close_gap_bps`（worst 11 / actual 5）依据本地 1m 数据实测 1,061 样本（收盘前 1 分钟价 vs 官方收盘价 偏离中位 4.8bp、P75 10.7、P90 22.3）；延迟抽样 >60s 或当根闭市回落下一开盘。频率本就可选 （interval ∈ 1m/2m/5m/1h/1d）。broker_sim 拆出 `fills.py`/`same_close.py`。合并时 main 已被其他会话推进（CLAUDE.md 新增 §1.5/§4.3/§4.4，全仓 README 与模块头），普通合并 `ac3d0fc`，两处冲突（ARCHITECTURE、冒烟脚本头）按对方新格式解决；新纪律合规提交 `ab7cef4`。main 上 106 测试 + 冒烟 7/7（含新 C7）全过。回滚：`git revert ab7cef4 ac3d0fc -m 1` |
+| 2026-08-22 15:1x~16:4x | **执行层改小时频 + 本地看板建成**（本工作树，全程 DRY_RUN）。(a) 先把并行会话已完工但未提交的 73 个文件在 main 上落成提交 `2696592`（fixplans 重构、日内适配层、same_close、新代码纪律），再合并进本分支 `e74e131`；冲突处置见该提交信息，其中策略包被裁定不导出符号，故本方的版本注册表改为 `trading212/execution/strategy_loader.py`（按路径加载 + 支持日内壳 `make_strategy()` 注入日线历史）。(b) 执行层按 `fixplans/t212/a0/02_execution.md` 改造为小时频：15:30 决策、信息止于 14:30 bar、收盘前 60 秒提交、成交落当日收盘价；`instruments.py` 换场次模型（半日市按交易所日历判定）、`market_data.py` 换 1h 装配并新增「FX bar 必须恰在决策键前 90 分钟」断言、`risk_gate.py` 时段语义反转、`daily_cycle.py`→`session_cycle.py`。新增 `tests/execution/test_backtest_equivalence.py`：真实数据下同一决策键（2026-08-20 19:30Z）实盘路径与引擎路径的目标逐标的相等。提交 `e97d0e1`。(c) 新建 `trading212/dashboard/`（9 模块 + assets）与根目录 `dashboard.command`：秒更采集（各源独立轮询，采样只读缓存，故券商不可达时刷新节奏不受影响）、配置校验弹窗、Plotly 资产曲线与持仓图、独立手动下单页（三重条件缺一不可，独立留痕不进策略账本）。中文文案集中 `assets/labels.json`，源码纯 ASCII。221 项测试全过 + 27 项 HTTP 冒烟全过 + 浏览器视觉验收（图表 3 序列 101 点、断点标记正确）。冒烟写入的风控数值与 £500 账本已全部清除还原。回滚：删 `trading212/dashboard/`、`dashboard.command`、`tests/dashboard/`；执行层回 `e74e131` |
 | 2026-08-22 13:5x~15:0x | **三件：fixplans 重构 + 成交时序改 same_close 重跑 + 报告重出**。(a) **fixplans 重构**（用户裁定）：顶层收敛为 `t212/` 与 `crypto/` 两个；`framework/`+`validation/` 迁 `docs/backtest/`（新建 README 说明与 fixplans 的分工），`t212_faults/` → `fixplans/t212/platform/`，A0 规格进 `fixplans/t212/a0/`（01_strategy 新建 / 02_execution 迁入）。机械改写 49 个文件共 118 处引用，残留旧路径 0（仅工作记忆历史行保留原文，按只增不改）；CLAUDE.md §六新增纪律「fixplans 只放交易代码规格、每份说明须指向具体交易代码文件、顶层只两个目录」，§4 目录树与 ARCHITECTURE.md 目录表同步。106 测试全过、引用完整性 12/12 无悬空。(b) **成交时序改 same_close**：发现回测框架分支已在 `8cb0950`~`9c7a7e9` 建成 `EngineConfig.fill_timing` 与 `backtest/t212/same_close.py`（close_gap_bps actual 5 / worst 11，据 1,061 个本地 1m 样本校准），本轮直接选用，**引擎零改动**。入口层增 FILL_TIMINGS 双臂，验收脚本按时序分叉断言。实测：1h same_close 309 笔全部当场次 15:30 成交、全带 at_close、隐含成本恒 6.0000bps。**结果（1h actual）**：same_close £26,588.65(+165.89%)、占用回撤 17.90%、卡玛 1.63；next_open £27,297.72(+172.98%)、占用回撤 22.07%、卡玛 1.32。**即收盘成交以约 7pp 总收益换约 4pp 回撤**，非单向更优；5m 上方向相反（same_close 优 2.8pp），非系统性。(c) **补测两项**：拒单 201 次实为 **22 段封锁、10 只标的**（AMAT 连拒 38 次封锁 54 天、AMD 31 次 42 天），根因现金/权益中位 5.25% 略低于单槽所需 5.56%；槽位随权益缩放实测（建仓中位 2023 £552 → 2026 £1,471，权益 2.7 倍同步 2.7 倍），但**已有仓位因免churn带不重算**，全额再平衡属 MAJOR 变更、当前不做。报告 `reports/a0_1h_20260822.html` 按 same_close 重出（锚定四项逐位一致、限定段全部数据驱动、控制台零报错）；统计 CSV 增 next_open 对照列。裁定追加 §11（12 行终值与结果件交叉核对一致）。回滚：`git checkout` 还原 fixplans/docs/CLAUDE.md/ARCHITECTURE.md，入口层去 FILL_TIMINGS 双臂 |

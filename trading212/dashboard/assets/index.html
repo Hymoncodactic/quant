@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A0 交易看板</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script>window.DASH_TOKEN = "__DASH_TOKEN__";</script>
+</head>
+<body>
+<header>
+  <h1 id="app-title">A0 交易看板</h1>
+  <div class="statusbar" id="statusbar"></div>
+  <nav>
+    <a href="/" class="active" id="nav-dash">总览</a>
+    <a href="/orders" id="nav-orders">手动下单</a>
+  </nav>
+</header>
+
+<main>
+  <section class="panel" id="kpi-panel">
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <section class="panel" id="setup-panel">
+    <h2 id="setup-heading"></h2>
+    <p class="note" id="setup-intro"></p>
+    <div class="grid2">
+      <div>
+        <div class="field" id="money-field">
+          <label id="money-label"></label>
+          <div class="hint" id="money-hint"></div>
+          <div class="row">
+            <input type="text" id="money-input" inputmode="decimal">
+            <button id="money-btn" class="primary"></button>
+          </div>
+          <div class="err hidden" id="money-err"></div>
+        </div>
+      </div>
+      <div id="settings-fields"></div>
+    </div>
+    <div class="row">
+      <button id="save-btn" class="primary"></button>
+      <span id="ready-flag"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="controls-heading"></h2>
+    <p class="note" id="controls-note"></p>
+    <div class="row">
+      <button id="start-btn" class="primary"></button>
+      <button id="stop-btn"></button>
+      <button id="shutdown-btn" class="danger"></button>
+      <span class="note" id="shutdown-note"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="equity-heading"></h2>
+    <p class="note" id="gap-note"></p>
+    <div class="chart" id="equity-chart"></div>
+    <p class="note hidden" id="equity-empty"></p>
+  </section>
+
+  <section class="panel">
+    <h2 id="positions-heading"></h2>
+    <div class="chart" id="positions-chart" style="height:280px"></div>
+  </section>
+
+  <section class="panel">
+    <h2 id="table-heading"></h2>
+    <div id="table-wrap"></div>
+  </section>
+</main>
+
+<div class="modal-back hidden" id="modal-back">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p class="note" id="modal-intro"></p>
+    <ul id="modal-list"></ul>
+    <div class="row"><button class="primary" id="modal-ok"></button></div>
+  </div>
+</div>
+
+<script src="/assets/plotly.min.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>
