@@ -4,12 +4,12 @@ assertion, and the lookahead probe's discriminative power.
 Responsibility: pin the four-step order of the engine's main loop and the
 guards that sit around it. The end-to-end case checks that one signal produces
 one fill at the next bar's open and that equity is marked on every bar.
-Determinism, item U16 of fixplans/validation/02_test_plan.md, requires two
+Determinism, item U16 of docs/backtest/validation/02_test_plan.md, requires two
 runs of the same configuration to produce identical frames. The same-bar-fill
 case wraps the broker in a local subclass that reports every fill as if it had
 happened on the submission bar, which the engine must reject with a readable
 AssertionError rather than accept. The probe cases implement
-fixplans/validation/01_no_lookahead.md section 2: on a series constructed so
+docs/backtest/validation/01_no_lookahead.md section 2: on a series constructed so
 that each bar opens exactly at the previous close, the only money available
 comes from knowing the coming bar's intra-bar direction, so the probe arm must
 profit, the blind momentum arm must lose, and with the probe switched off the

@@ -54,13 +54,13 @@
 
 | skill | 被哪些 skill 引用 | 被哪些项目文档引用 |
 |---|---|---|
-| `verified-dev` | `backtest-discipline` §前置 2、`market-data-pipeline` §前置 2、`live-trading-architecture` §前置 2、`standardized-bug-fix` §前置 2 与 §适用场景 与 §阶段 2 | `CLAUDE.md` 第 4 行、`ARCHITECTURE.md` §4、`fixplans/validation/02_test_plan.md` 第 3 行 |
-| `quant-code-standards` | `verified-dev` 阶段 0 第 8 项、阶段 1.1、阶段 3；`quant-error-handling` §前置 2 与 §3.1；`live-trading-architecture` §前置 2 与 §4.1；`standardized-bug-fix` §前置 3 与 §阶段 3；`backtest-discipline` §前置 2；`market-data-pipeline` §前置 2 | `CLAUDE.md` §二第 5 条（第 89 行）、§2.3 第 2 条（第 161 行）、§4.4（第 354 行）、`ARCHITECTURE.md` §2.0.1 与 §2.1 与 §4、`fixplans/framework/01_architecture.md`、`fixplans/framework/05_metrics_reporting.md`、`fixplans/framework/06_strategy_plugin.md`、`fixplans/validation/02_test_plan.md`、`WORKING_MEMORY.md` 时间线多行 |
-| `backtest-discipline` | `strategy-research` §十；`live-trading-architecture` §六上线路径第 1 阶段 | `CLAUDE.md` §二第 6 条（第 90 行）、`ARCHITECTURE.md` §2.2 与 §4、`backtest/README.md` §4、`fixplans/framework/02_data_layer.md`、`fixplans/framework/04_cost_model.md`、`fixplans/framework/05_metrics_reporting.md`、`fixplans/validation/01_no_lookahead.md`、`fixplans/validation/02_test_plan.md` |
+| `verified-dev` | `backtest-discipline` §前置 2、`market-data-pipeline` §前置 2、`live-trading-architecture` §前置 2、`standardized-bug-fix` §前置 2 与 §适用场景 与 §阶段 2 | `CLAUDE.md` 第 4 行、`ARCHITECTURE.md` §4、`docs/backtest/validation/02_test_plan.md` 第 3 行 |
+| `quant-code-standards` | `verified-dev` 阶段 0 第 8 项、阶段 1.1、阶段 3；`quant-error-handling` §前置 2 与 §3.1；`live-trading-architecture` §前置 2 与 §4.1；`standardized-bug-fix` §前置 3 与 §阶段 3；`backtest-discipline` §前置 2；`market-data-pipeline` §前置 2 | `CLAUDE.md` §二第 5 条（第 89 行）、§2.3 第 2 条（第 161 行）、§4.4（第 354 行）、`ARCHITECTURE.md` §2.0.1 与 §2.1 与 §4、`docs/backtest/framework/01_architecture.md`、`docs/backtest/framework/05_metrics_reporting.md`、`docs/backtest/framework/06_strategy_plugin.md`、`docs/backtest/validation/02_test_plan.md`、`WORKING_MEMORY.md` 时间线多行 |
+| `backtest-discipline` | `strategy-research` §十；`live-trading-architecture` §六上线路径第 1 阶段 | `CLAUDE.md` §二第 6 条（第 90 行）、`ARCHITECTURE.md` §2.2 与 §4、`backtest/README.md` §4、`docs/backtest/framework/02_data_layer.md`、`docs/backtest/framework/04_cost_model.md`、`docs/backtest/framework/05_metrics_reporting.md`、`docs/backtest/validation/01_no_lookahead.md`、`docs/backtest/validation/02_test_plan.md` |
 | `quant-error-handling` | `market-data-pipeline` §前置 3 与 §三第 2 条；`verified-dev` 阶段 3 第 4 条 | `ARCHITECTURE.md` §4 |
 | `live-trading-risk-check` | `live-trading-architecture` §前置 3；`standardized-bug-fix` 阶段 5 第 3 条 | `ARCHITECTURE.md` §4 |
 | `html-report` | `backtest-discipline` §九第 4 条 | `CLAUDE.md` §4.2 第 6 条（第 286 行）、`ARCHITECTURE.md` §4、`WORKING_MEMORY.md` 时间线 2026-08-21 行 |
-| `strategy-research` | `backtest-discipline` §前置 3 | `ARCHITECTURE.md` §4、`fixplans/framework/06_strategy_plugin.md` 第 56 行 |
+| `strategy-research` | `backtest-discipline` §前置 3 | `ARCHITECTURE.md` §4、`docs/backtest/framework/06_strategy_plugin.md` 第 56 行 |
 | `live-trading-architecture` | 无 | `ARCHITECTURE.md` §4、`research/decisions/20260821_a0_framework_comparison.md` 第 113 行 |
 | `standardized-bug-fix` | 无 | `ARCHITECTURE.md` §4 |
 | `market-data-pipeline` | 无 | `ARCHITECTURE.md` §4 |

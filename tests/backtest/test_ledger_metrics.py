@@ -17,7 +17,7 @@ separate numbers, as required by CLAUDE.md section 2.3: the sample used here
 has signed median 2 and absolute deviation median 8, so reporting one number
 for both cannot pass. A reservation reduces available cash without changing
 the cash balance. Discrimination design is recorded in
-fixplans/validation/02_test_plan.md items U1 and U13.
+docs/backtest/validation/02_test_plan.md items U1 and U13.
 
 Out of scope: what causes the fills, which is covered by
 tests/backtest/test_broker.py; the liquidation-valued metrics added by the

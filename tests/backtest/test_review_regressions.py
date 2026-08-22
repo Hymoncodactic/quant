@@ -16,7 +16,7 @@ US and LSE overlap window, which must follow both daylight-saving regimes
 rather than a fixed window in UTC. Findings c5, c15 and c21 cover the engine
 flooring order deltas to the venue's four-decimal grid, so an off-grid target
 trades its truncated size instead of being rejected on every bar forever. Item
-U14 of fixplans/validation/02_test_plan.md is completed here by the stale
+U14 of docs/backtest/validation/02_test_plan.md is completed here by the stale
 ticker, authentication outage and submission pacing switches. Item U16 is
 completed at file level: two identical runs must write byte-identical result
 files, compared by SHA-256.

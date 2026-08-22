@@ -8,7 +8,7 @@
 不装：策略逻辑（在 `trading212/strategy/`）、环境与账户配置（在上一级 `config/`）、
 消融臂的参数覆盖（由入口脚本显式指定并记入运行元数据）。
 
-策略体内禁止读配置（`fixplans/framework/06_strategy_plugin.md` §参数）：
+策略体内禁止读配置（`docs/backtest/framework/06_strategy_plugin.md` §参数）：
 参数一律由入口层读取一次后经 `params` 传入。
 
 ## 2. 文件清单

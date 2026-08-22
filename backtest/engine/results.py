@@ -1,7 +1,7 @@
 """Result persistence: the trades, equity and meta triplet of one run.
 
 Responsibility: write deterministic, self-describing result files under
-backtest/results/ (fixplans/framework/05_metrics_reporting.md section 4), and
+backtest/results/ (docs/backtest/framework/05_metrics_reporting.md section 4), and
 derive the canonical file-name stem that carries the strategy name and version,
 the arm, the window, the fee tier and the seed. Determinism is the point: no
 wall-clock timestamp enters any file, so re-running an identical configuration

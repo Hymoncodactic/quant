@@ -254,6 +254,8 @@ quant/
 │   ├── okx/{raw,curated}
 │   ├── t212/{raw,curated}
 │   └── reference/         合约规格、费率、交易日历（须注明取自哪个接口、取回时间）
+├── fixplans/{t212,crypto}/ 交易代码规格，指向 <venue>/strategy 与 <venue>/execution。入库
+├── docs/backtest/        回测框架建设计划（framework / validation）。入库
 ├── docs/data/<source>/    数据的说明与重建凭据。入库
 │   ├── DATA_SPEC.md       字段、单位、时区、已知陷阱
 │   ├── MANIFEST.jsonl     每分区一条：坐标、上游 URL、字节数、行数
@@ -273,6 +275,8 @@ quant/
 | `data/*/raw/` | 只增不改（§3.4） |
 | `data/` | **整棵 gitignore**，不得在其中放说明件；说明与凭据一律进 `docs/data/<source>/` |
 | `docs/data/<source>/` | 入库。每个数据源须配 `DATA_SPEC.md`（字段、单位、时区、生成脚本）与 `MANIFEST.jsonl`（重建凭据） |
+| `fixplans/` | 只放交易代码规格，顶层只有 `t212/` 与 `crypto/`（§六）。回测框架计划不放这里 |
+| `docs/backtest/` | 回测框架建设计划。⛔ 不放交易代码规格 |
 | `research/prereg/` | 跑结果**之前**冻结的判定标准，与 `decisions/` 同前缀成对 |
 | `logs/` `reports/` `backtest/results/` | gitignore（报告产出件按需单独入库） |
 
@@ -337,7 +341,7 @@ quant/
 | `.claude/skills/<name>/` | 不需要，`SKILL.md` 本身即说明 |
 | 项目根目录 | 不需要，由 `ARCHITECTURE.md` 与 `CLAUDE.md` 覆盖 |
 | gitignore 的运行时产物目录：`logs/`、`reports/`、`backtest/results/`、`data/`、`secrets/` | 不需要，放进去也不入库。其职责在 `ARCHITECTURE.md` §1 与父目录 `README.md` 中登记，允许其在磁盘上为空 |
-| 父目录 `README.md` 已逐个列出其全部文件的子目录 | 不需要，例如 `fixplans/framework/`、`fixplans/t212_faults/`、`fixplans/validation/` 三者的每个文件均已在 `fixplans/README.md` 中登记。此时另写子目录 `README.md` 属双份维护，反而会失同步 |
+| 父目录 `README.md` 已逐个列出其全部文件的子目录 | 不需要，例如 `docs/backtest/framework/`、`fixplans/t212/platform/`、`docs/backtest/validation/` 三者的每个文件均已在 `fixplans/README.md` 中登记。此时另写子目录 `README.md` 属双份维护，反而会失同步 |
 
 固定结构，六节，缺一不可：
 
@@ -410,5 +414,11 @@ quant/
 - 涉及交易所 API 的任何编码，先按 §1.1 的 S4 取回权威事实并落到
   `data/reference/` 或代码注释，再动手。
 - 回测口径以 `research/decisions/` 下最新一份裁定为准，不是脚本内的默认值。
+- **`fixplans/` 只放交易代码的规格**，且每份说明都必须指向具体的交易代码文件
+  （含策略层）。`trading212/` 与 `crypto_trading/` 会读取该目录来更新策略与执行代码，
+  因此规格里的每一条都要能对应到一个可改的文件与函数，不得只写方法论。
+  目录只有两级顶层：`fixplans/t212/` 与 `fixplans/crypto/`，其下按策略或主题分目录
+  （如 `fixplans/t212/a0/`）。⛔ 不得在 `fixplans/` 下新开其他顶层目录。
+  回测框架自身的建设计划不属交易代码，放 `docs/backtest/`。
 - 本项目**不做**、也不接受以下内容：给他人的投资建议、代客理财、
   任何形式的对外发布荐股/荐币。产出只服务于用户本人的自有资金决策。

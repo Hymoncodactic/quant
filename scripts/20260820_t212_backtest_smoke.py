@@ -8,7 +8,7 @@ when every check passes.
 Window and universe are chosen for discriminating power, not convenience. The
 window 2026-06-01 to 2026-08-14 crosses the BST regime in which London daily
 bars stamp 23:00 UTC of the previous day, the alignment trap recorded in
-fixplans/framework/02_data_layer.md section 3.1. The date 2026-07-03 is a US
+docs/backtest/framework/02_data_layer.md section 3.1. The date 2026-07-03 is a US
 market holiday on which the LSE is open, so the calendar-asymmetry path
 executes. The universe mixes USD (AAPL, CSPX.L), GBP (VUSA.L) and GBp (SGLN.L)
 quote currencies, so every conversion branch runs.
@@ -25,7 +25,7 @@ Out of scope: synthetic unit tests, which live under tests/; the engine, the
 cost model and the T212 runner themselves, which live under backtest/; loading
 bars and FX, which belongs to backtest/t212/data_source.py. Smoke checks that
 read real landed data are kept in scripts/ rather than tests/ by the ruling in
-fixplans/validation/02_test_plan.md section 2, restated in tests/README.md
+docs/backtest/validation/02_test_plan.md section 2, restated in tests/README.md
 section 1.
 
 Public functions:

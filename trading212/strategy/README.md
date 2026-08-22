@@ -6,7 +6,7 @@
 实盘执行层 import 同一份文件，不允许各写一份「回测版」与「实盘版」。
 
 模块必须是纯函数：输入市场视图与持仓，输出目标股数，不读网络、不写状态、不下单。
-契约全文见 `fixplans/framework/06_strategy_plugin.md`，加载与校验在
+契约全文见 `docs/backtest/framework/06_strategy_plugin.md`，加载与校验在
 `backtest/engine/strategy_loader.py`。
 
 不装：参数取值（在 `trading212/config/strategies/`，由入口层读一次经 `params` 传入）、

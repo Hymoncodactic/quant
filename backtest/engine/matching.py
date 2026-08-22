@@ -2,10 +2,10 @@
 at what raw price before any venue cost adjustment.
 
 Responsibility: the pure trigger and price logic of
-fixplans/framework/03_order_lifecycle.md section 2.1. Three conventions hold
+docs/backtest/framework/03_order_lifecycle.md section 2.1. Three conventions hold
 throughout: the intra-bar sequence is open, high, low, close, which is the
 NautilusTrader convention adopted in
-fixplans/framework/01_architecture.md section 3.3; an ambiguous bar resolves
+docs/backtest/framework/01_architecture.md section 3.3; an ambiguous bar resolves
 against the strategy; prices are returned as Decimal in the bar's quote
 currency. Two conservative rules follow from that. A resting limit order fills
 only when the bar trades strictly through the limit, because a bare touch
@@ -69,7 +69,7 @@ def match_limit(is_buy: bool, limit: Decimal, bar: Bar) -> Decimal | None:
     (low == limit) does NOT fill: a resting order at the bar's exact extreme
     sits at the back of a queue that a one-tick touch rarely clears, so
     granting the fill would systematically harvest bar extremes
-    (fixplans/framework/03_order_lifecycle.md section 2.1). Sell mirrors.
+    (docs/backtest/framework/03_order_lifecycle.md section 2.1). Sell mirrors.
     """
     if is_buy:
         if _d(bar.open) <= limit:

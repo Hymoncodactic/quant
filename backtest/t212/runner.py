@@ -3,7 +3,7 @@
 Responsibility: the one composition point. Scripts and tests call this instead
 of assembling components by hand, so every run gets the same wiring and the
 same metadata. The fee tier selects the defaults
-(fixplans/framework/04_cost_model.md section 6): "worst" means CostConfig()
+(docs/backtest/framework/04_cost_model.md section 6): "worst" means CostConfig()
 defaults with every fault switch on and is the authoritative tier, while
 "actual" means CostConfig.actual_tier() with every fault switch off and is the
 comparison tier. An explicit cost_cfg or fault_cfg overrides that mapping for

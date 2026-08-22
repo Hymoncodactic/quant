@@ -2,7 +2,7 @@
 submit the position diff as orders, then mark to market.
 
 Responsibility: sequencing and the online no-lookahead assertions of
-fixplans/validation/01_no_lookahead.md. The per-step order is fixed at four
+docs/backtest/validation/01_no_lookahead.md. The per-step order is fixed at four
 steps and the order itself is a ruling, not an implementation detail:
     1. broker.process_bar() settles orders submitted at earlier steps.
     2. strategy(view, portfolio, params) sees history up to and including now.
@@ -11,7 +11,7 @@ steps and the order itself is a ruling, not an implementation detail:
     4. ledger.mark() samples valuation and occupancy AFTER the submissions, so
        cash frozen at this step enters the capital peak; marking earlier would
        let a reservation that resolves next bar escape the denominator
-       (fixplans/framework/05_metrics_reporting.md section 1.1).
+       (docs/backtest/framework/05_metrics_reporting.md section 1.1).
 Two assertions run always: a fill in the same step as its submission is a
 lookahead bug, and on intraday data a fill bar must not open before the
 submission bar's close exists. A held symbol whose feed stops producing bars
@@ -154,7 +154,7 @@ class BacktestEngine:
             # Mark AFTER submissions so cash frozen for orders placed this
             # step enters the occupancy series; marking before would let a
             # reservation that resolves next bar escape the capital peak
-            # (fixplans/framework/05_metrics_reporting.md section 1.1).
+            # (docs/backtest/framework/05_metrics_reporting.md section 1.1).
             self.ledger.mark(step, key, self._valuation_prices(key),
                              self._liquidation_prices(key))
         return self._collect()
@@ -170,7 +170,7 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _assert_fill_timing(self, fills: list[Fill]) -> None:
-        """Online lookahead guards, always on (fixplans/validation/
+        """Online lookahead guards, always on (docs/backtest/validation/
         01_no_lookahead.md section 1.2).
 
         Step guard: a fill in the same step its order was submitted is a
@@ -294,7 +294,7 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _collect(self) -> RunResult:
-        # Each trade row is self-describing (fixplans/framework/
+        # Each trade row is self-describing (docs/backtest/framework/
         # 05_metrics_reporting.md section 4.2): submission time, side and the
         # order's terminal state ride along with the fill.
         trades = pd.DataFrame([{

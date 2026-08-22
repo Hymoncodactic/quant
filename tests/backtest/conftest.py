@@ -12,7 +12,7 @@ fill instants can be asserted exactly rather than approximately.
 Out of scope: assertions, which belong to the test modules themselves; any
 reading of data/, since every test builds its data in process (the checks
 against real downloaded data live in scripts/, see
-fixplans/validation/02_test_plan.md section 2); the code under test, which
+docs/backtest/validation/02_test_plan.md section 2); the code under test, which
 lives in backtest/engine/ and backtest/t212/.
 
 Public functions:

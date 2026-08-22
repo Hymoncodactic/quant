@@ -2,7 +2,7 @@
 
 Responsibility: everything between "the strategy wants an order" and "the
 ledger books a fill", faithful to the venue contract and its documented faults
-(fixplans/framework/03_order_lifecycle.md, fixplans/t212_faults/): submission
+(docs/backtest/framework/03_order_lifecycle.md, fixplans/t212/platform/): submission
 with pacing counters and cash reservation, eligibility expressed as a TIME
 rather than a merged-timeline step count, DAY expiry at exchange-local
 midnight, the one-shot cancel-versus-fill race, the per-symbol per-bar volume
@@ -11,7 +11,7 @@ gate re-applied at execution, and the release or re-reservation of frozen cash
 after each fill. Reject reasons follow the venue's observed error vocabulary
 where one exists (insufficient_free_for_stocks_buy, selling_equity_not_owned,
 quantity_precision_mismatch, entity_not_found -- sources in
-fixplans/framework/03_order_lifecycle.md section 1.4).
+docs/backtest/framework/03_order_lifecycle.md section 1.4).
 
 Out of scope: raw trigger and price rules (backtest/engine/matching.py); cost
 arithmetic (backtest/t212/costs.py); fault parameters and their evaluation
@@ -377,7 +377,7 @@ class T212BrokerSim:
 
     def half_spread(self, symbol: str, ts: pd.Timestamp) -> Decimal:
         """Half spread in bps, widened outside the US overlap for LSE lines
-        (fixplans/framework/04_cost_model.md section 4.4)."""
+        (docs/backtest/framework/04_cost_model.md section 4.4)."""
         hs = half_spread_bps(symbol)
         if symbol.endswith(".L") and not in_us_overlap(self.fx_query_ts(ts)):
             hs = hs * self.cost_cfg.spread_session_multiplier

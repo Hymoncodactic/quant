@@ -33,7 +33,7 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 ```
 
 策略模块契约（常量 + `compute_targets(view, portfolio, params) -> {标的: 目标股数}`）
-见 `fixplans/framework/06_strategy_plugin.md`；加载器对名字/版本不符直接拒载。
+见 `docs/backtest/framework/06_strategy_plugin.md`；加载器对名字/版本不符直接拒载。
 
 ## 3. 引擎时序（每根 bar 固定四步）
 

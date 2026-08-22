@@ -38,7 +38,7 @@
 | `backtest/t212/data_source.py` L8 | `docs/data/t212/DATA_SPEC.md` §5.1 | 目录与文件命名口径 |
 | `backtest/engine/types.py` L32 | `docs/data/t212/DATA_SPEC.md` | 各周期每根 bar 的秒数 |
 | `backtest/t212/README.md` L13 | `docs/data/t212/DATA_SPEC.md` §3 | 日线时间戳落在交易所本地零点的实证 |
-| `fixplans/framework/02_data_layer.md` L13-L17 | `docs/data/t212/DATA_SPEC.md` §1/§3/§5 | 数据层计划的五条事实依据 |
+| `docs/backtest/framework/02_data_layer.md` L13-L17 | `docs/data/t212/DATA_SPEC.md` §1/§3/§5 | 数据层计划的五条事实依据 |
 | `research/decisions/20260821_backtest_data_sources.md` L18 | `docs/data/t212/DATA_SPEC.md` §5 | 1h 历史深度约 730 天的限定 |
 | `.claude/skills/verified-dev/SKILL.md` L57 | `docs/data/<source>/DATA_SPEC.md` | 开发流程规定：涉及数据先读该文件 |
 

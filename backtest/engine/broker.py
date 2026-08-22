@@ -3,7 +3,7 @@ future live execution adapter implement.
 
 Responsibility: the type contract only, expressed as a runtime-checkable
 typing.Protocol, so the engine talks to any broker through a single surface
-(fixplans/framework/01_architecture.md section 2, where the same-interface
+(docs/backtest/framework/01_architecture.md section 2, where the same-interface
 principle is recorded as the lesson taken from the lumibot survey). No behavior
 lives here. Retention note: no module imports this Protocol at runtime today
 because backtest/t212/broker_sim.py duck-types it rather than inheriting it;

@@ -23,7 +23,7 @@
    见 `research/decisions/20260821_paid_data_sources.md` §二）。以现存标的池
    回测的选股类结论系统性偏乐观；消除须付费源（同文件 §一）。
 4. **混交易所 1h 时间轴**：美股 bar 在 :30 网格、伦敦在 :00 网格，撮合资格
-   按时间制执行（`fixplans/framework/01_architecture.md` §2），引擎带日内
+   按时间制执行（`docs/backtest/framework/01_architecture.md` §2），引擎带日内
    成交时间断言。
 5. **crypto 线当前只有数据读取层**（`backtest/okx/data_source.py`）。
    OKX 撮合/成本适配器未建，须先按 S4 取证 OKX 现货费率档、最小下单量、
@@ -37,4 +37,4 @@
 1. okx 撮合/成本适配器（S4 取证 + 实施 + 判别力测试），完成前 crypto 线
    不产出任何回测结论。
 2. 1m K 线与 bookTicker 的联合馈送设计（bar 主序列 + L1 校准）写入
-   `fixplans/framework/02_data_layer.md` 的后续修订。
+   `docs/backtest/framework/02_data_layer.md` 的后续修订。

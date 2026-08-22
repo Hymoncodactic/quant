@@ -15,7 +15,7 @@
 骨架待实现，将来放什么：
 
 1. 文件名 `<name>_v<M>_<m>_<p>.yaml`，与 `crypto_trading/strategy/<name>_v<M>_<m>_<p>.py`
-   同名同版本成对（`fixplans/framework/06_strategy_plugin.md:21`）。
+   同名同版本成对（`docs/backtest/framework/06_strategy_plugin.md:21`）。
 2. 内容为该策略版本的真实参数基线。消融臂由入口脚本在此基线上做显式且留痕的覆写，
    不另建文件。
 3. 参数由入口层读取一次后作为 `params` 传入策略函数，策略体内禁止读配置。

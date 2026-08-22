@@ -39,7 +39,7 @@ A0 定义来源：`research/decisions/20260820_regime_lf_ruling.md` §3（研究
 压到 21.9%；A0 的全部价值在**风险端**（2022 年 -10.9% 对 bh 的 -43.3%），
 Sharpe 四臂相近（0.98~1.10）。
 
-## 3. 框架口径（本金 = 峰值占用，`fixplans/framework/05_metrics_reporting.md`）
+## 3. 框架口径（本金 = 峰值占用，`docs/backtest/framework/05_metrics_reporting.md`）
 
 | 臂(actual) | 峰值占用 | 年化(占用) | 回撤(占用) | 成交笔数 | 已平仓位 | 平仓胜率 | 盈亏比 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -94,7 +94,7 @@ Sharpe 四臂相近（0.98~1.10）。
    非数据错误；超容差仍中止。
 2. `backtest/t212/data_source.py`：GBPUSD=X 读入时 H/L 包络至含 O/C
    （Yahoo FX 收盘取自不同截面，103 根、偏差 ≤6e-4；引擎只读 FX 收盘，
-   修复不改变任何数字）。均已补记 `fixplans/framework/02_data_layer.md` 变更记录。
+   修复不改变任何数字）。均已补记 `docs/backtest/framework/02_data_layer.md` 变更记录。
 
 ## 8. 结论限定
 

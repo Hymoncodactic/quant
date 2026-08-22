@@ -4,7 +4,7 @@ Responsibility: declare the public API surface of the engine by re-exporting
 the twenty names listed in __all__ from the submodules, so a consumer can
 depend on one import path instead of the internal module split. The module map
 is registered in ARCHITECTURE.md section 2.2 and the design plans are in
-fixplans/framework/.
+docs/backtest/framework/.
 
 Out of scope: all behavior. Bar streaming lives in feed.py, matching rules in
 matching.py, accounting in ledger.py, the main loop in engine.py, statistics in

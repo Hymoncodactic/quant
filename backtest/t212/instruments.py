@@ -5,7 +5,7 @@ kind (which drives stamp-duty and PTM applicability), the venue's annualization
 factor, and the US/LSE simultaneous-open test that decides when an LSE half
 spread is widened. Sources are stated per constant. Where a value is an
 inference rather than a measurement it is marked INFERRED and must be treated
-as a sensitivity parameter, not a fact (fixplans/framework/04_cost_model.md
+as a sensitivity parameter, not a fact (docs/backtest/framework/04_cost_model.md
 section 4).
 
 Out of scope: fee arithmetic, which belongs to backtest/t212/costs.py; fill
@@ -33,7 +33,7 @@ Constants:
         "Europe/London" and "America/New_York". The mapping was verified on
         real data 2026-08-20: daily bars stamp exchange-local midnight, and the
         observed midnights place .L suffixes and GBPUSD=X in London and
-        everything else in New York (fixplans/framework/02_data_layer.md
+        everything else in New York (docs/backtest/framework/02_data_layer.md
         section 3.1).
     HALF_SPREAD_BPS
         dict of 10 LSE lines, from 0.36 bps (CSPX.L) to 8.94 bps (IBTL.L).
@@ -42,7 +42,7 @@ Constants:
         research/notes/20260819_t212_execution_and_liquidity.md section 2. T212
         itself adds no spread; the fill pays the reference exchange's touch
         (order-execution-policy.pdf sections 2 and 7, cited in
-        fixplans/framework/04_cost_model.md section 1).
+        docs/backtest/framework/04_cost_model.md section 1).
     DEFAULT_HALF_SPREAD_BPS_US
         Decimal, 1.0 bps. INFERRED: large-cap US names quote around 1 to 2 bps
         touch and no local measurement exists.
@@ -54,7 +54,7 @@ Constants:
         dict of 11 symbols. Security kind drives UK tax applicability: SDRT
         hits LSE STOCK buys only, while ETFs, ETCs, gilts and bonds are exempt
         (helpcentre article 360007081637, official, cited in
-        fixplans/framework/04_cost_model.md section 3). Every current
+        docs/backtest/framework/04_cost_model.md section 3). Every current
         uk_tradable symbol is an ETF or ETC (trading212/ingest/yahoo_bars.py
         UNIVERSE), so SDRT is structurally zero for the present pool; the rule
         stays implemented for future single-name UK stocks.
@@ -105,7 +105,7 @@ EXCHANGE_TZ_NEW_YORK = "America/New_York"
 # research/notes/20260819_t212_execution_and_liquidity.md section 2.
 # T212 itself adds no spread; the fill pays the reference-exchange touch
 # (order-execution-policy.pdf sections 2 and 7, cited in
-# fixplans/framework/04_cost_model.md section 1).
+# docs/backtest/framework/04_cost_model.md section 1).
 HALF_SPREAD_BPS: dict[str, Decimal] = {
     "CSPX.L": Decimal("0.36"),
     "VUSA.L": Decimal("0.70"),
@@ -129,7 +129,7 @@ DEFAULT_HALF_SPREAD_BPS_LSE = Decimal("9.0")
 
 # Security kind drives UK tax applicability: SDRT hits LSE STOCK buys only;
 # ETFs, ETCs, gilts and bonds are exempt (helpcentre article 360007081637,
-# official, cited in fixplans/framework/04_cost_model.md section 3).
+# official, cited in docs/backtest/framework/04_cost_model.md section 3).
 # Every current uk_tradable symbol is an ETF or ETC (trading212/ingest/
 # yahoo_bars.py UNIVERSE), so SDRT is structurally zero for the present pool;
 # the rule stays implemented for future single-name UK stocks.
@@ -161,7 +161,7 @@ def exchange_tz(symbol: str) -> str:
     Mapping verified on real data 2026-08-20: daily bars stamp exchange-local
     midnight, and the observed midnights place .L suffixes and GBPUSD=X in
     Europe/London, everything else in America/New_York
-    (fixplans/framework/02_data_layer.md section 3.1).
+    (docs/backtest/framework/02_data_layer.md section 3.1).
     """
     if symbol.endswith(".L") or symbol == "GBPUSD=X":
         return EXCHANGE_TZ_LONDON
@@ -195,7 +195,7 @@ def in_us_overlap(ts_utc: pd.Timestamp) -> bool:
     when only one side has switched. Daily bars carry exchange-midnight
     stamps and never fall in the window, which is intended: a daily-bar fill
     happens at the LSE open auction and deserves the widened spread
-    (fixplans/framework/04_cost_model.md section 4.4).
+    (docs/backtest/framework/04_cost_model.md section 4.4).
     """
     ny = ts_utc.tz_convert(EXCHANGE_TZ_NEW_YORK).time()
     ldn = ts_utc.tz_convert(EXCHANGE_TZ_LONDON).time()

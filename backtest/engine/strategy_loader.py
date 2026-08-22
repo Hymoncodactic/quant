@@ -8,7 +8,7 @@ signal code (ARCHITECTURE.md section 2.0). The module's own STRATEGY_NAME and
 STRATEGY_VERSION must match the request: a mismatch means the file name lies
 about its identity, and a backtest result would then be attributed to the wrong
 logic version, so the load is refused rather than made compatible. The full
-contract text is fixplans/framework/06_strategy_plugin.md:
+contract text is docs/backtest/framework/06_strategy_plugin.md:
     file        <venue_dir>/strategy/<name>_v<M>_<m>_<p>.py
     constants   STRATEGY_NAME = "<name>", STRATEGY_VERSION = "<M>.<m>.<p>"
     function    compute_targets(view, portfolio, params) -> dict[str, Decimal]

@@ -1,7 +1,7 @@
 """Order admission checks for the T212 broker simulator.
 
 Responsibility: the fixed-order submission checks of
-fixplans/framework/03_order_lifecycle.md section 2.2, plus the worst-case
+docs/backtest/framework/03_order_lifecycle.md section 2.2, plus the worst-case
 buy-cost estimate that those checks and the cash reservation logic share. The
 checks run in one place and in one order: fault windows and universe, zero
 quantity, quantity precision, market data presence, minimum order value, then
@@ -106,7 +106,7 @@ def admission_reason(broker: "T212BrokerSim", spec: OrderSpec,
                      key: pd.Timestamp, step: int,
                      ledger: Ledger) -> str | None:
     """First failing admission check, in the fixed order of
-    fixplans/framework/03_order_lifecycle.md section 2.2; None = admitted."""
+    docs/backtest/framework/03_order_lifecycle.md section 2.2; None = admitted."""
     symbol, qty = spec.symbol, spec.quantity
     blocked = broker.faults.submit_blocked(broker.fx_query_ts(key), symbol,
                                            is_buy=qty > ZERO)

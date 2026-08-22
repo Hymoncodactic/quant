@@ -3,7 +3,7 @@
 Responsibility: turn per-symbol DataFrames into a chronologically advancing
 stream of (step, key, {symbol: Bar}), provide a lookahead-free GBPUSD rate
 lookup, and expose a cutoff-enforced view of history to the strategy.
-Alignment rules (fixplans/framework/02_data_layer.md sections 3 and 4, verified
+Alignment rules (docs/backtest/framework/02_data_layer.md sections 3 and 4, verified
 on real data 2026-08-20): intraday bars align on their UTC open timestamp;
 daily bars align on the exchange-local trading day, because during BST a London
 daily bar's raw UTC timestamp falls at 23:00 of the previous UTC day, so
@@ -84,7 +84,7 @@ def validate_frame(frame: pd.DataFrame, symbol: str,
                    valid_ccys: tuple[str, ...] = VALID_QUOTE_CCYS) -> None:
     """Assert the data-quality gate on one symbol's bars; raise on violation.
 
-    Gate list is fixplans/framework/02_data_layer.md section 7. A violation
+    Gate list is docs/backtest/framework/02_data_layer.md section 7. A violation
     stops the run: silently skipping bad bars is survivorship bias by another
     name.
     """
@@ -187,7 +187,7 @@ class BarFeed:
         """Next not-yet-delivered bar for one symbol, None at the end.
 
         Exists solely for the lookahead probe arm
-        (fixplans/validation/01_no_lookahead.md section 2); the probe is the
+        (docs/backtest/validation/01_no_lookahead.md section 2); the probe is the
         only legal caller.
         """
         cur = self._cursor[symbol]
@@ -203,14 +203,14 @@ class FxSeries:
     """GBPUSD rate lookup without lookahead.
 
     Rate semantics: USD per 1 GBP (Yahoo GBPUSD=X, verified in
-    fixplans/framework/02_data_layer.md section 5.4).
+    docs/backtest/framework/02_data_layer.md section 5.4).
 
     Availability rule: a bar's CLOSE only exists once the bar has closed, so
     the close of a bar stamped ts (its open time) becomes available at
     ts + bar_duration. rate_at(query) therefore returns the close of the last
     bar with ts + duration <= query. In daily mode this yields the previous
     trading day's close for a fill at today's open, which is exactly the
-    no-lookahead convention of fixplans/framework/02_data_layer.md section 5.3.
+    no-lookahead convention of docs/backtest/framework/02_data_layer.md section 5.3.
     Raises instead of extrapolating when nothing is available yet.
     """
 

@@ -9,7 +9,7 @@ Out of scope: matching, cost and fault modeling for OKX. Those modules are not
 built yet. They are blocked on S4 evidence for OKX spot fee tiers, for the
 lotSz / minSz / tickSz returned by GET /api/v5/public/instruments, and for the
 rate-limit and cancel semantics (backtest/okx/README.md section 3, and
-fixplans/framework/06_strategy_plugin.md section 4); until they exist this line
+docs/backtest/framework/06_strategy_plugin.md section 4); until they exist this line
 produces no backtest conclusion. Venue-agnostic mechanics belong to
 backtest/engine/.
 

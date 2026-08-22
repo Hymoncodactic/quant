@@ -19,7 +19,7 @@ backtest/t212/faults.py.
 Public classes:
     CostConfig
         Tunable cost parameters of one run. The frozen dataclass defaults are
-        the worst tier (fixplans/framework/04_cost_model.md section 6);
+        the worst tier (docs/backtest/framework/04_cost_model.md section 6);
         CostConfig.actual_tier() is the measured-costs comparison tier.
 Public functions:
     price_to_gbp(price, quote_ccy, fx_mid)
@@ -36,7 +36,7 @@ Public functions:
         mechanics) and reported as its own informational line.
 
 Parameters and constants (full citations in
-fixplans/framework/04_cost_model.md and
+docs/backtest/framework/04_cost_model.md and
 data/reference/t212_research_20260820/fees_costs_calendar.json):
     FX_FEE_RATE
         Decimal, 0.0015. Helpcentre 360018909758, official: "spot exchange
@@ -141,7 +141,7 @@ _BPS = Decimal("10000")
 @dataclass(frozen=True)
 class CostConfig:
     """Cost parameters of one run. Defaults are the worst-tier settings
-    (fixplans/framework/04_cost_model.md section 6)."""
+    (docs/backtest/framework/04_cost_model.md section 6)."""
     fx_fee_rate: Decimal = FX_FEE_RATE
     slippage_bps: Decimal = Decimal("5")   # zipline FixedBasisPointsSlippage default
     spread_session_multiplier: Decimal = Decimal("2")  # INFERRED, section 4.4
@@ -209,7 +209,7 @@ def apply_spread(raw_price: Decimal, is_buy: bool, half_spread_bps: Decimal,
 
     Buys pay up, sells receive less. The bar price is treated as mid; the
     venue itself adds no spread, so this models crossing the reference
-    exchange's touch (fixplans/framework/04_cost_model.md section 1).
+    exchange's touch (docs/backtest/framework/04_cost_model.md section 1).
     """
     adj = (half_spread_bps + extra_bps) / _BPS
     return raw_price * ((1 + adj) if is_buy else (1 - adj))

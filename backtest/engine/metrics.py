@@ -1,7 +1,7 @@
 """Performance metrics under the project's capital and rate conventions.
 
 Responsibility: turn one run's equity and trades frames into the mandatory
-statistics of fixplans/framework/05_metrics_reporting.md. Five conventions are
+statistics of docs/backtest/framework/05_metrics_reporting.md. Five conventions are
 enforced here rather than left to the caller. Capital is the PEAK concurrent
 occupancy, cost basis plus reserved cash, never a planned allocation.
 Annualized return is total return divided by online days, times the
@@ -192,7 +192,7 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame,
     pnls = realized_pnl_per_sell(trades)
     out.update(_trade_stats(pnls))
     if not trades.empty:
-        # Turnover convention (ruled in fixplans/framework/
+        # Turnover convention (ruled in docs/backtest/framework/
         # 05_metrics_reporting.md section 2): BOTH legs, cost-inclusive --
         # the absolute GBP cash moved per fill. A buy-and-sell round trip of
         # one position therefore counts roughly twice its value.
@@ -225,7 +225,7 @@ def _daily_equity(equity: pd.DataFrame) -> pd.DataFrame:
 def _ratio_stats(rets: pd.Series, annualization_days: int) -> dict:
     """Sharpe, Sortino, annualized volatility from the daily return-on-capital
     series over online days. Risk-free rate fixed at 0 (metadata rule:
-    fixplans/framework/05_metrics_reporting.md section 2)."""
+    docs/backtest/framework/05_metrics_reporting.md section 2)."""
     out: dict = {"sharpe_rf0": None, "sortino_rf0": None,
                  "annualized_volatility_on_capital": None}
     if len(rets) < 2:
@@ -250,7 +250,7 @@ def _liquidation_stats(equity: pd.DataFrame, initial_cash_gbp: float,
 
     equity_liq_gbp marks positions at exit value (bid side, FX fee, sell
     taxes). The AUTHORITATIVE headline numbers are these; the mid-mark
-    versions stay as diagnostics (fixplans/framework/05_metrics_reporting.md).
+    versions stay as diagnostics (docs/backtest/framework/05_metrics_reporting.md).
     Absent column (no venue liquidation valuer) yields no keys.
     """
     if "equity_liq_gbp" not in equity.columns:

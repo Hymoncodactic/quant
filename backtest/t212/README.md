@@ -1,7 +1,7 @@
 # 股票线（Trading 212）回测思路
 
 接入方式见 `backtest/README.md`；本文件只讲这个市场的特有口径。
-每个数值的出处见 `fixplans/framework/03/04` 与
+每个数值的出处见 `docs/backtest/framework/03/04` 与
 `data/reference/t212_research_20260820/`（官方 OpenAPI 规范 + 逐条取证 JSON）。
 
 ## 1. 市场结构决定的口径
@@ -27,7 +27,7 @@
   证据（买看 low 严格穿透，卖只认 close）。
 - DAY 于交易所本地午夜过期；GTC 常驻；每 ticker 挂单上限 50。
 
-## 3. 成本表（全部带官方出处，见 fixplans/framework/04）
+## 3. 成本表（全部带官方出处，见 docs/backtest/framework/04）
 
 | 项 | 取值 |
 |---|---|
@@ -42,7 +42,7 @@
 
 ## 4. 平台故障模拟（16 类，来源均为公开实例）
 
-`FaultConfig` 开关全集见 `fixplans/t212_faults/01_fault_catalog.md`。要点：
+`FaultConfig` 开关全集见 `fixplans/t212/platform/01_fault_catalog.md`。要点：
 随机拒单后订单**实际已受理**（重试即重复持仓，官方非幂等警告）、撤单与成交
 竞态、4 位下单精度 vs 8 位持仓（卖不净留尘）、可用购买力 ≈95%×现金、
 挂单占用可卖数量、延迟档位（正常秒级~20s / 拥堵 1–26 分钟折算 bar）、

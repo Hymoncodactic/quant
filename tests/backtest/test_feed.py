@@ -15,7 +15,7 @@ market is closed and the LSE is open, and requires the timeline to keep that
 day with only the London bar rather than drop or shift it. The exchange-rate
 cases require a fill at day t's open to see only day t-1's close, and require
 a query before the first available instant to raise rather than back-fill.
-Discrimination design is recorded in fixplans/validation/02_test_plan.md items
+Discrimination design is recorded in docs/backtest/validation/02_test_plan.md items
 U9 and U10 and in the R1 shape.
 
 Out of scope: what the engine does with the bars once aligned, covered by

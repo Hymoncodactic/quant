@@ -11,7 +11,7 @@ string. Lifecycle: sell reservations, DAY expiry against GTC survival,
 volume-capped partial fills carried across bars, and the rejected-but-live
 duplicate. Fault switches: the cancel race, the outage window and the
 reduce-only window. Discrimination design is recorded in
-fixplans/validation/02_test_plan.md items U3 to U6, U12, U14 and U15, plus the
+docs/backtest/validation/02_test_plan.md items U3 to U6, U12, U14 and U15, plus the
 fault catalog behaviors F5 to F13; the discriminating numbers are stated in
 the section comments, for instance the next-bar-open case where the
 submission bar closes at 110 and the next bar opens at 120, so that a

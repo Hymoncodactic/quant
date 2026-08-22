@@ -6,7 +6,7 @@
 
 不装的内容：任何被生产代码 import 的模块、任何真实数据、任何会发起网络请求或
 下单的代码。用真实落地数据做的冒烟检验不在此处，按
-`fixplans/validation/02_test_plan.md` §2 的裁定放在 `scripts/` 下带日期前缀的
+`docs/backtest/validation/02_test_plan.md` §2 的裁定放在 `scripts/` 下带日期前缀的
 一次性脚本里（现有两例：`scripts/20260820_t212_backtest_smoke.py`、
 `scripts/20260821_a0_framework_backtest.py`）。
 

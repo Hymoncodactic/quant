@@ -6,7 +6,7 @@ reservations for pending buys, booking of fills, average-cost release of basis
 on sells, mark-to-market valuation, and the per-step equity and occupancy
 record that the metrics layer consumes. Cash is a single GBP balance by design:
 the venue API settles every order in the primary account currency
-(fixplans/framework/01_architecture.md section 4, official source cited there),
+(docs/backtest/framework/01_architecture.md section 4, official source cited there),
 so no foreign-currency balance can exist in an API-driven account. The book is
 long-only because the Invest account is a cash account; the broker rejects
 sells beyond holdings and the ledger enforces the same invariant defensively.
@@ -23,7 +23,7 @@ Public classes:
     Position   One open position: quantity in shares plus the total GBP outlay
                attributed to it under average-cost accounting, which is what
                capital occupied by this position means in the performance
-               denominator (fixplans/framework/05_metrics_reporting.md
+               denominator (docs/backtest/framework/05_metrics_reporting.md
                section 1).
     Ledger     Cash, reservations, fill booking, occupancy and the equity
                record. mark() appends one row per step, holding both the mid
@@ -62,7 +62,7 @@ class Position:
     cost_basis_gbp is the total GBP outlay (fees included) attributed to the
     open quantity under average-cost accounting; it is what "capital occupied
     by this position" means in the performance denominator
-    (fixplans/framework/05_metrics_reporting.md section 1).
+    (docs/backtest/framework/05_metrics_reporting.md section 1).
     """
     qty: Decimal = ZERO
     cost_basis_gbp: Decimal = ZERO
@@ -172,7 +172,7 @@ class Ledger:
         (bid side, conversion fee, sell taxes -- the venue adapter builds
         them). The mid mark stays the diagnostic column; drawdown and final
         equity in the authoritative tier read the liquidation column
-        (fixplans/framework/05_metrics_reporting.md). Without a liquidation
+        (docs/backtest/framework/05_metrics_reporting.md). Without a liquidation
         valuer the column equals the mid mark.
         """
         equity_mid = float(self.equity_gbp(prices_gbp))

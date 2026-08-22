@@ -5,7 +5,7 @@ one interval, one date window. The window is interpreted in the exchange's
 LOCAL calendar: a bar belongs to the window when its exchange-local trading day
 falls inside it. Slicing raw UTC timestamps instead would drop or leak the
 London bars that stamp 23:00 UTC of the previous day during BST
-(fixplans/framework/02_data_layer.md section 3.1). A symbol with no partitions
+(docs/backtest/framework/02_data_layer.md section 3.1). A symbol with no partitions
 raises instead of vanishing from the result. The backtest never touches a
 network (ARCHITECTURE.md section 2, backtest row).
 One data repair happens here, and only for GBPUSD=X: Yahoo stamps the FX daily
@@ -96,7 +96,7 @@ def _read_symbol(data_root: Path | str | None, symbol: str, interval: str,
     belongs to the window when its exchange-local trading DAY is inside it.
     Slicing raw UTC timestamps instead would drop or leak the London bars
     that stamp 23:00 UTC of the previous day during BST
-    (fixplans/framework/02_data_layer.md section 3.1).
+    (docs/backtest/framework/02_data_layer.md section 3.1).
     """
     folder = _symbol_dir(data_root, symbol, interval)
     parts = sorted(folder.glob("*.parquet"))

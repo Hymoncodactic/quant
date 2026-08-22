@@ -7,7 +7,7 @@ makes that import work under every pytest import mode.
 
 Out of scope: test code itself, which lives in tests/backtest/; checks against
 real downloaded data, which are excluded from this tree by
-fixplans/validation/02_test_plan.md section 2 and live in dated one-off
+docs/backtest/validation/02_test_plan.md section 2 and live in dated one-off
 scripts under scripts/.
 
 Public functions: None.

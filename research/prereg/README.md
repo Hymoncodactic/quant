@@ -34,7 +34,7 @@
    `20260821_paid_data_sources.md`），本目录无任何同前缀预注册件，三份裁定均无配对
    预注册。该缺口须在下一轮研究开工时按 `/strategy-research` §九补记或说明。
 4. 内容要求的来源：`/strategy-research` §七.1 规定四块内容（先验立场、判定标准、
-   实验清单、采纳规则）；`fixplans/validation/01_no_lookahead.md` §3 规定策略接入
+   实验清单、采纳规则）；`docs/backtest/validation/01_no_lookahead.md` §3 规定策略接入
    回测前须在本目录的预注册文件中逐特征填写可测性论证表（特征、T 时刻取值用到的
    数据、最晚数据时间戳、可测性论证）。
 5. 命名：ASCII 小写，日期前缀 `YYYYMMDD_`，与配对裁定同前缀（`CLAUDE.md` §4.1）。

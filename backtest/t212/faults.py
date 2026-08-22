@@ -5,8 +5,8 @@ rules -- latency regimes, outage and reduce-only windows, random rejects with
 the duplicate-on-retry trap, cancel races, order quantity precision, the
 buying-power buffer, sell reservation, stale tickers, submission pacing and
 partial fills. The catalog and the per-fault evidence are in
-fixplans/t212_faults/01_fault_catalog.md; the latency regimes are in
-fixplans/t212_faults/02_latency_model.md. All randomness flows through one
+fixplans/t212/platform/01_fault_catalog.md; the latency regimes are in
+fixplans/t212/platform/02_latency_model.md. All randomness flows through one
 seeded numpy Generator, and the uniforms are drawn whether or not a switch is
 on, so identical configuration reproduces identical results byte for byte and
 toggling one fault never reshuffles the draws of another. Every random
@@ -32,7 +32,7 @@ Parameters and constants:
     FAULT_SWITCH_DEFAULTS
         dict, the switch registry mapping fault id to its default on/off state;
         15 entries, all True. Ids follow
-        fixplans/t212_faults/01_fault_catalog.md section 2. F10 and F15 are
+        fixplans/t212/platform/01_fault_catalog.md section 2. F10 and F15 are
         real venue semantics kept togglable for sensitivity runs. F16
         (market-closed queueing) is deliberately absent because it is
         STRUCTURAL: a market order queues because matching requires a bar, and
@@ -63,7 +63,7 @@ Parameters and constants:
         latency_normal_sec (1.0, 20.0) and latency_volatile_sec (60.0, 1560.0),
             in seconds. L0 rests on the official "usually within seconds" plus
             a 20 s community report; L1 evidence spans roughly 1 to 26 minutes
-            (fixplans/t212_faults/02_latency_model.md section 2).
+            (fixplans/t212/platform/02_latency_model.md section 2).
         max_pending_per_ticker 50, the functional cap per ticker (official
             docs). The per-endpoint submission limits folded into the pacing
             caps are market 50 per 60 s and limit/stop/stop_limit 1 per 2 s
@@ -104,7 +104,7 @@ from backtest.engine.types import INTERVAL_SECONDS, Bar, OrderType
 # [1] Registry and constants
 # ============================================================================
 
-# Fault ids follow fixplans/t212_faults/01_fault_catalog.md section 2.
+# Fault ids follow fixplans/t212/platform/01_fault_catalog.md section 2.
 # F10/F15 are real venue semantics kept togglable for sensitivity runs.
 # F16 (market-closed queueing) is STRUCTURAL, not a switch: a market order
 # queues because matching requires a bar, and no configuration can change
@@ -156,7 +156,7 @@ class FaultConfig:
     volume_participation: float = 0.10
     # F2 trigger: bar range or volume above k x rolling median. k INFERRED.
     volatile_trigger_mult: float = 3.0
-    # Latency seconds (fixplans/t212_faults/02_latency_model.md section 2):
+    # Latency seconds (fixplans/t212/platform/02_latency_model.md section 2):
     # L0 official "usually within seconds" + 20 s community report;
     # L1 evidence spans roughly 1-26 minutes.
     latency_normal_sec: tuple[float, float] = (1.0, 20.0)
@@ -290,7 +290,7 @@ class FaultEngine:
         Both uniforms are drawn on every call regardless of switches so that
         toggling F1/F2 in a sensitivity arm never reshuffles the draws of
         other faults (same discipline as reject_roll). Regimes follow
-        fixplans/t212_faults/02_latency_model.md section 2.
+        fixplans/t212/platform/02_latency_model.md section 2.
         """
         u_norm = float(self._rng.uniform())
         u_vol = float(self._rng.uniform())

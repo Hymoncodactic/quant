@@ -7,7 +7,7 @@ execution with its itemized costs, and the complete run configuration. Order
 semantics mirror the Trading 212 Public API v0 contract (a sell is a negative
 quantity, validity is DAY or GOOD_TILL_CANCEL, orders are quantity-only),
 verified 2026-08-20 from data/reference/t212_openapi_v0_20260820.yaml. Design
-source: fixplans/framework/01_architecture.md section 2.
+source: docs/backtest/framework/01_architecture.md section 2.
 
 Out of scope: all behavior. Matching belongs to matching.py, cash and position
 accounting to ledger.py, sequencing to engine.py, and venue fee and tax rules
@@ -86,7 +86,7 @@ class OrderType(Enum):
 class OrderStatus(Enum):
     """Simulator lifecycle states.
 
-    The real venue exposes 11 states (see fixplans/framework/03_order_lifecycle.md
+    The real venue exposes 11 states (see docs/backtest/framework/03_order_lifecycle.md
     section 1.3). The pre-activation states LOCAL/UNCONFIRMED/CONFIRMED are not
     distinguishable at bar granularity and are represented by the latency model
     instead; REPLACING/REPLACED have no API endpoint and are not simulated.
@@ -116,7 +116,7 @@ class Bar:
     Prices are floats in the SOURCE quote currency (USD, GBP or GBp pence);
     conversion to GBP happens only in the ledger and cost layer. ts is the bar
     OPEN time in UTC for intraday data and the exchange-local midnight for
-    daily data (verified 2026-08-20, fixplans/framework/02_data_layer.md
+    daily data (verified 2026-08-20, docs/backtest/framework/02_data_layer.md
     section 3).
     """
     ts: pd.Timestamp
@@ -214,7 +214,7 @@ class EngineConfig:
 
     Everything here is serialized into the result metadata; a result file
     without its full configuration is unusable by decree
-    (fixplans/framework/05_metrics_reporting.md section 3.3).
+    (docs/backtest/framework/05_metrics_reporting.md section 3.3).
     """
     symbols: list[str]
     interval: str                   # "1d", "1h", "5m", "2m", "1m"

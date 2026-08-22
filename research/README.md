@@ -49,7 +49,7 @@
 | `decisions/20260821_a0_framework_comparison.md` | A0 v0.0.1 经 T212 框架的四臂消融对比，两费率档，净值口径与框架口径并列 | `research/regime_lab/report/make_a0_report_data.py` L194-L195（作为证据 V-2 读取并记哈希）、`WORKING_MEMORY.md` L127 |
 | `decisions/20260821_paid_data_sources.md` | 付费数据源裁定：退市股覆盖与深度日内历史的可得性与月成本 | `research/decisions/20260821_backtest_data_sources.md` L23、`backtest/t212/README.md` L54 |
 | `notes/20260819_negative_correlation_findings.md` | 实证否定「存在流动性好的负相关标的」这一前提，两侧证据 | `docs/data/t212/DATA_SPEC.md` L27、`research/notes/20260819_t212_execution_and_liquidity.md` L73、`WORKING_MEMORY.md` L65/L97 |
-| `notes/20260819_t212_execution_and_liquidity.md` | LSE 标的在 T212 的盘口价差与执行成本实测，做市商义务报价规模 | `backtest/t212/instruments.py` L51/L91、`fixplans/framework/02_data_layer.md` L55、`fixplans/framework/04_cost_model.md` L37/L45/L57、`docs/data/t212/DATA_SPEC.md` L64 |
+| `notes/20260819_t212_execution_and_liquidity.md` | LSE 标的在 T212 的盘口价差与执行成本实测，做市商义务报价规模 | `backtest/t212/instruments.py` L51/L91、`docs/backtest/framework/02_data_layer.md` L55、`docs/backtest/framework/04_cost_model.md` L37/L45/L57、`docs/data/t212/DATA_SPEC.md` L64 |
 | `regime_lab/report/make_a0_report_data.py` | 读回测结果件，派生序列与统计量，做 KPI 锚定断言，写出 `a0_report_data.json` | 无模块 import；由命令行按 `python research/regime_lab/report/make_a0_report_data.py` 运行 |
 | `regime_lab/report/a0_report_template.html` | 报告模板，含 `__PLOTLY_JS__` 与 `__DATA_JSON__` 两个占位符 | `regime_lab/report/build_a0_report.py` L25 |
 | `regime_lab/report/a0_report_data.json` | 上一次运行的数据载荷：`run` / `kpi` / `series`（2,249 日）/ `holding_spans`（26 段）/ `markers`（326 组）/ `worst_drawdown` / `evidence`（8 条）/ `anchor_report` | `regime_lab/report/build_a0_report.py` L26 |
@@ -71,7 +71,7 @@
    （`build_a0_report.py` L21 `OUT_HTML`）。
 6. 流程侧引用：`.claude/skills/backtest-discipline/SKILL.md` §四.1、
    `.claude/skills/strategy-research/SKILL.md` 前置约束第 3 条（L12-L13）、§七.1 与 §九、
-   `fixplans/validation/01_no_lookahead.md` §3、`CLAUDE.md` §六、
+   `docs/backtest/validation/01_no_lookahead.md` §3、`CLAUDE.md` §六、
    `ARCHITECTURE.md` §1。
 
 ## 5. 产出与清理

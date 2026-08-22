@@ -8,7 +8,7 @@ sides; UK stamp duty, charged on LSE stock buys only; the PTM levy, with its
 principal threshold, its exchange-traded-fund flag and its once-per-order
 accumulation across partial fills; the US sell-side fees; the spread sign; the
 ordering of the two cost tiers; and the French financial transaction tax.
-Discrimination design is recorded in fixplans/validation/02_test_plan.md items
+Discrimination design is recorded in docs/backtest/validation/02_test_plan.md items
 U2, U7, U8 and U11: for example the conversion cases use a non-unity rate, so
 a swapped multiply and divide would yield 127 instead of about 78.74, and the
 partial-fill case splits 12,000 GBP into three fills none of which alone

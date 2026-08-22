@@ -15,7 +15,7 @@
 | `__init__.py` | 0 字节空文件，把本目录声明为常规 Python 包 | 本目录尚无策略模块，全仓检索无任何导入点。保留理由是包边界与 `CLAUDE.md` §4.4 的模块头 docstring 落点；当前文件为空，该 docstring 尚未写 | 无调用点 |
 
 骨架待实现，将来放什么（契约见 `backtest/engine/strategy_loader.py` 第 11 至 18 行与
-`fixplans/framework/06_strategy_plugin.md`）：
+`docs/backtest/framework/06_strategy_plugin.md`）：
 
 1. 文件名 `<name>_v<M>_<m>_<p>.py`，版本号中的点在文件名里写成下划线。
 2. 模块内两个常量 `STRATEGY_NAME` 与 `STRATEGY_VERSION`，取值须与文件名一致。不一致时

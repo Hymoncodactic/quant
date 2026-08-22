@@ -18,7 +18,8 @@
 | `data/` | 全部落地数据 | gitignore，见 §3 |
 | `docs/data/<source>/` | 数据的**说明与重建凭据**：`DATA_SPEC.md`、`MANIFEST.jsonl`、`GAPS.csv` | 入库。见 §3 |
 | `research/` | `prereg/` 预注册、`decisions/` 裁定、`notes/` 笔记 | |
-| `fixplans/` | 回测框架建设计划（framework / t212_faults / validation 三类） | 代码实现以计划为准，先改计划再改代码 |
+| `fixplans/` | **交易代码规格**，只有 `t212/` 与 `crypto/` 两个顶层目录，其下按策略分目录 | 每份说明都指向具体交易代码文件；`trading212/` 与 `crypto_trading/` 读它来更新策略与执行 |
+| `docs/backtest/` | 回测框架建设计划（framework / validation） | 代码实现以计划为准，先改计划再改代码 |
 | `vendor/` | 第三方参考代码的浅克隆，只读参考 | gitignore（`/vendor/`），不入库 |
 | `scripts/` | 一次性脚本与常驻工具，一次性件带日期前缀 | 见 `scripts/README.md` |
 | `tests/` | 引擎与适配层测试 | 见 `tests/README.md` |
@@ -86,15 +87,15 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `engine/matching.py` | 纯撮合规则：各订单类型的触发判定与原始成交价（O-H-L-C 序） |
 | `engine/ledger.py` | GBP 现金（Decimal）、持仓、占用资金序列、权益估值 |
 | `engine/engine.py` | 主循环，每根 bar 固定四步：结算成交、估值、调策略、差分下单 |
-| `engine/metrics.py` | 业绩率与风险比率（口径见 `fixplans/framework/05_metrics_reporting.md`） |
+| `engine/metrics.py` | 业绩率与风险比率（口径见 `docs/backtest/framework/05_metrics_reporting.md`） |
 | `engine/results.py` | trades / equity / meta 三件套落地 |
 | `engine/report.py` | 每轮图表（净值 mid/清算双线 + 在场底色 + 逐标的开仓区间横道） |
-| `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `fixplans/framework/06_strategy_plugin.md`） |
+| `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `docs/backtest/framework/06_strategy_plugin.md`） |
 | `okx/data_source.py` | 读 Binance 归档 spot klines（`data/binance/curated/`，经 `common/paths`，可注入 data_root）；okx 撮合/成本适配器待建 |
 | `t212/data_source.py` | 读 `data/t212/curated/` parquet（经 `common/paths`，可注入 data_root） |
 | `t212/instruments.py` | 交易所时区映射、半点差表、印花税适用性、年化因子 252 |
 | `t212/costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数（依据均注明出处） |
-| `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212_faults/01_fault_catalog.md`） |
+| `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212/platform/01_fault_catalog.md`） |
 | `t212/admission.py` | 订单准入检查（固定顺序）与最坏成本预估，供 broker_sim 调用 |
 | `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、撤单/过期/资格判定、提交 |
 | `t212/fills.py` | 成交记账：点差/滑点、成交量预算、费用栈、账本与冻结额 |
