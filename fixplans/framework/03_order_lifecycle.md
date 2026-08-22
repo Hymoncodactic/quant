@@ -68,7 +68,7 @@ REJECTED。LOCAL/UNCONFIRMED/CONFIRMED 三个前置态在 bar 粒度不可分辨
 
 ### 2.1 撮合规则（按订单类型）
 
-记 t 为提交所在 bar，撮合从 t+1 起（禁止同 bar 成交）：
+记 t 为提交所在 bar，`next_open` 模式下撮合从 t+1 起（禁止同 bar 成交）；`same_close` 模式下市价单改在 t 收盘成交（见变更记录 2026-08-22）：
 
 | 类型 | 成交条件与定价 |
 |---|---|
@@ -77,7 +77,7 @@ REJECTED。LOCAL/UNCONFIRMED/CONFIRMED 三个前置态在 bar 粒度不可分辨
 | LIMIT 卖 | 镜像（high > limit 严格穿透） |
 | STOP 买 | high ≥ stop 触发 → max(open, stop) + 半点差 + 滑点。触发为单向转换：部分成交或延迟后余量按市价腿继续，不再复验 stop；执行延迟在**触发时**抽取（提交时抽取会漏掉延迟窗内的触发事件） |
 | STOP 卖 | 镜像 |
-| STOP_LIMIT | 触发同 STOP，触发后转 LIMIT。**可即成腿**（买 limit ≥ stop / 卖 limit ≤ stop）bar 内触发按 stop 触及价成交，禁止给出 bar 未交易过的价格；**非可即成腿**须触发后证据：买用 low ≤ limit（O-H-L-C 下 L 在触发之后），卖只能用 close ≥ limit（high 在触发之前，不得采信） |
+| STOP_LIMIT | 触发同 STOP，触发后转 LIMIT。**可即成腿**（买 limit ≥ stop / 卖 limit ≤ stop）bar 内触发按 stop 触及价成交，禁止给出 bar 未交易过的价格；**非可即成腿**须触发后证据：买用 low < limit（严格穿透；O-H-L-C 下 L 在触发之后），卖只能用 close > limit（high 在触发之前，不得采信） |
 
 bar 内先后顺序按 O-H-L-C；同根内止损与限价均可触发时取不利侧
 （`01_architecture.md` §3.3）。
@@ -119,3 +119,4 @@ AccountSummary.Cash），冻结额计入占用资金序列，用于本金口径
 | 2026-08-20 | 初版 |
 | 2026-08-20 | 审查后修订：§2.1 STOP 触发单向持久化 + 触发时抽延迟；STOP_LIMIT 可即成/非可即成两种腿的撮合语义（卖侧只认 close 证据）；§2.2.7 限频语义定为拒单 + 引擎差分重试；撤单竞态一次性裁决（不逐 bar 重掷）；执行时资金闸扣除其它挂单的冻结额 |
 | 2026-08-21 | 保守性二次复核：挂单（LIMIT 与 STOP_LIMIT 非可即成腿）由「触及即成」改为「严格穿透才成」——触及即全成属成交概率乐观（复核发现 2）；新增不同订单间冷却期（§2.2 准入后、撮合资格处强制，参数见 04 §3 冷却行） |
+| 2026-08-22 | 新增成交时序模式 `fill_timing`：`next_open`（默认）与 `same_close`（决策 bar 收盘成交，收盘前 1 分钟下单口径，用户裁定 `research/decisions/20260822_close_execution_timing.md`）；same_close 仅作用于市价单，延迟超窗口/闭市即回落 next_open 路径；成交记账抽出 `t212/fills.py`，同收盘逻辑在 `t212/same_close.py` |

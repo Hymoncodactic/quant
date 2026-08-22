@@ -165,6 +165,10 @@ class Fill:
     fx_mid: Decimal | None          # GBPUSD mid used, None for GBP/GBp fills
     cash_delta_gbp: Decimal         # signed GBP cash movement, costs included
     costs_gbp: dict[str, Decimal] = field(default_factory=dict)
+    # True when executed at the decision bar's CLOSE under fill_timing ==
+    # "same_close" (the last-minute-before-close convention); such a fill
+    # legitimately shares its step with the submission.
+    at_close: bool = False
 
 
 # ============================================================================
@@ -188,6 +192,19 @@ class EngineConfig:
     fee_tier: str = "worst"         # "worst" | "actual" (fixplans 04 section 6)
     seed: int = 20260820
     lookahead_probe: bool = False   # diagnostic only; results are stamped PROBE
+    # Execution timing of MARKET orders generated from a decision at bar t:
+    #   "next_open"  fill at the next bar's open (conservative default,
+    #                backtest-discipline hard list items 1-2);
+    #   "same_close" fill at bar t's close -- the order is placed in the last
+    #                minute of the session and the signal is computed on the
+    #                close (user ruling 2026-08-22, research/decisions/
+    #                20260822_close_execution_timing.md). A deviation from
+    #                the hard list that must be declared in the strategy's
+    #                prereg; it pays the calibrated close-proximity gap
+    #                (CostConfig.close_gap_bps) and only succeeds when the
+    #                latency draw fits in CostConfig.close_window_sec,
+    #                otherwise the order falls back to the next open.
+    fill_timing: str = "next_open"
     # Hard guard against zombie holdings: a HELD symbol whose feed produces
     # no bar for more than this many calendar days (while the timeline keeps
     # advancing) aborts the run instead of marking the position at its last

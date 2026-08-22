@@ -16,6 +16,8 @@ Checks performed (each fails loudly; a passing run prints PASS lines):
     C4 London daily fills carry the 23:00-UTC BST stamp
     C5 a USD fill's fx_mid equals the PREVIOUS trading day's GBPUSD close
     C6 two identical worst-tier runs produce identical trades and equity
+    C7 same_close mode fills on the decision day at close x (1 + gap), never
+       on a later day unless latency/closed-market spilled it
 
 Usage:
     python scripts/20260820_t212_backtest_smoke.py [--data-root PATH]
@@ -37,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backtest.engine.types import EngineConfig               # noqa: E402
 from backtest.t212.data_source import load_fx                # noqa: E402
+from backtest.t212.instruments import exchange_tz             # noqa: E402
 from backtest.t212.runner import run_t212_backtest           # noqa: E402
 
 SYMBOLS = ["AAPL", "CSPX.L", "VUSA.L", "SGLN.L"]
@@ -53,11 +56,13 @@ def fixed_holdings(view, portfolio, params):
     return {s: q for s, q in TARGETS.items() if view.bar(s) is not None}
 
 
-def _run(tier: str, data_root: str | None, seed: int = 7):
+def _run(tier: str, data_root: str | None, seed: int = 7,
+         fill_timing: str = "next_open"):
     config = EngineConfig(symbols=SYMBOLS, interval="1d", start=START,
                           end=END, initial_cash_gbp=INITIAL_CASH,
                           arm="smoke", fee_tier=tier, seed=seed,
-                          strategy_name="smoke_fixed_holdings")
+                          strategy_name="smoke_fixed_holdings",
+                          fill_timing=fill_timing)
     return run_t212_backtest(config, fixed_holdings, data_root=data_root)
 
 
@@ -110,6 +115,19 @@ def main() -> int:
                    f"fx_mid={usd['fx_mid']} expected={expected_mid} "
                    f"same-day close={lookahead_mid} "
                    f"(check discriminative: {discriminative})"))
+
+    result_c, _, _ = _run("worst", args.data_root, fill_timing="same_close")
+    close_rows = result_c.trades
+    at_close = close_rows["at_close"].astype(bool)
+    # Compare on the EXCHANGE-LOCAL trading day: London daily bars stamp
+    # 23:00 UTC of the previous day during BST (the known alignment trap).
+    local_day = [pd.Timestamp(ts).tz_convert(exchange_tz(sym)).date()
+                 for ts, sym in zip(close_rows["ts"], close_rows["symbol"])]
+    same_day = pd.Series(local_day, index=close_rows.index) \
+        == pd.to_datetime(close_rows["submitted_ts"]).dt.date
+    checks.append(("C7 same_close fills on the decision day at close",
+                   bool(at_close.all()) and bool(same_day[at_close].all()),
+                   f"at_close={at_close.tolist()} same_day={same_day.tolist()}"))
 
     same_trades = result_w.trades.equals(result_w2.trades)
     same_equity = result_w.equity.equals(result_w2.equity)

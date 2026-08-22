@@ -213,38 +213,45 @@ class FaultEngine:
     # [2.3] Latency and pacing
     # ------------------------------------------------------------------
 
-    def latency_extra_bars(self, symbol: str, bar: Bar | None,
-                           order_type: OrderType) -> int:
-        """Bar intervals from submission until the order may match, minimum 1.
+    def latency_seconds(self, symbol: str, bar: Bar | None,
+                        order_type: OrderType) -> float:
+        """Execution latency draw in seconds for a market leg; 0.0 when the
+        order type is not market or both latency switches are off.
 
-        Baseline (no faults) is 1: the next full interval (no same-bar fills,
-        ever). Latency d seconds maps to max(1, ceil(d / bar_seconds)) per
-        fixplans/t212_faults/02_latency_model.md section 3; the caller
-        converts intervals to a TIME on the order (eligible_ts), never to a
-        merged-timeline step count.
-
-        Only the market leg carries the execution-delay evidence: a resting
-        limit or stop waits for its trigger anyway, and a triggered stop's
-        market leg draws its latency AT TRIGGER TIME (broker_sim), so this
-        function is called with MARKET there. Both uniforms are drawn on
-        every call, regardless of switches, so toggling F1/F2 in a
-        sensitivity arm never reshuffles the draws of other faults (same
-        discipline as reject_roll).
+        Both uniforms are drawn on every call regardless of switches so that
+        toggling F1/F2 in a sensitivity arm never reshuffles the draws of
+        other faults (same discipline as reject_roll). Regimes follow
+        fixplans/t212_faults/02_latency_model.md section 2.
         """
         u_norm = float(self._rng.uniform())
         u_vol = float(self._rng.uniform())
         if order_type is not OrderType.MARKET:
-            return 1
+            return 0.0
         if (self.cfg.on("F2_latency_volatile") and bar is not None
                 and self.is_volatile(symbol, bar)):
             lo, hi = self.cfg.latency_volatile_sec
-            d = float(np.exp(np.log(lo) + (np.log(hi) - np.log(lo)) * u_vol))
-        elif self.cfg.on("F1_latency_normal"):
+            return float(np.exp(np.log(lo) + (np.log(hi) - np.log(lo)) * u_vol))
+        if self.cfg.on("F1_latency_normal"):
             low, high = self.cfg.latency_normal_sec
-            d = low + (high - low) * u_norm
-        else:
+            return low + (high - low) * u_norm
+        return 0.0
+
+    def bars_from_seconds(self, delay_sec: float) -> int:
+        """Bar intervals an order waits before it may match, minimum 1.
+
+        Baseline (no latency) is 1: the next full interval, never the same
+        bar. d seconds map to max(1, ceil(d / bar_seconds)); the caller turns
+        intervals into a TIME on the order (eligible_ts), never a step count.
+        """
+        if delay_sec <= 0:
             return 1
-        return max(1, math.ceil(d / self.bar_seconds))
+        return max(1, math.ceil(delay_sec / self.bar_seconds))
+
+    def latency_extra_bars(self, symbol: str, bar: Bar | None,
+                           order_type: OrderType) -> int:
+        """Draw latency and convert to bar intervals (see latency_seconds)."""
+        return self.bars_from_seconds(self.latency_seconds(symbol, bar,
+                                                           order_type))
 
     def submit_caps_per_bar(self) -> tuple[int, int]:
         """F12: (market_cap, pending_type_cap) submissions per bar.

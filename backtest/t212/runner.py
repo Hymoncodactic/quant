@@ -112,6 +112,8 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
     """
     if config.fee_tier not in ("worst", "actual"):
         raise ValueError(f"unknown fee tier {config.fee_tier!r}")
+    if config.fill_timing not in ("next_open", "same_close"):
+        raise ValueError(f"unknown fill timing {config.fill_timing!r}")
     if cost_cfg is None:
         cost_cfg = CostConfig() if config.fee_tier == "worst" \
             else CostConfig.actual_tier()
@@ -131,7 +133,8 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
 
     feed = BarFeed(frames, exchange_tz, daily)
     fx = FxSeries(fx_frame, fx_duration)
-    broker = T212BrokerSim(cost_cfg, fault_cfg, config.interval, fx, daily)
+    broker = T212BrokerSim(cost_cfg, fault_cfg, config.interval, fx, daily,
+                           fill_timing=config.fill_timing)
     engine = BacktestEngine(config, feed, fx, broker, strategy, price_to_gbp,
                             to_liquidation=liquidation_valuer(broker))
     result: RunResult = engine.run()

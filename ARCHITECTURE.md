@@ -89,7 +89,9 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `t212/costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数（依据均注明出处） |
 | `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212_faults/01_fault_catalog.md`） |
 | `t212/admission.py` | 订单准入检查（固定顺序）与最坏成本预估，供 broker_sim 调用 |
-| `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、成交定价、费用、延迟 |
+| `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、撤单/过期/资格判定、提交 |
+| `t212/fills.py` | 成交记账：点差/滑点、成交量预算、费用栈、账本与冻结额 |
+| `t212/same_close.py` | same_close 成交时序：决策 bar 收盘成交的前置条件与执行 |
 | `t212/runner.py` | 组装点：数据 → feed → broker → engine → metrics → 落地，一次调用 |
 
 纪律见 `/backtest-discipline`。

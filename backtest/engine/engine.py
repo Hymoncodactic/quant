@@ -99,6 +99,13 @@ class BacktestEngine:
             targets = self.strategy(view, self._portfolio_view(), self.config.params)
             for spec in self._diff_to_specs(targets):
                 self.broker.submit(spec, key, step, self.ledger)
+            # Same-close mode: fills executed at submission time against this
+            # bar's close are drained here and pass the same timing guard.
+            drain = getattr(self.broker, "drain_submit_fills", None)
+            if drain is not None:
+                close_fills = drain()
+                self._assert_fill_timing(close_fills)
+                self.fills.extend(close_fills)
             # Mark AFTER submissions so cash frozen for orders placed this
             # step enters the occupancy series; marking before would let a
             # reservation that resolves next bar escape the capital peak
@@ -122,7 +129,9 @@ class BacktestEngine:
         01_no_lookahead.md section 1.2).
 
         Step guard: a fill in the same step its order was submitted is a
-        lookahead bug, full stop (backtest-discipline section 2.1).
+        lookahead bug, full stop (backtest-discipline section 2.1) -- except
+        a fill stamped at_close under the declared same_close mode, which is
+        the last-minute-before-close convention (EngineConfig.fill_timing).
         Time guard (intraday): the decision at the submission key used that
         bar's close, which only exists one full interval later; a fill bar
         must not OPEN before that instant. Steps alone cannot express this on
@@ -131,8 +140,18 @@ class BacktestEngine:
         """
         interval = pd.Timedelta(seconds=INTERVAL_SECONDS[self.config.interval])
         daily = self.config.interval == "1d"
+        same_close = self.config.fill_timing == "same_close"
         for fill in fills:
             order = self.broker.orders[fill.order_id]
+            if fill.at_close:
+                # Declared same-close execution: the fill may share the
+                # decision bar, never precede it, and only in that mode.
+                if not same_close or fill.step != order.submitted_step:
+                    raise AssertionError(
+                        f"at-close fill outside same_close mode: order "
+                        f"{order.order_id} step {fill.step} vs submitted "
+                        f"{order.submitted_step}")
+                continue
             if fill.step <= order.submitted_step:
                 raise AssertionError(
                     f"same-bar fill: order {order.order_id} submitted at step "
@@ -237,6 +256,7 @@ class BacktestEngine:
             "order_id": f.order_id, "symbol": f.symbol, "ts": f.ts,
             "step": f.step, "quantity": float(f.quantity),
             "side": "BUY" if f.quantity > ZERO else "SELL",
+            "at_close": f.at_close,
             "submitted_ts": self.broker.orders[f.order_id].submitted_ts,
             "order_status": self.broker.orders[f.order_id].status.value,
             "order_reason": self.broker.orders[f.order_id].reason,
