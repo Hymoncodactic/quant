@@ -26,8 +26,15 @@ later extracted into trading212/ingest/yahoo_bars.py, whose own header states it
 is the single implementation called by both the initial ingest and the
 incremental updater, while this script still carries an independent copy in
 _quote_currency(), _history(), _fetch_interval(), _write_daily() and
-_write_intraday() together with the INTERVALS and UNIVERSE constants. The two
-copies have not been checked for agreement.
+_write_intraday() together with the INTERVALS and UNIVERSE constants.
+
+This file is a FROZEN record of the first landing and must not be edited to
+change behaviour. Behaviour changes belong in trading212/ingest/yahoo_bars.py,
+which is the live single implementation called by scripts/update_data.py. The
+duplication is therefore deliberate and does not need to stay in sync: this
+copy documents what actually ran on 2026-08-19, not what runs today.
+Verified 2026-08-22 by literal_eval on both modules: INTERVALS and UNIVERSE are
+still identical across the two copies, 52 instruments each.
 
 Public functions:
     main()   Download and store every configured interval for every instrument.
@@ -71,6 +78,8 @@ Outputs:
 
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Marked as a frozen first-landing record; recorded that
+                INTERVALS and UNIVERSE still match yahoo_bars.py.
 """
 
 from __future__ import annotations

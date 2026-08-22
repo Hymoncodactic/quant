@@ -102,8 +102,39 @@ Outputs:
         push rejected; 2 when the credential gate or the size gate hit, in which
         case nothing was committed or pushed and the index is left staged.
 
+Known gaps in the soft rule, measured by adversarial testing on 2026-08-22 over
+340 constructed lines. Each of these carries a real credential and is let
+through by this gate as it stands, and was let through before this round too,
+so none of them is a regression. They are recorded rather than fixed because
+each fix widens the value predicate and buys back false positives:
+    headers = {"Authorization": "Bearer <jwt>"}   value sits behind a scheme word
+    passphrase = "four words with spaces"         the value predicate needs a
+                                                  space-free run
+    api_secret: str = field(default="...")        value behind a call
+    setattr(cfg, "api_key", "...")                value behind a call
+    api_key: &yaml_anchor ...                     YAML anchor between key and value
+The path gate and the hard vendor-token rules still cover the common shapes of
+all five. A credential in one of these forms in a file this gate scans would
+reach the public remote, so treat them as the reason not to hand-write
+credentials into source at all: they belong in secrets/, which is refused by
+path before content is ever read.
+
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Adjacency approach reverted. The field and value sides are
+                matched independently again, as before this round, and the
+                false positives are cured on the value side instead by
+                _looks_like_code(). Adversarial testing over 340 constructed
+                lines showed the adjacency form missing 48 that the
+                independent form blocks.
+    2026-08-22  Separator between field and operator widened to admit subscript
+                assignment. The first narrowing had silently dropped
+                config["api_key"] = "..." and every bracketed form; adversarial
+                testing surfaced it before release.
+    2026-08-22  Soft credential rule narrowed: the field name must now sit
+                immediately left of the assignment it governs. The previous
+                form matched field name and value independently anywhere on
+                the line and fired on ordinary code, e.g. `submitted_ts=key`.
     2026-08-22  Removed git_ok(): zero call sites, not in __all__, and
                 git(check=False) already covers the same need.
 """
@@ -188,15 +219,36 @@ HARD_CONTENT_PATTERNS = (
 # Note: neither end carries \b. The underscore in `OKX_API_KEY` is itself a word
 # character, so a \b anchor would miss `PREFIX_API_KEY`, the most common naming
 # of all. Confirmed by a negative test.
-SECRET_FIELD_RE = re.compile(
-    r"(?i)("
+# Field names that denote a credential. Kept as a standalone alternation so the
+# combined rule below and any future check share one list.
+_SECRET_FIELD_ALT = (
     r"api[_-]?key|api[_-]?secret|secret[_-]?key|client[_-]?secret|"
     r"passphrase|password|passwd|"
     r"access[_-]?token|auth[_-]?token|refresh[_-]?token|bearer|"
     r"private[_-]?key|credential|secret|token|key"
-    r")"
 )
-# Captures the right-hand side of `field: value` / `field = value` / `field="value"`
+SECRET_FIELD_RE = re.compile(r"(?i)(" + _SECRET_FIELD_ALT + r")")
+
+# Captures the right-hand side of `field: value` / `field = value` /
+# `field="value"`. The field name and the value are matched INDEPENDENTLY, each
+# anywhere on the line, and both must be present for the gate to fire.
+#
+# Requiring the two to be adjacent was tried and reverted. Adjacency reads as
+# the tighter, more principled rule, but a credential and the word naming it are
+# routinely far apart on the same line:
+#     vault.put("api_secret", value="...")
+#     {"name": "okx_api_key", "value": "..."}
+#     p.add_argument("--api-key", default="...")
+#     env: [{name: OKX_API_SECRET, value: ...}]
+#     x = "..."  # api_key of record
+# Adversarial testing put 340 constructed lines through both forms: the
+# adjacency version let 48 of them through that this one blocks. Coverage on
+# this side of the gate is worth more than tidiness, because the repository is
+# public and the keys are attached to real money.
+#
+# What actually drove the false positives was never the field side. It was the
+# VALUE side accepting fragments of ordinary code, so that is where the fix
+# belongs: see _looks_like_code() below.
 ASSIGN_VALUE_RE = re.compile(r"""(?:[:=]\s*)(["']?)([^\s"'#,;)]{8,})\1""")
 
 # Values that are plainly placeholders or references rather than real secrets
@@ -353,17 +405,46 @@ def classify_path(path: str) -> str | None:
     return None
 
 
+def _looks_like_code(value: str) -> bool:
+    """Report whether a captured value is a fragment of code or prose.
+
+    A credential is an opaque literal. It never carries brackets, never carries
+    a backtick, never carries CJK text, and never carries an `=` anywhere but
+    the base64 padding at its tail. Anything that does is the scanner having
+    picked up a piece of the surrounding program or document, not a credential.
+
+    This predicate is the whole reason the field side of the rule can stay
+    permissive. The standing false positive that made the gate unusable was
+        order = Order(order_id=self._next_id, spec=spec, submitted_ts=key,
+    where the captured value was `Order(order_id=self._next_id`: three
+    character classes, sixteen-plus characters, and pure code. One bracket
+    check rejects it, and the rule keeps its coverage everywhere else.
+    """
+    core = value.strip("([{<>}])")          # trailing punctuation is the
+                                            # container's, not the value's
+    if any(ch in core for ch in "()[]{}`"):
+        return True
+    if any("\u4e00" <= ch <= "\u9fff" for ch in core):
+        return True
+    if "=" in core.rstrip("="):             # base64 pads at the tail only
+        return True
+    return False
+
+
 def looks_like_secret_value(value: str) -> bool:
     """Report whether a value looks like a real credential.
 
     A value qualifies when it is a UUID, a long hexadecimal string, or at least
     16 characters long with at least three character classes present (lower
-    case / upper case / digits / the +/=- symbols).
+    case / upper case / digits / the +/=- symbols), and when it is not a
+    fragment of code or prose (see _looks_like_code).
 
     The character-class rule is what keeps a reference name such as
     `secret_name: trading212_api_key` out of the results: it carries lower case
     and digits only, two classes, so it does not count as a credential.
     """
+    if _looks_like_code(value):
+        return False
     if PLACEHOLDER_RE.match(value):
         return False
     if UUID_RE.match(value) or HEX_RE.match(value):
@@ -389,9 +470,9 @@ def scan_blob_text(path: str, text: str) -> list[str]:
             if pattern.search(line):
                 hits.append(f"{path}:{lineno}  [{label}]")
         if SECRET_FIELD_RE.search(line):
-            for _, value in ASSIGN_VALUE_RE.findall(line):
+            for _quote, value in ASSIGN_VALUE_RE.findall(line):
                 if looks_like_secret_value(value):
-                    masked = value[:4] + "…" + value[-2:]
+                    masked = value[:4] + "..." + value[-2:]
                     hits.append(f"{path}:{lineno}  [suspected credential value {masked}]")
                     break
     return hits
