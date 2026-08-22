@@ -14,10 +14,21 @@ set -u
 cd "$(dirname "$0")" || exit 1
 REPO="$(pwd)"
 
-PY="$REPO/.venv/bin/python"
-if [ ! -x "$PY" ]; then
-  echo "[dashboard] no interpreter at $PY"
-  echo "[dashboard] create it first, then re-run this file."
+# Find the project interpreter. It normally sits at the repository root, but
+# a git worktree has no .venv of its own, so the search walks upwards to the
+# main working copy. QUANT_PYTHON overrides both.
+PY="${QUANT_PYTHON:-}"
+if [ -z "$PY" ]; then
+  DIR="$REPO"
+  for _ in 1 2 3 4 5 6; do
+    if [ -x "$DIR/.venv/bin/python" ]; then PY="$DIR/.venv/bin/python"; break; fi
+    DIR="$(dirname "$DIR")"
+    [ "$DIR" = "/" ] && break
+  done
+fi
+if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+  echo "[dashboard] no project interpreter found at or above $REPO"
+  echo "[dashboard] create .venv there, or set QUANT_PYTHON, then re-run this file."
   read -r -n 1 -p "press any key to close"
   exit 1
 fi
@@ -26,11 +37,12 @@ fi
 export QUANT_ENV
 
 echo "[dashboard] repository : $REPO"
+echo "[dashboard] interpreter: $PY"
 echo "[dashboard] environment: $QUANT_ENV"
 echo "[dashboard] starting the local server; close this window to stop it."
 echo
 
-"$PY" -m trading212.dashboard.server "$@"
+PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" "$PY" -m trading212.dashboard.server "$@"
 STATUS=$?
 
 echo
