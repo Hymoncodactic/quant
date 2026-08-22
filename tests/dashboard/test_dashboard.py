@@ -273,3 +273,140 @@ def test_state_route_answers_without_the_venue(live_server):
         state = json.loads(r.read())
     assert "readiness" in state and "collector" in state
     assert state["collector"]["running"] is False
+
+
+# ----------------------------------------------------------------------
+# Allocation changes
+# ----------------------------------------------------------------------
+
+def test_allocation_change_is_journaled_not_edited(tmp_path):
+    """The book must still explain its own cash from its own history."""
+    from decimal import Decimal
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_allocation_change("c1", Decimal("500"), "topped up")
+    assert led.cash_gbp == Decimal("1500")
+    journal = (tmp_path / "a0_v0_0_1_journal.jsonl").read_text()
+    assert "ALLOCATION_CHANGED" in journal
+    assert ShadowLedger.load(tmp_path, "a0_v0_0_1").cash_gbp == Decimal("1500")
+
+
+def test_allocation_can_be_taken_back(tmp_path):
+    from decimal import Decimal
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_allocation_change("c1", Decimal("-400"), "reclaimed")
+    assert led.cash_gbp == Decimal("600")
+
+
+def test_allocation_cannot_drive_cash_negative(tmp_path):
+    from decimal import Decimal
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    with pytest.raises(ValueError):
+        led.record_allocation_change("c1", Decimal("-1001"), "too much")
+    assert led.cash_gbp == Decimal("1000")
+
+
+def test_allocation_refused_while_the_book_is_frozen(tmp_path):
+    """Resizing a book whose exposure is in doubt would bury the doubt."""
+    from decimal import Decimal
+    from trading212.execution.shadow_ledger import (LedgerFrozenError,
+                                                    ShadowLedger)
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_intent("i1", "NVDA", "NVDA_US_EQ", Decimal("1"),
+                      Decimal("100"), Decimal("1.25"), dry_run=False)
+    led.record_submit_ambiguous("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), "t")
+    with pytest.raises(LedgerFrozenError):
+        led.record_allocation_change("c1", Decimal("500"), "topped up")
+
+
+# ----------------------------------------------------------------------
+# The halt flag
+# ----------------------------------------------------------------------
+
+def test_halt_can_always_be_raised(live_server):
+    status, body = _post(live_server, "/api/halt", {"action": "raise"},
+                         live_server.token)
+    try:
+        assert status == 200 and body["halted"] is True
+        assert live_server.ctx.halt_path.exists()
+    finally:
+        live_server.ctx.halt_path.unlink(missing_ok=True)
+
+
+class _HaltCtx:
+    """The minimum a halt request touches."""
+
+    def __init__(self, halt_path, ledger, params=None):
+        self.halt_path = halt_path
+        self._ledger = ledger
+        self.params = params or {"trade_symbols": []}
+
+    def ledger(self):
+        return self._ledger
+
+    def client(self):
+        raise AssertionError("reconcile must not run once a check has failed")
+
+
+def test_clearing_a_halt_is_refused_while_an_order_is_unsettled(tmp_path):
+    """A halt normally means something broke; clearing it blindly would
+    restart trading into the same problem."""
+    from decimal import Decimal
+    from trading212.dashboard.api import post_halt
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_intent("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), Decimal("100"),
+                      Decimal("1.25"), dry_run=False)
+    led.record_submitted("i1", 111, "NVDA", "NVDA_US_EQ", Decimal("1"),
+                         Decimal("80"), "NEW")
+    halt = tmp_path / "halt"
+    halt.touch()
+    status, body = post_halt(_HaltCtx(halt, led), {"action": "clear"})
+    assert status == 409 and body["problem"] == "not_clean"
+    assert any(b["check"] == "no_open_orders" for b in body["blockers"])
+    assert halt.exists()          # the flag survives a refused clear
+
+
+def test_clearing_a_halt_is_refused_while_the_book_is_frozen(tmp_path):
+    from decimal import Decimal
+    from trading212.dashboard.api import post_halt
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_intent("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), Decimal("100"),
+                      Decimal("1.25"), dry_run=False)
+    led.record_submit_ambiguous("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), "t")
+    halt = tmp_path / "halt"
+    halt.touch()
+    status, body = post_halt(_HaltCtx(halt, led), {"action": "clear"})
+    assert status == 409
+    assert any(b["check"] == "no_ambiguity" for b in body["blockers"])
+    assert halt.exists()
+
+
+def test_clearing_a_halt_without_a_book_is_refused(tmp_path):
+    from trading212.dashboard.api import post_halt
+    halt = tmp_path / "halt"
+    halt.touch()
+    status, body = post_halt(_HaltCtx(halt, None), {"action": "clear"})
+    assert status == 409
+    assert any(b["check"] == "ledger_exists" for b in body["blockers"])
+
+
+def test_unknown_halt_action_is_rejected(live_server):
+    status, body = _post(live_server, "/api/halt", {"action": "wobble"},
+                         live_server.token)
+    assert status == 400 and body["problem"] == "unknown_action"
+
+
+# ----------------------------------------------------------------------
+# Session spans for the chart
+# ----------------------------------------------------------------------
+
+def test_sessions_route_answers_even_without_a_calendar_cache(live_server):
+    """The page must render before anything has fetched the calendar."""
+    with urllib.request.urlopen(_url(live_server, "/api/sessions"),
+                                timeout=15) as r:
+        body = json.loads(r.read())
+    assert "sessions" in body and body["tz"] == "America/New_York"

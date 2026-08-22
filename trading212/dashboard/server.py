@@ -154,6 +154,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.get_instruments(ctx))
             if route == "/api/manual":
                 return self._json(*api.get_manual(ctx))
+            if route == "/api/sessions":
+                return self._json(*api.get_sessions(
+                    ctx, int(_first(query, "days", api.SESSION_WINDOW_DAYS))))
             self._json(404, {"problem": "unknown_route", "route": route})
         except Exception as exc:                    # never leak a traceback
             log.error("[http] GET %s failed: %r", route, exc)
@@ -172,6 +175,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.post_collector(ctx, collector, body))
             if route == "/api/ledger/init":
                 return self._json(*api.post_ledger_init(ctx, body))
+            if route == "/api/ledger/allocation":
+                return self._json(*api.post_allocation(ctx, body))
+            if route == "/api/halt":
+                return self._json(*api.post_halt(ctx, body))
             if route == "/api/manual":
                 return self._json(*api.post_manual(ctx, body))
             if route == "/api/shutdown":

@@ -42,8 +42,32 @@ Public functions (methods):
     record_intent / record_submitted / record_submit_rejected
     record_submit_ambiguous / resolve_ambiguity
     record_fill / record_order_terminal / record_note
+    record_allocation_change(change_id, delta_gbp, reason)
+                                             Resize the strategy's own cash
     portfolio_view(fee_buffer)               Strategy-facing PortfolioView duck type
     pending_signed_qty(symbol)               Signed open-order quantity
+    knows_order(order_id)                    Has the book ever owned this order
+
+Constants:
+    _SCHEMA_VERSION  int      1. Bumping it makes an older snapshot refuse to
+                              load rather than be misread.
+    ZERO             Decimal  Decimal("0"), so comparisons never mix in a float.
+
+Inputs:
+    data/t212/execution_state/<strategy_id>_snapshot.json  (through ledger_store)
+Outputs:
+    data/t212/execution_state/<strategy_id>_journal.jsonl
+    data/t212/execution_state/<strategy_id>_snapshot.json
+
+Change log:
+    2026-08-21  Created.
+    2026-08-22  Attempt-counted event ids for recurring lifecycle events, and
+                knows_order() so reconciliation stops matching the book's own
+                retired orders.
+    2026-08-23  Added record_allocation_change(): the allocation has to be
+                adjustable once the account is funded further, and editing the
+                snapshot directly would break the book's ability to explain
+                its own cash from its own history.
 """
 
 from __future__ import annotations
@@ -350,6 +374,46 @@ class ShadowLedger:
                     {"order_id": order_id, "status": status,
                      "filled_qty": str(venue_filled_qty)},
                     mutate=lambda snap: snap["open_orders"].pop(key, None))
+
+    def record_allocation_change(self, change_id: str, delta_gbp: Decimal,
+                                 reason: str) -> bool:
+        """Add to or take from the cash this strategy is allocated.
+
+        The allocation is a bookkeeping figure, so this moves no money: it
+        records that the account owner has decided the strategy may work with
+        more or less of the account than before. It is journaled like every
+        other event rather than edited into the snapshot, so the book still
+        explains every penny of its own cash from its own history.
+
+        Raises:
+            LedgerFrozenError: The book is frozen. Resizing a book whose
+                exposure is in doubt would bury the doubt.
+            ValueError: The change is zero, or would drive cash negative.
+        """
+        if self.is_frozen:
+            raise LedgerFrozenError(
+                f"unresolved ambiguous intents "
+                f"{sorted(self._snap['ambiguous_intents'])}; resolve them "
+                f"before changing the allocation")
+        if delta_gbp == ZERO:
+            raise ValueError("allocation change of zero")
+        new_cash = self.cash_gbp + delta_gbp
+        if new_cash < ZERO:
+            raise ValueError(
+                f"taking {abs(delta_gbp)} would leave cash {new_cash}; the "
+                f"book cannot hold negative cash")
+
+        def mutate(snap: dict[str, Any]) -> None:
+            snap["cash_gbp"] = str(Decimal(snap["cash_gbp"]) + delta_gbp)
+
+        applied = self._apply(f"ALLOC|{change_id}", "ALLOCATION_CHANGED",
+                              {"delta_gbp": str(delta_gbp),
+                               "cash_after_gbp": str(new_cash),
+                               "reason": reason[:200]}, mutate=mutate)
+        if applied:
+            log.warning("[ledger] allocation changed by %s to %s (%s)",
+                        delta_gbp, new_cash, reason[:120])
+        return applied
 
     def record_note(self, note_id: str, kind: str, payload: dict[str, Any]) -> None:
         """Journal a bookkeeping note (cycle markers, reconcile verdicts)."""

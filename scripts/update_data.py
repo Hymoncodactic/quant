@@ -34,10 +34,21 @@ belongs to common/paths.py; atomic writing and temporary-partition cleanup,
 which belong to common/store.py; the committed rebuild manifest, which belongs
 to scripts/build_data_manifest.py.
 
+The B0 pairs-trading universe is refreshed in its own pass at the daily
+interval only. It is 502 names against the core universe's 52, and pairs
+trading needs no intraday bar, so fetching the five-interval set for it would
+multiply the request count for no research value. Its membership is frozen in
+data/reference/b0_universe_20260823.json and is never redefined here; the
+initial load is scripts/20260823_ingest_b0_universe.py, which shares this
+module's fetch path. Pass --no-b0 to skip that pass.
+
 Public functions:
-    main()   Update crypto and equity, then print the report.
+    main()   Update crypto, equity and the B0 universe, then print the report.
 
 Constants:
+    B0_UNIVERSE_JSON  Path  Frozen B0 universe, 502 names.
+    B0_STALE_DAYS     int   A B0 name whose newest stored daily bar is younger
+                            than this many calendar days is treated as current.
     CRYPTO_JOBS             list Tuples of (market, freq, dataset, period,
                                  symbols) for the crypto datasets that are still
                                  published.
@@ -76,6 +87,7 @@ from __future__ import annotations
 
 __all__ = ["main"]
 
+import json
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -90,6 +102,11 @@ from common.paths import DIR_DATA, binance_partition_dir, binance_partition_path
 from common.store import clear_stale_temps, write_table
 from crypto_trading.ingest import binance_archive as archive
 from trading212.ingest import yahoo_bars as yb
+
+# B0 pairs-trading universe: 502 names, daily bars only. Frozen definition and
+# provenance live in the JSON itself; this module never redefines the list.
+B0_UNIVERSE_JSON = DIR_DATA / "reference" / "b0_universe_20260823.json"
+B0_STALE_DAYS = 4
 
 # Crypto datasets that are still published. Each entry is
 # (market, freq, dataset, period, symbols).
@@ -301,6 +318,57 @@ def _update_equity() -> dict:
     return stats
 
 
+def _update_b0_universe() -> dict:
+    """Refresh DAILY bars for the B0 pairs-trading universe.
+
+    Separate from _update_equity because the two have different shapes. The
+    core universe carries five intervals per ticker and is small; the B0
+    universe is 502 names and needs the daily interval only, so fetching all
+    five would multiply the request count by five for no research value. Names
+    already covered by yb.UNIVERSE are skipped here, since that pass fetches a
+    superset for them.
+
+    The universe itself is frozen in data/reference/b0_universe_20260823.json
+    and is NOT redefined here; the initial load is
+    scripts/20260823_ingest_b0_universe.py, which shares this same fetch path.
+    """
+    stats = {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
+             "failed": []}
+    if not B0_UNIVERSE_JSON.is_file():
+        print("\n[b0] universe file absent, skipped", flush=True)
+        return stats
+    payload = json.loads(B0_UNIVERSE_JSON.read_text())
+    core = set(yb.UNIVERSE.get("us_equity", {}))
+    names = sorted({m["ticker"] for m in payload["members"]} - core)
+
+    print("\n" + "=" * 96)
+    print(f"B0 UNIVERSE  Yahoo, daily only, {len(names)} names "
+          f"(pairs-trading study)")
+    print("=" * 96, flush=True)
+    cutoff = pd.Timestamp(date.today() - timedelta(days=B0_STALE_DAYS), tz="UTC")
+    for i, ticker in enumerate(names, 1):
+        stored = yb.latest_stored("us_equity", ticker, "1d")
+        if stored is not None and stored >= cutoff:
+            stats["skipped"] += 1
+            continue
+        frame = yb.fetch_interval(ticker, "1d", None, None)
+        time.sleep(yb.PACE_SEC)
+        if frame.empty:
+            stats["failed"].append(ticker)
+            continue
+        files, size = yb.write_daily("us_equity", ticker, frame)
+        stats["tickers"] += 1
+        stats["files"] += files
+        stats["rows"] += len(frame)
+        stats["bytes"] += size
+        if stats["tickers"] % 25 == 0:
+            print(f"  {i}/{len(names)}  updated {stats['tickers']}  "
+                  f"{stats['bytes']/1e6:,.1f} MB", flush=True)
+    print(f"  done: {stats['tickers']} updated, {stats['skipped']} already current, "
+          f"{len(stats['failed'])} failed", flush=True)
+    return stats
+
+
 def main() -> None:
     """Update crypto and equity, then report."""
     started = time.time()
@@ -310,6 +378,9 @@ def main() -> None:
 
     crypto = _update_crypto()
     equity = _update_equity()
+    b0 = _update_b0_universe() if "--no-b0" not in sys.argv else \
+        {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
+         "failed": [], "note": "skipped by --no-b0"}
 
     print("\n" + "=" * 96)
     print("SUMMARY")
@@ -323,6 +394,10 @@ def main() -> None:
     if equity["failed"]:
         print(f"  equity failures ({len(equity['failed'])}): {equity['failed']}")
         print("  Re-run to retry: these are usually Yahoo throttling, not missing data.")
+    print(f"  b0      {b0['tickers']} tickers updated, {b0['skipped']} already current  "
+          f"{b0['files']} files  {b0['rows']:,} rows  {b0['bytes']/1e6:,.1f} MB")
+    if b0.get("failed"):
+        print(f"  b0 failures ({len(b0['failed'])}): {b0['failed'][:12]}")
     print(f"  elapsed {(time.time()-started)/60:.1f} min")
 
 

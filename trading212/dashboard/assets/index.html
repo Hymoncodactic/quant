@@ -37,6 +37,16 @@
           </div>
           <div class="err hidden" id="money-err"></div>
         </div>
+        <div class="field hidden" id="adjust-field">
+          <label id="adjust-label"></label>
+          <div class="hint" id="adjust-hint"></div>
+          <div class="row">
+            <input type="text" id="adjust-input" inputmode="decimal">
+            <button id="adjust-btn"></button>
+            <span id="adjust-current"></span>
+          </div>
+          <div class="err hidden" id="adjust-err"></div>
+        </div>
       </div>
       <div id="settings-fields"></div>
     </div>
@@ -58,7 +68,18 @@
   </section>
 
   <section class="panel">
+    <h2 id="halt-heading"></h2>
+    <p class="note" id="halt-note"></p>
+    <div class="row">
+      <button id="halt-raise-btn" class="danger"></button>
+      <button id="halt-clear-btn"></button>
+      <span id="halt-state"></span>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2 id="equity-heading"></h2>
+    <p class="note" id="tz-note"></p>
     <p class="note" id="gap-note"></p>
     <div class="chart" id="equity-chart"></div>
     <p class="note hidden" id="equity-empty"></p>

@@ -1,0 +1,188 @@
+[
+ {
+  "trade_start": "2011-01-03",
+  "trade_end": "2011-07-01",
+  "pairs": 20,
+  "example": "DOV/IEX, FE/PPL, DPZ/DRI"
+ },
+ {
+  "trade_start": "2011-07-05",
+  "trade_end": "2011-12-30",
+  "pairs": 20,
+  "example": "SO/WEC, PNC/TFC, EXC/FE"
+ },
+ {
+  "trade_start": "2012-01-03",
+  "trade_end": "2012-07-02",
+  "pairs": 20,
+  "example": "BX/KKR, APH/GLW, TGT/WMT"
+ },
+ {
+  "trade_start": "2012-07-03",
+  "trade_end": "2013-01-03",
+  "pairs": 20,
+  "example": "TRGP/WMB, ADI/INTC, INTU/SNPS"
+ },
+ {
+  "trade_start": "2013-01-04",
+  "trade_end": "2013-07-05",
+  "pairs": 20,
+  "example": "ESS/MAA, INTU/ORCL, CSX/NSC"
+ },
+ {
+  "trade_start": "2013-07-08",
+  "trade_end": "2014-01-03",
+  "pairs": 20,
+  "example": "MA/V, CPAY/JKHY, DXCM/PODD"
+ },
+ {
+  "trade_start": "2014-01-06",
+  "trade_end": "2014-07-07",
+  "pairs": 20,
+  "example": "EMR/ROK, APH/GLW, PNC/WFC"
+ },
+ {
+  "trade_start": "2014-07-08",
+  "trade_end": "2015-01-05",
+  "pairs": 20,
+  "example": "HSIC/MCK, LHX/LMT, AMGN/BIIB"
+ },
+ {
+  "trade_start": "2015-01-06",
+  "trade_end": "2015-07-07",
+  "pairs": 20,
+  "example": "AEE/D, MA/V, COR/MCK"
+ },
+ {
+  "trade_start": "2015-07-08",
+  "trade_end": "2016-01-05",
+  "pairs": 20,
+  "example": "QCOM/SWKS, JPM/TFC, ISRG/ZBH"
+ },
+ {
+  "trade_start": "2016-01-06",
+  "trade_end": "2016-07-06",
+  "pairs": 20,
+  "example": "PODD/STE, BDX/PODD, LULU/NKE"
+ },
+ {
+  "trade_start": "2016-07-07",
+  "trade_end": "2017-01-04",
+  "pairs": 20,
+  "example": "BIIB/REGN, MTD/TMO, BIIB/VRTX"
+ },
+ {
+  "trade_start": "2017-01-05",
+  "trade_end": "2017-07-06",
+  "pairs": 20,
+  "example": "C/USB, EXPD/UPS, C/JPM"
+ },
+ {
+  "trade_start": "2017-07-07",
+  "trade_end": "2018-01-04",
+  "pairs": 20,
+  "example": "MPWR/MU, HBAN/RF, CI/DGX"
+ },
+ {
+  "trade_start": "2018-01-05",
+  "trade_end": "2018-07-06",
+  "pairs": 20,
+  "example": "BDX/RMD, CDNS/SNPS, AES/NRG"
+ },
+ {
+  "trade_start": "2018-07-09",
+  "trade_end": "2019-01-07",
+  "pairs": 20,
+  "example": "NTRS/TROW, NVR/PHM, FAST/URI"
+ },
+ {
+  "trade_start": "2019-01-08",
+  "trade_end": "2019-07-09",
+  "pairs": 20,
+  "example": "FISV/V, FISV/MA, FISV/JKHY"
+ },
+ {
+  "trade_start": "2019-07-10",
+  "trade_end": "2020-01-07",
+  "pairs": 20,
+  "example": "NXPI/TXN, FE/WEC, GPN/MA"
+ },
+ {
+  "trade_start": "2020-01-08",
+  "trade_end": "2020-07-08",
+  "pairs": 20,
+  "example": "C/PNC, DOV/SWK, BAX/SYK"
+ },
+ {
+  "trade_start": "2020-07-09",
+  "trade_end": "2021-01-06",
+  "pairs": 20,
+  "example": "NDAQ/SPGI, MCO/NDAQ, KKR/TROW"
+ },
+ {
+  "trade_start": "2021-01-07",
+  "trade_end": "2021-07-08",
+  "pairs": 20,
+  "example": "AVY/IP, TDG/TXT, EXC/SO"
+ },
+ {
+  "trade_start": "2021-07-09",
+  "trade_end": "2022-01-05",
+  "pairs": 20,
+  "example": "CPAY/FISV, ACGL/HIG, CPAY/GPN"
+ },
+ {
+  "trade_start": "2022-01-06",
+  "trade_end": "2022-07-08",
+  "pairs": 20,
+  "example": "PPL/SO, FLEX/JBL, FLEX/TEL"
+ },
+ {
+  "trade_start": "2022-07-11",
+  "trade_end": "2023-01-06",
+  "pairs": 20,
+  "example": "COP/EOG, BEN/KKR, ACGL/CB"
+ },
+ {
+  "trade_start": "2023-01-09",
+  "trade_end": "2023-07-11",
+  "pairs": 20,
+  "example": "CCL/EXPE, ROP/TDY, ECL/LYB"
+ },
+ {
+  "trade_start": "2023-07-12",
+  "trade_end": "2024-01-09",
+  "pairs": 20,
+  "example": "AVY/IP, ADSK/TRMB, PNC/TFC"
+ },
+ {
+  "trade_start": "2024-01-10",
+  "trade_end": "2024-07-11",
+  "pairs": 20,
+  "example": "EW/ZBH, BMY/PFE, MCO/SPGI"
+ },
+ {
+  "trade_start": "2024-07-12",
+  "trade_end": "2025-01-10",
+  "pairs": 20,
+  "example": "NTRS/STT, ETR/FE, C/JPM"
+ },
+ {
+  "trade_start": "2025-01-13",
+  "trade_end": "2025-07-15",
+  "pairs": 20,
+  "example": "ADM/BG, GOOG/GOOGL, BLK/IVZ"
+ },
+ {
+  "trade_start": "2025-07-16",
+  "trade_end": "2026-01-13",
+  "pairs": 20,
+  "example": "EW/PODD, EW/ZBH, EW/SYK"
+ },
+ {
+  "trade_start": "2026-01-14",
+  "trade_end": "2026-07-16",
+  "pairs": 20,
+  "example": "ETR/FE, USB/WFC, ABT/ISRG"
+ }
+]

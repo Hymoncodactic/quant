@@ -87,7 +87,15 @@
       "must_be_positive": "要填一个大于 0 的数",
       "must_not_be_negative": "不能填负数",
       "fee_buffer_too_large": "留得太多了，应该小于 20%",
-      "not_a_switch": "这个开关还没设置"
+      "not_a_switch": "这个开关还没设置",
+      "amount_not_a_number": "金额要填数字",
+      "amount_is_zero": "金额不能是 0",
+      "would_go_negative": "收回这么多的话资金会变成负数",
+      "ledger_frozen": "账本已冻结，要先处理完才能调整",
+      "no_ledger": "还没建立策略账本",
+      "cash_not_a_number": "金额要填数字",
+      "cash_must_be_positive": "金额要大于 0",
+      "ledger_already_exists": "账本已经建立过了"
     },
     "modal_title": "还有几项没填好",
     "modal_intro": "下面这些填好之后才能开始自动交易：",
@@ -97,7 +105,13 @@
     "saved_ready": "已保存，配置齐全",
     "saved_need_ledger": "已保存，还差策略账本",
     "unsaved": "有改动还没保存",
-    "over_account": "注意：这个额度比账户当前可用现金多。账户里的钱不够时，买单会被券商拒绝。"
+    "over_account": "注意：这个额度比账户当前可用现金多。账户里的钱不够时，买单会被券商拒绝。",
+    "money_current": "当前策略资金",
+    "money_adjust_heading": "调整策略资金",
+    "money_adjust_hint": "账上钱多了想加大策略容量，或者想收回一部分，都在这里改。填正数是增加，填负数是收回。这只是改记账额度，不会真的划钱。",
+    "money_adjust_placeholder": "例如 500 或 -200",
+    "money_adjust_btn": "调整",
+    "money_adjust_done": "已调整"
   },
   "controls": {
     "heading": "实时数据",
@@ -106,7 +120,25 @@
     "stop": "停止实时更新",
     "shutdown": "关闭看板",
     "shutdown_note": "关闭后网页就打不开了，需要重新双击启动文件。",
-    "shutdown_confirm": "确定要关闭看板吗？关闭后要重新双击启动文件才能再打开。策略不受影响。"
+    "shutdown_confirm": "确定要关闭看板吗？关闭后要重新双击启动文件才能再打开。策略不受影响。",
+    "halt_heading": "紧急停止",
+    "halt_note": "按下之后策略立刻不再下任何单，直到你在这里解除。这只影响下单，不影响看板和数据。",
+    "halt_raise": "紧急停止",
+    "halt_clear": "解除紧急停止",
+    "halt_raise_confirm": "确定要紧急停止吗？按下后策略不会再下任何单。",
+    "halt_on": "已停止，策略不会下单",
+    "halt_off": "未停止",
+    "halt_blocked_title": "现在还不能解除",
+    "halt_blocked_intro": "解除之前这些必须先处理好，否则一解除就会带着问题继续交易：",
+    "halt_checks": {
+      "ledger_exists": "还没有策略账本",
+      "ledger_loads": "账本读不出来",
+      "no_ambiguity": "有下单结果不明的委托没处理完",
+      "no_open_orders": "还有委托没收完，先跑一次收单",
+      "reconcile": "账本和券商账户对不上",
+      "reconcile_ran": "对账没能跑起来"
+    },
+    "halt_check_separator": "："
   },
   "charts": {
     "equity_title": "资产变化",
@@ -117,7 +149,10 @@
     "positions_title": "各只股票的持仓市值",
     "positions_y": "英镑",
     "empty": "还没有采集到数据。点上面的「开始实时更新」就会开始记录。",
-    "gap_note": "曲线中断的地方是看板停着、没有采集数据的时段。"
+    "gap_note": "曲线中断的地方是看板停着、没有采集数据的时段。",
+    "session_band": "美股交易时段",
+    "tz_note": "时间按",
+    "tz_suffix": "显示；浅色带是美股常规交易时段（纽约 09:30–16:00）。"
   },
   "table": {
     "heading": "当前持仓",

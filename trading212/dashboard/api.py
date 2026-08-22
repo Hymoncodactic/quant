@@ -19,6 +19,10 @@ Public functions:
     post_settings(ctx, body)           Validate and write settings.
     post_collector(ctx, collector, body)  Start or stop sampling.
     post_ledger_init(ctx, body)        Create the strategy book once.
+    post_allocation(ctx, body)         Add to or take from the allocation.
+    post_halt(ctx, body)               Raise the halt flag, or clear it when
+                                       the system is provably clean.
+    get_sessions(ctx, days)            Recent and upcoming session spans.
     get_instruments(ctx)               Strategy symbol to venue ticker map.
     get_manual(_ctx)                   Recent manual order entries.
     post_manual(ctx, body)             Place or rehearse a manual order.
@@ -43,22 +47,31 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["get_state", "get_history", "get_settings", "post_settings",
-           "post_collector", "post_ledger_init", "get_instruments",
-           "get_manual", "post_manual", "MAX_HISTORY_DAYS",
-           "MAX_HISTORY_POINTS"]
+           "post_collector", "post_ledger_init", "post_allocation",
+           "post_halt", "get_sessions", "get_instruments", "get_manual",
+           "post_manual", "MAX_HISTORY_DAYS", "MAX_HISTORY_POINTS",
+           "SESSION_WINDOW_DAYS"]
 
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from common.logging_setup import get_logger
+import pandas as pd
+
 from trading212.dashboard import manual_orders, settings, snapshots
 from trading212.execution import instruments as venue_instruments
-from trading212.execution import session_cycle
+from trading212.execution import reconciler, session_cycle
+from trading212.execution.ledger_store import LedgerFrozenError
 
 log = get_logger("t212.dashboard")
 
 MAX_HISTORY_DAYS = 30
 MAX_HISTORY_POINTS = 4000
+
+# Sessions handed to the chart for shading. The venue publishes about six
+# weeks of forward calendar, and the chart never looks back further than the
+# sample history, so a fortnight either side is ample.
+SESSION_WINDOW_DAYS = 14
 
 _VENUE = "t212"
 
@@ -193,3 +206,109 @@ def post_manual(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                                  real=bool(body.get("real")))
     status = 200 if result.get("outcome") in ("submitted", "rehearsed") else 400
     return status, {"ok": status == 200, "result": result}
+
+
+def post_allocation(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Add to or take from the strategy's allocated cash.
+
+    This is the only way the figure changes outside trading. It moves no real
+    money: it records that the account owner has decided the strategy may
+    work with a different slice of the account.
+    """
+    raw = (body or {}).get("delta_gbp")
+    try:
+        delta = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return 400, {"ok": False, "problem": "amount_not_a_number"}
+    ledger = ctx.ledger()
+    if ledger is None:
+        return 409, {"ok": False, "problem": "no_ledger"}
+    change_id = f"{pd.Timestamp.now(tz='UTC').value}"
+    try:
+        ledger.record_allocation_change(change_id, delta,
+                                        str((body or {}).get("reason") or
+                                            "changed from the dashboard"))
+    except LedgerFrozenError as exc:
+        return 409, {"ok": False, "problem": "ledger_frozen",
+                     "detail": repr(exc)[:200]}
+    except ValueError as exc:
+        problem = "amount_is_zero" if "zero" in str(exc) \
+            else "would_go_negative"
+        return 400, {"ok": False, "problem": problem, "detail": str(exc)[:200]}
+    return 200, {"ok": True, "cash_gbp": str(ledger.cash_gbp)}
+
+
+def post_halt(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Raise the halt flag, or clear it once the system is provably clean.
+
+    Raising is always allowed and needs no justification: stopping is the
+    safe direction. Clearing is not the mirror image of it, because a halt
+    normally means something was wrong, and clearing it while that thing is
+    still wrong would restart trading into the same problem. So a clear
+    request runs the checks first and refuses with the reasons when any of
+    them fails: the book must load, hold no unresolved ambiguity and no
+    unsettled orders, and reconcile against the account.
+    """
+    action = (body or {}).get("action")
+    if action == "raise":
+        ctx.halt_path.parent.mkdir(parents=True, exist_ok=True)
+        ctx.halt_path.touch()
+        log.critical("[halt] raised from the dashboard")
+        return 200, {"ok": True, "halted": True}
+    if action != "clear":
+        return 400, {"ok": False, "problem": "unknown_action"}
+
+    blockers = []
+    try:
+        ledger = ctx.ledger()
+    except LedgerFrozenError as exc:
+        ledger = None
+        blockers.append({"check": "ledger_loads", "detail": repr(exc)[:200]})
+    if ledger is None and not blockers:
+        blockers.append({"check": "ledger_exists", "detail": "no ledger"})
+    if ledger is not None:
+        if ledger.is_frozen:
+            blockers.append({"check": "no_ambiguity",
+                             "detail": str(sorted(ledger.ambiguous_intents))})
+        if ledger.open_orders:
+            blockers.append({"check": "no_open_orders",
+                             "detail": str(sorted(ledger.open_orders))})
+        try:
+            tickers = {sym: venue_instruments.order_ticker(sym)
+                       for sym in (ctx.params.get("trade_symbols") or [])}
+            verdict = reconciler.reconcile(ctx.client(), ledger, tickers)
+            if not verdict.ok:
+                blockers.append({"check": "reconcile",
+                                 "detail": "; ".join(verdict.problems)[:300]})
+        except Exception as exc:
+            blockers.append({"check": "reconcile_ran",
+                             "detail": repr(exc)[:200]})
+    if blockers:
+        log.warning("[halt] clear refused: %s", blockers)
+        return 409, {"ok": False, "problem": "not_clean", "blockers": blockers}
+    ctx.halt_path.unlink(missing_ok=True)
+    log.warning("[halt] cleared from the dashboard after passing every check")
+    return 200, {"ok": True, "halted": False}
+
+
+def get_sessions(ctx, days: int = SESSION_WINDOW_DAYS) -> tuple[int, dict]:
+    """Regular session spans around now, for shading the time axis.
+
+    Read from the cached exchange calendar so opening the page cannot burn
+    the venue's one-request-per-30-seconds metadata budget.
+    """
+    days = max(1, min(int(days or SESSION_WINDOW_DAYS), MAX_HISTORY_DAYS))
+    try:
+        calendar = venue_instruments.load_calendar(ctx.calendar_cache)
+        events = venue_instruments.session_events(
+            calendar, venue_instruments.US_SCHEDULE_ID_NASDAQ)
+        sessions = venue_instruments.sessions(events)
+    except (OSError, RuntimeError, KeyError, ValueError) as exc:
+        return 200, {"sessions": [], "tz": venue_instruments.EXCHANGE_TZ,
+                     "unavailable": repr(exc)[:200]}
+    now = pd.Timestamp.now(tz="UTC")
+    lo, hi = now - pd.Timedelta(days=days), now + pd.Timedelta(days=days)
+    rows = [{"date": str(sess.date_ny), "open_utc": str(sess.open_utc),
+             "close_utc": str(sess.close_utc), "is_full": sess.is_full}
+            for sess in sessions if lo <= sess.close_utc <= hi]
+    return 200, {"sessions": rows, "tz": venue_instruments.EXCHANGE_TZ}

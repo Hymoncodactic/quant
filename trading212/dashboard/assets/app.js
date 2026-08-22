@@ -8,6 +8,8 @@
   var L = null;
   var STATE = null;
   var lastHistoryAt = 0;
+  var SESSIONS = [];
+  var TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
   var chartsBuilt = false;
   var STATE_MS = 5000;
   var HISTORY_MS = 30000;
@@ -62,6 +64,14 @@
     $("money-input").placeholder = L.setup.money_placeholder;
     text("money-btn", L.setup.money_create);
     text("save-btn", L.setup.save);
+    text("adjust-label", L.setup.money_adjust_heading);
+    text("adjust-hint", L.setup.money_adjust_hint);
+    $("adjust-input").placeholder = L.setup.money_adjust_placeholder;
+    text("adjust-btn", L.setup.money_adjust_btn);
+    text("halt-heading", L.controls.halt_heading);
+    text("halt-note", L.controls.halt_note);
+    text("halt-raise-btn", L.controls.halt_raise);
+    text("halt-clear-btn", L.controls.halt_clear);
     text("controls-heading", L.controls.heading);
     text("controls-note", L.controls.note);
     text("start-btn", L.controls.start);
@@ -315,7 +325,9 @@
     ];
     var layout = JSON.parse(JSON.stringify(LAYOUT_BASE));
     layout.yaxis.title = { text: L.charts.equity_y, font: { size: 11 } };
+    layout.shapes = sessionBands(rows);
     Plotly.react("equity-chart", traces, layout, CONFIG);
+    text("tz-note", L.charts.tz_note + " " + TZ + " " + L.charts.tz_suffix);
   }
 
   function drawPositions() {
@@ -347,6 +359,14 @@
       }
       $("money-btn").disabled = !!s.readiness.ledger_ready;
       if (s.readiness.ledger_ready) text("money-btn", L.setup.money_done);
+      $("adjust-field").classList.toggle("hidden", !s.readiness.ledger_ready);
+      var book = s.book || {};
+      if (book.cash_gbp !== null && book.cash_gbp !== undefined) {
+        text("adjust-current", L.setup.money_current + " " + money(book.cash_gbp));
+      }
+      text("halt-state", s.halted ? L.controls.halt_on : L.controls.halt_off);
+      $("halt-raise-btn").disabled = !!s.halted;
+      $("halt-clear-btn").disabled = !s.halted;
     }).catch(function () { /* transient; the next poll retries */ });
   }
 
@@ -354,10 +374,34 @@
     var now = Date.now();
     if (!force && now - lastHistoryAt < HISTORY_MS) return Promise.resolve();
     lastHistoryAt = now;
-    return getJSON("/api/history?days=3&max=1500").then(function (h) {
+    return getJSON("/api/sessions").then(function (s) {
+      SESSIONS = s.sessions || [];
+    }).catch(function () { SESSIONS = []; }).then(function () {
+      return getJSON("/api/history?days=3&max=1500");
+    }).then(function (h) {
       drawEquity(h.rows || []);
       chartsBuilt = true;
     }).catch(function () { });
+  }
+
+  function sessionBands(rows) {
+    /* Shade each regular US session so the curve can be read against the
+       hours it was actually produced in. Without them the axis is just wall
+       clock in whatever zone the reader happens to sit in, and a flat
+       overnight stretch looks the same as a flat trading day. */
+    if (!rows.length || !SESSIONS.length) return [];
+    var first = new Date(rows[0].ts).getTime();
+    var last = new Date(rows[rows.length - 1].ts).getTime();
+    return SESSIONS.filter(function (s) {
+      return s.is_full &&
+             new Date(s.close_utc).getTime() >= first &&
+             new Date(s.open_utc).getTime() <= last;
+    }).map(function (s) {
+      return { type: "rect", xref: "x", yref: "paper",
+               x0: s.open_utc, x1: s.close_utc, y0: 0, y1: 1,
+               fillcolor: "rgba(76,141,255,0.10)", line: { width: 0 },
+               layer: "below" };
+    });
   }
 
   /* ---------------- wiring ---------------- */
@@ -391,6 +435,36 @@
           err.textContent = L.setup.problems[r.body.problem] || r.body.problem;
           err.classList.remove("hidden");
         }
+      });
+    };
+    $("adjust-btn").onclick = function () {
+      var err = $("adjust-err");
+      postJSON("/api/ledger/allocation",
+               { delta_gbp: $("adjust-input").value }).then(function (r) {
+        if (r.status === 200) {
+          err.classList.add("hidden");
+          $("adjust-input").value = "";
+          refreshState();
+        } else {
+          err.textContent = L.setup.problems[r.body.problem] || r.body.problem;
+          err.classList.remove("hidden");
+        }
+      });
+    };
+    $("halt-raise-btn").onclick = function () {
+      if (!window.confirm(L.controls.halt_raise_confirm)) return;
+      postJSON("/api/halt", { action: "raise" }).then(refreshState);
+    };
+    $("halt-clear-btn").onclick = function () {
+      postJSON("/api/halt", { action: "clear" }).then(function (r) {
+        if (r.status === 200) { refreshState(); return; }
+        var items = (r.body.blockers || []).map(function (b) {
+          return (L.controls.halt_checks[b.check] || b.check) +
+                 (b.detail ? L.controls.halt_check_separator + b.detail : "");
+        });
+        openModal(L.controls.halt_blocked_title,
+                  L.controls.halt_blocked_intro,
+                  items.length ? items : [r.body.problem || ""]);
       });
     };
     $("start-btn").onclick = function () {
