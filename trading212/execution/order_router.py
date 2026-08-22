@@ -124,7 +124,8 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
             continue
 
         try:
-            order = client.place_market_order(intent.ticker, intent.quantity)
+            order = client.place_market_order(intent.ticker, intent.quantity,
+                                              extended_hours=False)
             # The venue accepted; from here every failure (missing id,
             # ledger write error, ...) leaves a LIVE order behind and must
             # therefore land in the ambiguity branch, never the rejection

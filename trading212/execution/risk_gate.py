@@ -1,29 +1,58 @@
 """Pre-trade risk gate: rejects or shrinks intents, never enlarges them.
 
 Responsibility: the last decision layer before the order router. Every check
-either passes an intent through unchanged, trims it DOWN, or rejects it;
-nothing here may increase a quantity, flip a side, or invent an order
-(live-trading-architecture skill, RiskGate contract).
-Not responsible for: computing targets (strategy), submitting (router), or
-account truth (reconciler).
+either passes an intent through unchanged, trims it DOWN, or rejects it.
+Nothing here may raise a quantity, flip a side or invent an order, which is
+what makes the gate safe to tighten without re-reasoning about the strategy
+(.claude/skills/live-trading-architecture/SKILL.md, RiskGate contract).
 
-Fail-closed configuration: every limit must be explicitly set and positive
-in the venue configuration's risk section. A missing or zero limit REJECTS
-everything rather than defaulting to "unlimited" -- an unset risk file must
-never be interpreted as permission (CLAUDE.md section 1.4: parameters that
-shape live orders belong to the user).
+Fail-closed configuration: every limit must be present and positive in the
+venue configuration's risk section. A missing or zero limit rejects
+everything rather than meaning "unlimited", because an unfilled risk file
+must never read as permission (CLAUDE.md section 1.4: parameters that shape
+live orders belong to the user).
+
+Out of scope: computing targets, which belongs to
+trading212/strategy/a0_v0_0_1.py; submitting, which belongs to
+trading212/execution/order_router.py; account truth, which belongs to
+trading212/execution/reconciler.py; deciding when the submission window is
+open, which belongs to trading212/execution/session_cycle.py using the
+venue calendar in trading212/execution/instruments.py.
 
 Public classes:
-    OrderIntent      One desired order, strategy-symbol domain
-    GateReport       Approved intents + per-rejection reasons
+    OrderIntent   One desired order in the strategy-symbol domain.
+    GateReport    Approved intents, per-rejection reasons, and whether a
+                  fatal precondition closed the gate for the whole batch.
 
 Public functions:
     check_intents(intents, ledger_view, positions_ref_notional_gbp, cfg_risk,
-                  orders_today, market_open, halt_path)   Run the whole gate
-    halt_active(halt_path)                                Is the halt flag set
+                  orders_today, in_submit_window, halt_path)
+                  Run every check; returns a GateReport.
+    halt_active(halt_path)   Whether the halt flag file exists.
 
-Public constants:
-    T212_QTY_STEP, REQUIRED_RISK_KEYS
+Constants:
+    T212_QTY_STEP     Decimal  Order quantity step, 0.0001 shares. NOT
+                               officially documented: the current OpenAPI
+                               spec carries no precision field and
+                               minTradeQuantity was removed from it, so 4 dp
+                               is the conservative floor taken from community
+                               and staff reports (WORKING_MEMORY open item
+                               13). The strategy quantizes to the same step.
+    REQUIRED_RISK_KEYS tuple   The five risk limits that must all be set
+                               positive before any order is approved.
+
+Inputs:
+    The halt flag file, existence only: data/t212/execution_state/halt
+Outputs:
+    None.
+
+Change log:
+    2026-08-21  Created for the daily A0 cycle.
+    2026-08-22  Session semantics inverted for the hourly arm: the gate now
+                requires the caller-supplied submission window to be OPEN,
+                where the daily version required the market to be CLOSED.
+                The insufficient-cash rejection adopted the backtest's
+                reason string so both audit tables use one vocabulary.
 """
 
 from __future__ import annotations
@@ -107,7 +136,7 @@ def halt_active(halt_path: Path) -> bool:
 
 def check_intents(intents: list[OrderIntent], ledger_view,
                   positions_ref_notional_gbp: Decimal, cfg_risk: dict,
-                  orders_today: int, market_open: bool,
+                  orders_today: int, in_submit_window: bool,
                   halt_path: Path) -> GateReport:
     """Run every gate over the intents; tighten-only.
 
@@ -118,13 +147,13 @@ def check_intents(intents: list[OrderIntent], ledger_view,
             decision prices, for the gross-exposure check.
         cfg_risk: The venue configuration's risk mapping.
         orders_today: Orders already submitted this trading day.
-        market_open: Whether the regular session is open NOW. A0 submits
-            while closed (queued to the open); submitting into a live
-            session would fill at an unmodeled price, so it is rejected
-            wholesale unless allow_submit_while_open is set.
+        in_submit_window: Whether NOW is inside the session's submission
+            window, which the caller derives from the venue calendar. A0
+            fills at the session close, so an order sent outside that window
+            would either miss the close or execute at an unmodeled price.
         halt_path: Halt-flag file.
     """
-    fatal = _fatal_precondition(cfg_risk, market_open, halt_path)
+    fatal = _fatal_precondition(cfg_risk, in_submit_window, halt_path)
     if fatal:
         log.error("[risk] gate closed: %s", fatal)
         return GateReport(approved=[], rejected=[(i, fatal) for i in intents],
@@ -150,8 +179,12 @@ def check_intents(intents: list[OrderIntent], ledger_view,
         cost = intent.ref_notional_gbp * (Decimal("1") + fee_buffer)
         if intent.quantity > 0:
             if cost > budget:
-                rejected.append((intent, f"buy cost {cost:.2f} exceeds available "
-                                         f"cash {budget:.2f}"))
+                # Same reason string the backtest's admission layer records
+                # (backtest/t212/admission.py), so the live audit table and
+                # the backtest's reconcile line by line.
+                rejected.append((intent, f"insufficient_free_for_stocks_buy: "
+                                         f"cost {cost:.2f} over available "
+                                         f"{budget:.2f}"))
                 continue
             if gross + intent.ref_notional_gbp > max_gross:
                 rejected.append((intent, f"gross would exceed "
@@ -173,7 +206,7 @@ def check_intents(intents: list[OrderIntent], ledger_view,
 # [3] Internals
 # ============================================================================
 
-def _fatal_precondition(cfg_risk: dict, market_open: bool,
+def _fatal_precondition(cfg_risk: dict, in_submit_window: bool,
                         halt_path: Path) -> str | None:
     """Conditions that close the gate for every intent at once."""
     if halt_active(halt_path):
@@ -188,9 +221,9 @@ def _fatal_precondition(cfg_risk: dict, market_open: bool,
             return f"risk.{key} must be set positive by the user; gate fails closed"
         if key == "fee_buffer" and not (0 <= value < Decimal("0.2")):
             return f"risk.fee_buffer {raw!r} outside [0, 0.2); gate fails closed"
-    if market_open and not cfg_risk.get("allow_submit_while_open", False):
-        return ("regular session is open; A0 submits only while closed so "
-                "queued orders fill at the next open")
+    if not in_submit_window:
+        return ("outside the session submission window; A0 fills at the "
+                "close, so orders are sent only shortly before it")
     return None
 
 

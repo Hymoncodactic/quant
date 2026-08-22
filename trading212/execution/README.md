@@ -1,63 +1,58 @@
-# T212 实盘执行层操作说明
+# trading212/execution/ 目录说明
 
-模块职责见 `ARCHITECTURE.md` §2.3。本文件是运行、排期、恢复的操作规程。
+## 1. 职责
+
+Trading 212 一侧的**执行层**：把 `trading212/strategy/` 算出的目标持仓变成真实
+委托，并把成交记回策略自己的账本。分层见 `ARCHITECTURE.md` §2，模块登记见 §2.3，
+时序与数据装配的规格见 `fixplans/t212/a0/02_execution.md`。
+
+不装：信号计算（在 `trading212/strategy/`，本层 import 同一份，不得另写）、
+撮合模拟（在 `backtest/t212/`）、行情下载实现（在 `trading212/ingest/`）。
+本层**不得 import `backtest/`**。
+
 资金红线以 `CLAUDE.md` §3 为准；本层全部默认值满足「不动真钱」。
 
-## 1. 相位与排期
+## 2. 文件清单
 
-A0 是持有版日频策略：以 t-1 收盘信息决策，市价单在休市时提交，
-由场所排队至下一常规开盘成交（venue 文档明示的排队语义）。两个相位：
-
-| 相位 | 命令 | 时间窗（前提条件由代码强制） | 动作 |
-|---|---|---|---|
-| decide | `python -m trading212.execution.run_a0 decide` | 美股常规时段休市中，且伦敦日期已越过决策日（保证 GBPUSD 日线收敛） | 刷新日线、对账、算目标、差分、风控闸、提交（默认 dry-run） |
-| settle | `python -m trading212.execution.run_a0 settle` | 排队单成交之后（下一开盘后任意时刻） | 轮询挂单离场、从账单收割成交与税费、退休订单、复核对账 |
-
-参考排期（本地 UTC+8）：每日 08:30 先 `settle`（收割前一晚开盘的成交），
-随后 `decide`（为当晚开盘排队新单）。同一决策日重复 decide 会被拒绝；
-风控闸失效关闭导致的中止不占用决策日，修正配置后可当日重跑。
-
-辅助命令：`status`（只读总览）、`init-ledger --cash-gbp <N>`（建账本，一次性）、
-`halt`（落停牌旗标；旗标文件无代码删除路径，解除须人工删除
-`data/t212/execution_state/halt`）。
-
-## 2. 上线路径与武装条件
-
-按 `/live-trading-architecture` §六的顺序，不得跳步：
-
-1. 回测已完成（`research/decisions/20260821_a0_framework_comparison.md`）。
-2. DRY_RUN：`QUANT_ENV=live` + `execution.dry_run: true`（现状）。每日跑
-   decide/settle，核对 journal 中的意向是否合理，跑满一个完整周期。
-3. 模拟盘：需要 demo 账户的 practice API key（现有 key 仅 live 有效），
-   `QUANT_ENV=paper` 指向 demo 主机实下单，对账连续一致后过闸。
-4. 小额实盘：用户当轮明确授权后，同时满足全部条件才会真实提交：
-   `QUANT_ENV=live`、配置含 `live: true`、`execution.dry_run: false`、
-   `risk` 区块全部限额为正、命令行带 `--allow-orders`（逐次武装，不延续）。
-5. 放量：每次放量都是新的授权。
-
-风控限额（`t212.live.yaml` 的 risk 区块）当前全为 0：闸门失效关闭，
-任何委托被整体拒绝。取值属用户决策，未裁定前不得填写。
-
-## 3. 账本与恢复
-
-账本为事件溯源结构：`a0_v0_0_1_journal.jsonl`（只追加）+
-`a0_v0_0_1_snapshot.json`（原子替换），事件按 event_id 幂等。恢复规则：
-
-| 情形 | 系统行为 | 人工处置 |
+| 文件 | 作用 | 存在必要性 |
 |---|---|---|
-| 快照缺失而日志存在 | 拒绝装载（不以空基底重建） | 依据 journal 逐事件核对后重建快照，或从备份恢复 |
-| 提交结果歧义（超时/5xx/断网） | 账本冻结，批次中止 | 跑 `settle`：以 venue 在案证据自动裁定；「判无」有 10 分钟最小年龄门 |
-| 崩溃于 POST 之后、回执落账之前 | 下次 decide 的对账检出「API 来源的未知挂单」并拒绝开新仓 | 核对该挂单归属后人工并账（编辑快照须先备份并在 journal 补记 NOTE） |
-| 账本持仓 > 账户持仓 | 对账 MISMATCH，拒绝开新仓 | 查 journal 与账单核差；不得自动以账户覆盖账本 |
-| settle 截止仍有挂单 | 只告警，不自动撤单 | 人工在 App 处置或延后重跑 settle |
+| `__init__.py` | 声明为常规 Python 包 | 使 `from trading212.execution import ...` 可解析 |
+| `instruments.py` | 标的映射与场次日历（`Session`、半日市、15:30 决策键） | 决策时刻必须由交易所日历判定，不能靠 bar 缺失反推 |
+| `market_data.py` | 1h/1d 刷新与读取、日内截止视图、新鲜度闸 | T212 无行情接口，行情须另接且口径必须与回测一致 |
+| `strategy_loader.py` | 按路径加载策略模块并校验身份；支持日内壳的工厂注入 | 策略包被裁定为不导出符号，注册表不能放在那里 |
+| `shadow_ledger.py` | 事件溯源影子账本（现金、持仓、在途、幂等事件） | 账户与手工交易共用，且 API 无 client order id，归因必须本地保存 |
+| `ledger_store.py` | 账本落盘与装载完整性规则 | 把「怎么写盘」与「记什么账」分开，二者的失效模式不同 |
+| `risk_gate.py` | 只收紧的下单前风控闸 | 限额是用户裁定项，缺失必须失效关闭 |
+| `order_router.py` | 唯一下单出口，写前意向与歧义冻结 | 下单接口非幂等，任何重试都可能产生重复单 |
+| `order_monitor.py` | 挂单轮询与账单收割 | 成交与税费的权威来源是账单，不是下单回执 |
+| `reconciler.py` | 账本与账户对账、歧义裁定 | 对不上必须停手，且绝不自动改账 |
+| `session_cycle.py` | 两相位编排与全部闸门顺序 | 闸门顺序本身就是口径的一部分 |
+| `run_a0.py` | CLI 入口，含单实例锁 | 配置只在入口层读一次；并发实例会重复下单 |
+| `README.md` | 本文件 | |
 
-对账为单向：账户多于账本视为手工持仓，不告警。归因假定本进程是该账户
-唯一的 API 下单来源；若引入第二个 API 工具，该假定失效，须重新设计归因。
+## 3. 子目录索引
 
-## 4. 已知未证实项（接实盘前须实测）
+无。
 
-1. `walletImpact.netValue` 的符号约定与是否已含税费：以 demo 首笔成交
-   对照账户现金流核定（`order_monitor._apply_fill` 现按「买出卖入」施号）。
-2. 下单数量精度上限（现按 4 位小数地板）与最小订单价值（现按配置项）。
-3. API POST 到成交的实测延迟（公开资料无数据）。
-4. 场所对排队市价单的成交价口径（开盘竞价还是首笔行情）。
+## 4. 依赖关系
+
+本目录 import：`trading212/strategy/`（经 `strategy_loader`）、`trading212/client.py`、
+`trading212/ingest/yahoo_bars.py`、`common/{config,secrets,logging_setup,net,paths}`。
+不 import `backtest/`。被 `dashboard/` 只读地引用（看板不下单，手动下单页经本层的
+client 与账本）。
+
+## 5. 产出与清理
+
+写 `data/t212/execution_state/`（账本日志与快照、场次状态、`halt` 旗标、日历缓存）
+与 `logs/`（均 gitignore）。刷新行情时写 `data/t212/curated/`。
+
+必须保留：`<strategy_id>_journal.jsonl` 与 `_snapshot.json` 是账本本体，删除等于
+丢失全部策略持仓归因。`halt` 旗标只能人工删除。
+
+## 6. 变更记录
+
+2026-08-21 建立执行层：日频决策、休市提交、次开成交。
+2026-08-22 改为小时频（`fixplans/t212/a0/02_execution.md`）：场次内 15:30 决策、
+信息止于 14:30 bar、收盘前 60 秒提交、按当日收盘价成交。`daily_cycle.py` 更名
+`session_cycle.py`；`instruments.py` 换为场次模型；`market_data.py` 换为 1h 装配与
+FX 前 90 分钟断言；新增 `strategy_loader.py`（策略包不再导出符号）。

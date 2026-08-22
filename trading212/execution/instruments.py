@@ -1,40 +1,87 @@
-"""T212 instrument mapping and the venue's market calendar.
+"""Instrument mapping and the venue's own session calendar.
 
-Responsibility: translate strategy symbols (Yahoo-style, e.g. "AAPL") to the
-venue's order tickers (e.g. "AAPL_US_EQ"), validate the mapping against the
-live metadata endpoint, and answer session-calendar questions (next open,
-last completed trading day) from the venue's own working schedules.
-Not responsible for: market data (market_data.py) or any order logic.
+Responsibility: translate strategy symbols (Yahoo style, "AAPL") into the
+venue's order tickers ("AAPL_US_EQ"), prove that mapping against the live
+metadata endpoint, and turn the venue's working schedules into the session
+facts the A0 hourly cycle needs: when a session opens and closes, whether it
+is a full session, and the exact UTC instant of its 15:30 decision bar.
 
-Mapping provenance (S4): GET /api/v0/equity/metadata/instruments fetched
-2026-08-21 against the live host, stored at
-data/reference/t212_instruments_20260821.json. Every entry below was matched
-by shortName and filtered to the USD US primary listing (ticker suffix
-_US_EQ, type STOCK). META's US listing trades as FB_US_EQ; METAl_EQ and
-METAm_EQ are European ETFs that happen to share the short name.
+Session facts come from the venue calendar rather than from bar absence,
+because inferring a half day from a missing 15:30 bar is an after-the-fact
+guess and would also fire on a data outage
+(fixplans/t212/a0/02_execution.md section 2.1).
+
+Out of scope: market data of any kind, which belongs to
+trading212/execution/market_data.py; order placement, which belongs to
+trading212/execution/order_router.py; the decision itself, which belongs to
+trading212/execution/session_cycle.py.
 
 Public functions:
-    order_ticker(symbol)                     Venue ticker for one strategy symbol
-    validate_mapping(client, symbols)        Assert every mapping against live metadata
-    refresh_calendar(client, cache_path)     Fetch working schedules, cache to disk
-    load_calendar(cache_path)                Load the cached schedules
-    session_events(calendar, schedule_id)    Sorted (ts_utc, type) list
-    next_event(events, now_utc, kinds)       First matching event at or after now
-    last_completed_trading_day(events, now)  Exchange-local date of the last CLOSE
-    market_is_open(events, now_utc)          Whether the regular session is open
+    order_ticker(symbol)                     Venue ticker for one strategy symbol.
+    validate_mapping(client, symbols)        Prove every mapping against metadata.
+    refresh_calendar(client, cache_path)     Fetch working schedules, cache them.
+    load_calendar(cache_path)                Load the cached schedules.
+    session_events(calendar, schedule_id)    Sorted (ts_utc, type) event list.
+    sessions(events)                         Regular sessions as Session records.
+    session_on(sessions_, date_ny)           The session of one exchange-local date.
+    current_session(sessions_, now_utc)      The session now falls inside, or None.
+    last_full_session(sessions_, now_utc)    Most recent finished full session.
+    decision_key(session)                    UTC instant of its 15:30 bar.
+    market_is_open(events, now_utc)          Whether the regular session is open.
 
-Public constants:
-    A0_ORDER_TICKERS, US_SCHEDULE_ID_NASDAQ, CALENDAR_STALE_DAYS
+Public classes:
+    Session   One regular trading session: local date, open, close, fullness.
+
+Constants:
+    A0_ORDER_TICKERS      dict  Strategy symbol to venue ticker. Source:
+                                GET /api/v0/equity/metadata/instruments,
+                                fetched 2026-08-21, stored at
+                                data/reference/t212_instruments_20260821.json.
+                                META's US listing is FB_US_EQ; METAl_EQ and
+                                METAm_EQ are European ETFs sharing the short
+                                name, so the ticker is never guessed.
+    US_SCHEDULE_ID_NASDAQ int  71. Source: same fetch, exchange 53 NASDAQ.
+    CALENDAR_STALE_DAYS   int  5. The venue publishes about six weeks of
+                               forward calendar (observed span 2026-08-03 to
+                               2026-09-14 on 2026-08-21), so a cache older
+                               than this may not cover today.
+    DECISION_TIME_NY      str  "15:30". The 1h decision bar's exchange-local
+                               start time. Source:
+                               fixplans/t212/a0/02_execution.md section 2.1.
+    FULL_SESSION_CLOSE_NY str  "16:00". A session closing earlier is a half
+                               day, which has no 15:30 bar and therefore no
+                               decision. Source: same section.
+    REGULAR_CLOSE_KINDS   tuple Event kinds that end the regular session. US
+                               schedules carry no CLOSE event at all: the
+                               regular close is marked by AFTER_HOURS_OPEN.
+                               Verified 2026-08-21 on schedules 71 and 56.
+
+Inputs:
+    GET /api/v0/equity/metadata/instruments
+    GET /api/v0/equity/metadata/exchanges
+Outputs:
+    data/t212/execution_state/exchange_calendar.json   cached schedules
+
+Change log:
+    2026-08-21  Created for the daily A0 cycle.
+    2026-08-22  Rewritten for the hourly arm: Session records, decision_key(),
+                full-session detection from the venue calendar. The daily
+                helpers last_completed_trading_day() and next_event() were
+                dropped; the hourly cycle asks about sessions, not days.
 """
 
 from __future__ import annotations
 
 __all__ = ["order_ticker", "validate_mapping", "refresh_calendar",
-           "load_calendar", "session_events", "next_event",
-           "last_completed_trading_day", "market_is_open",
-           "A0_ORDER_TICKERS", "US_SCHEDULE_ID_NASDAQ", "CALENDAR_STALE_DAYS"]
+           "load_calendar", "session_events", "sessions", "session_on",
+           "current_session", "last_full_session", "decision_key",
+           "market_is_open", "Session",
+           "A0_ORDER_TICKERS", "US_SCHEDULE_ID_NASDAQ", "CALENDAR_STALE_DAYS",
+           "DECISION_TIME_NY", "FULL_SESSION_CLOSE_NY", "REGULAR_CLOSE_KINDS"]
 
 import json
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -43,61 +90,57 @@ from common.logging_setup import get_logger
 
 log = get_logger("t212.execution")
 
-# ============================================================================
-# [1] Constants
-# ============================================================================
-
-# Strategy symbol -> venue order ticker. Source: instrument metadata fetched
-# 2026-08-21 (data/reference/t212_instruments_20260821.json); each ticker was
-# verified to exist with currencyCode=USD and type=STOCK.
 A0_ORDER_TICKERS: dict[str, str] = {
     "AAPL": "AAPL_US_EQ", "AMAT": "AMAT_US_EQ", "AMD": "AMD_US_EQ",
     "AMZN": "AMZN_US_EQ", "AVGO": "AVGO_US_EQ", "DELL": "DELL_US_EQ",
     "GOOGL": "GOOGL_US_EQ", "INTC": "INTC_US_EQ", "LRCX": "LRCX_US_EQ",
-    "META": "FB_US_EQ",   # US listing keeps the pre-rename ticker FB
+    "META": "FB_US_EQ",
     "MRVL": "MRVL_US_EQ", "MSFT": "MSFT_US_EQ", "MU": "MU_US_EQ",
     "NVDA": "NVDA_US_EQ", "ORCL": "ORCL_US_EQ", "PLTR": "PLTR_US_EQ",
     "TSLA": "TSLA_US_EQ", "TSM": "TSM_US_EQ",
 }
 
-# NASDAQ regular-session schedule id observed 2026-08-21 in the exchanges
-# metadata (exchange 53 NASDAQ -> schedules [109, 71, 110]; the A0 universe
-# instruments carry workingScheduleId 71 or 56 (NYSE)). Schedule ids are
-# venue-assigned and could change; validate_mapping() re-reads them from the
-# live metadata on every run instead of trusting this constant.
 US_SCHEDULE_ID_NASDAQ = 71
-
-# The venue publishes about six weeks of forward calendar (observed span
-# 2026-08-03 .. 2026-09-14 on 2026-08-21). A cache older than this many days
-# may no longer cover "today" and must be refreshed before use.
 CALENDAR_STALE_DAYS = 5
 
-# Regular-session boundary semantics, verified on the ACTUAL schedule-71/56
-# payload of 2026-08-21 (data/reference/t212_exchanges_20260821.json): US
-# schedules carry NO plain CLOSE event at all -- each day runs
-# OVERNIGHT_OPEN 00:00Z, PRE_MARKET_OPEN 08:00Z, OPEN 13:30Z,
-# AFTER_HOURS_OPEN 20:00Z, with AFTER_HOURS_CLOSE only at the weekend
-# boundary. The regular session therefore ENDS at AFTER_HOURS_OPEN. CLOSE
-# and the BREAK pair exist on other exchanges' schedules (spec TimeEvent
-# enum) and are honored for generality.
-_REGULAR_OPEN_KINDS = ("OPEN", "BREAK_END")
-_REGULAR_CLOSE_KINDS = ("CLOSE", "AFTER_HOURS_OPEN", "AFTER_HOURS_CLOSE",
-                        "BREAK_START")
-# Kinds that anchor a COMPLETED trading day (a break or the after-hours end
-# does not finish the day's bar; the regular close does).
-_DAY_CLOSE_KINDS = ("CLOSE", "AFTER_HOURS_OPEN")
+DECISION_TIME_NY = "15:30"
+FULL_SESSION_CLOSE_NY = "16:00"
+EXCHANGE_TZ = "America/New_York"
+
+_OPEN_KIND = "OPEN"
+REGULAR_CLOSE_KINDS = ("CLOSE", "AFTER_HOURS_OPEN", "AFTER_HOURS_CLOSE",
+                       "BREAK_START")
+_REOPEN_KINDS = ("OPEN", "BREAK_END")
+
+
+@dataclass(frozen=True)
+class Session:
+    """One regular trading session, in exchange-local terms.
+
+    date_ny is the exchange-local calendar date; open_utc and close_utc are
+    the regular session boundaries; is_full says the session closes at
+    FULL_SESSION_CLOSE_NY and therefore has a 15:30 bar to decide on.
+    """
+    date_ny: date
+    open_utc: pd.Timestamp
+    close_utc: pd.Timestamp
+
+    @property
+    def is_full(self) -> bool:
+        local = self.close_utc.tz_convert(EXCHANGE_TZ)
+        return local.strftime("%H:%M") == FULL_SESSION_CLOSE_NY
 
 
 # ============================================================================
-# [2] Mapping
+# [1] Mapping
 # ============================================================================
 
 def order_ticker(symbol: str) -> str:
     """Return the venue order ticker for one strategy symbol.
 
-    Raises:
-        KeyError: The symbol has no verified mapping. Never guess a ticker
-            from the symbol name; METAs European ETF twins show why.
+    Raises KeyError for an unmapped symbol rather than deriving a ticker from
+    the symbol name, because several strategy symbols have same-named foreign
+    listings that would silently route the order elsewhere.
     """
     if symbol not in A0_ORDER_TICKERS:
         raise KeyError(f"no verified T212 ticker mapping for {symbol!r}; add it "
@@ -106,15 +149,11 @@ def order_ticker(symbol: str) -> str:
 
 
 def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
-    """Assert the static mapping against the venue's live instrument metadata.
+    """Prove the static mapping against the venue's live instrument metadata.
 
-    Checks per symbol: the mapped ticker exists, quotes in USD, is a STOCK.
-    Returns the metadata entry per symbol so callers can read
-    workingScheduleId / maxOpenQuantity without a second fetch.
-
-    Raises:
-        RuntimeError: Any symbol fails any check. The execution layer must
-            not trade a universe whose identity it cannot prove.
+    Per symbol: the mapped ticker exists, quotes in USD and is a STOCK. Any
+    failure raises, because trading a universe whose identity cannot be
+    proven is worse than not trading.
     """
     index = {inst.get("ticker"): inst for inst in client.instruments()}
     result: dict[str, dict] = {}
@@ -138,16 +177,11 @@ def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
 
 
 # ============================================================================
-# [3] Calendar
+# [2] Calendar retrieval
 # ============================================================================
 
 def refresh_calendar(client, cache_path: Path) -> list[dict]:
-    """Fetch the venue's exchange schedules and cache them to disk.
-
-    The venue refreshes this data every 10 minutes and publishes roughly six
-    weeks forward; the cache exists so `settle` and `status` phases do not
-    burn the 1-per-30s rate limit re-fetching what `decide` already saw.
-    """
+    """Fetch the venue's exchange schedules and cache them atomically."""
     calendar = client.exchanges()
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = cache_path.with_suffix(".writing")
@@ -158,12 +192,7 @@ def refresh_calendar(client, cache_path: Path) -> list[dict]:
 
 
 def load_calendar(cache_path: Path) -> list[dict]:
-    """Load cached schedules; raise when missing or stale.
-
-    Raises:
-        FileNotFoundError: No cache present; call refresh_calendar first.
-        RuntimeError: The cache is older than CALENDAR_STALE_DAYS.
-    """
+    """Load cached schedules, refusing anything older than the stale bound."""
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     fetched = pd.Timestamp(payload["fetched_at_utc"])
     age_days = (pd.Timestamp.now(tz="UTC") - fetched).total_seconds() / 86400
@@ -173,8 +202,9 @@ def load_calendar(cache_path: Path) -> list[dict]:
     return payload["exchanges"]
 
 
-def session_events(calendar: list[dict], schedule_id: int) -> list[tuple[pd.Timestamp, str]]:
-    """Return the (ts_utc, type) event list of one working schedule, sorted."""
+def session_events(calendar: list[dict],
+                   schedule_id: int) -> list[tuple[pd.Timestamp, str]]:
+    """Return one working schedule's (ts_utc, type) events, sorted."""
     for exchange in calendar:
         for schedule in exchange.get("workingSchedules") or []:
             if schedule.get("id") == schedule_id:
@@ -187,58 +217,88 @@ def session_events(calendar: list[dict], schedule_id: int) -> list[tuple[pd.Time
     raise RuntimeError(f"schedule {schedule_id} not present in the calendar")
 
 
-def next_event(events: list[tuple[pd.Timestamp, str]], now_utc: pd.Timestamp,
-               kinds: tuple[str, ...]) -> tuple[pd.Timestamp, str]:
-    """First event of one of the given kinds at or after now_utc.
+# ============================================================================
+# [3] Sessions
+# ============================================================================
+
+def sessions(events: list[tuple[pd.Timestamp, str]]) -> list[Session]:
+    """Fold the event list into regular sessions.
+
+    A session runs from an OPEN to the next regular-close event. An OPEN with
+    no following close inside the published window is dropped rather than
+    given an assumed close time.
+    """
+    out: list[Session] = []
+    pending_open: pd.Timestamp | None = None
+    for ts, kind in events:
+        if kind == _OPEN_KIND:
+            pending_open = ts
+        elif kind in REGULAR_CLOSE_KINDS and pending_open is not None:
+            out.append(Session(
+                date_ny=pending_open.tz_convert(EXCHANGE_TZ).date(),
+                open_utc=pending_open, close_utc=ts))
+            pending_open = None
+    return out
+
+
+def session_on(sessions_: list[Session], date_ny: date) -> Session | None:
+    """The session whose exchange-local date is date_ny, if published."""
+    for session in sessions_:
+        if session.date_ny == date_ny:
+            return session
+    return None
+
+
+def current_session(sessions_: list[Session],
+                    now_utc: pd.Timestamp) -> Session | None:
+    """The session whose regular hours contain now_utc, if any."""
+    for session in sessions_:
+        if session.open_utc <= now_utc < session.close_utc:
+            return session
+    return None
+
+
+def last_full_session(sessions_: list[Session],
+                      now_utc: pd.Timestamp) -> Session | None:
+    """The most recent full session that has already closed."""
+    done = [s for s in sessions_ if s.close_utc <= now_utc and s.is_full]
+    return done[-1] if done else None
+
+
+def decision_key(session: Session) -> pd.Timestamp:
+    """UTC instant of the session's 15:30 decision bar.
+
+    The 1h bar timestamp is the bar's START (docs/data/t212/DATA_SPEC.md
+    section 3), so the decision key is the exchange-local 15:30 of that
+    session converted to UTC: 19:30Z under EDT, 20:30Z under EST. Never a
+    fixed UTC time.
 
     Raises:
-        RuntimeError: The calendar window ends before such an event; the
-            caller must refresh the calendar rather than extrapolate.
+        ValueError: The session is a half day and has no 15:30 bar.
     """
-    for ts, kind in events:
-        if kind in kinds and ts >= now_utc:
-            return ts, kind
-    raise RuntimeError(f"no {kinds} event at or after {now_utc} in the cached "
-                       f"calendar window; refresh the calendar")
-
-
-def last_completed_trading_day(events: list[tuple[pd.Timestamp, str]],
-                               now_utc: pd.Timestamp,
-                               tz_name: str = "America/New_York") -> pd.Timestamp:
-    """Exchange-local date (naive midnight) of the last regular-session close
-    before now.
-
-    This is the freshness anchor for daily bars: after the regular close,
-    that trading day's bar is complete and must be present in the local
-    store before the strategy may decide. On US schedules the close marker
-    is AFTER_HOURS_OPEN (see _DAY_CLOSE_KINDS provenance above).
-    """
-    last_close = None
-    for ts, kind in events:
-        if kind in _DAY_CLOSE_KINDS and ts <= now_utc:
-            last_close = ts
-    if last_close is None:
-        raise RuntimeError(f"no regular-close event at or before {now_utc} in "
-                           f"the cached calendar window; the window may start "
-                           f"too late")
-    return pd.Timestamp(last_close.tz_convert(tz_name).date())
+    if not session.is_full:
+        raise ValueError(f"session {session.date_ny} closes at "
+                         f"{session.close_utc.tz_convert(EXCHANGE_TZ):%H:%M} "
+                         f"and has no {DECISION_TIME_NY} bar")
+    hour, minute = (int(part) for part in DECISION_TIME_NY.split(":"))
+    local = pd.Timestamp(session.date_ny, tz=EXCHANGE_TZ) \
+        + pd.Timedelta(hours=hour, minutes=minute)
+    return local.tz_convert("UTC")
 
 
 def market_is_open(events: list[tuple[pd.Timestamp, str]],
                    now_utc: pd.Timestamp) -> bool:
     """Whether the regular session is open at now_utc.
 
-    Pre-market, after-hours and overnight count as closed: A0 submits while
-    closed so queued market orders fill at the next regular open. The open
-    interval is [OPEN, AFTER_HOURS_OPEN) on US schedules (see the boundary
-    provenance above); CLOSE and BREAK events are honored where they exist.
+    Pre-market, after-hours and overnight all count as closed: the regular
+    session interval is [OPEN, AFTER_HOURS_OPEN) on US schedules.
     """
     state_open = False
     for ts, kind in events:
         if ts > now_utc:
             break
-        if kind in _REGULAR_OPEN_KINDS:
+        if kind in _REOPEN_KINDS:
             state_open = True
-        elif kind in _REGULAR_CLOSE_KINDS:
+        elif kind in REGULAR_CLOSE_KINDS:
             state_open = False
     return state_open

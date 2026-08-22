@@ -2,7 +2,7 @@
 
 Responsibility: argument parsing, configuration loading (once, at the
 entry layer -- quant-code-standards section 4.8), and human-readable
-output. All behavior lives in daily_cycle.py.
+output. All behavior lives in session_cycle.py.
 
 Usage (from the repository root, with the venv python):
     python -m trading212.execution.run_a0 status
@@ -41,7 +41,7 @@ from decimal import Decimal
 from common.config import load_config
 from common.logging_setup import get_logger
 from common.paths import execution_state_dir
-from trading212.execution import daily_cycle
+from trading212.execution import session_cycle
 
 log = get_logger("t212.execution")
 
@@ -72,12 +72,12 @@ def main(argv: list[str] | None = None) -> int:
         prog="run_a0", description="A0 live execution cycle on Trading 212")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_decide = sub.add_parser("decide", help="compute targets and submit "
-                              "queued market orders (dry run by default)")
+    p_decide = sub.add_parser("decide", help="compute targets on the 15:30 bar "
+                              "and submit before the close (dry run by default)")
     p_decide.add_argument("--allow-orders", action="store_true",
                           help="arm THIS run for real submission; without it "
                                "the run is a dry run regardless of config")
-    sub.add_parser("settle", help="poll queued orders, harvest fills, reconcile")
+    sub.add_parser("settle", help="poll submitted orders, harvest fills, reconcile")
     sub.add_parser("status", help="read-only account and book overview")
     p_init = sub.add_parser("init-ledger", help="create the strategy book")
     p_init.add_argument("--cash-gbp", required=True, type=Decimal,
@@ -91,13 +91,13 @@ def main(argv: list[str] | None = None) -> int:
              cfg["_path"])
 
     if args.command == "decide":
-        result = daily_cycle.decide(cfg, armed=args.allow_orders)
+        result = session_cycle.decide(cfg, armed=args.allow_orders)
     elif args.command == "settle":
-        result = daily_cycle.settle(cfg)
+        result = session_cycle.settle(cfg)
     elif args.command == "status":
-        result = daily_cycle.status(cfg)
+        result = session_cycle.status(cfg)
     elif args.command == "init-ledger":
-        result = daily_cycle.init_ledger(cfg, args.cash_gbp)
+        result = session_cycle.init_ledger(cfg, args.cash_gbp)
     elif args.command == "halt":
         halt = execution_state_dir("t212") / "halt"
         halt.parent.mkdir(parents=True, exist_ok=True)

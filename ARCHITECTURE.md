@@ -104,29 +104,33 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 
 纪律见 `/backtest-discipline`。
 
-### 2.3 `trading212/` 实盘执行模块（2026-08-21）
+### 2.3 `trading212/` 实盘执行模块（2026-08-22 改为小时频）
 
-设计遵循 `/live-trading-architecture`；T212 无行情接口与推送通道，主循环体现为
-**每日两相位的批处理**（decide 休市提交排队市价单 → settle 开盘后收割账单），
-不是常驻流式进程。入口 `python -m trading212.execution.run_a0 <phase>`。
+设计遵循 `/live-trading-architecture`；规格为 `fixplans/t212/a0/02_execution.md`。
+T212 无行情接口也无推送通道，故「主循环」体现为**每个交易场次两相位的批处理**：
+`decide` 在场次内 15:30（纽约）决策、收盘前 60 秒提交市价单，成交落在当日收盘价；
+`settle` 在收盘后从账单收割成交。入口 `python -m trading212.execution.run_a0 <phase>`。
 
 | 模块 | 职责 |
 |---|---|
-| `client.py` | REST 传输：legacy 单钥鉴权、逐端点令牌桶限频、GET 重试；**下单 POST 永不重试**（venue 无幂等键），歧义结果抛 `OrderSubmitAmbiguousError` |
-| `execution/instruments.py` | 标的映射（`META→FB_US_EQ` 等，S4 已验证）与场所日历（US 表以 `AFTER_HOURS_OPEN` 标常规收盘，无 `CLOSE` 事件，2026-08-21 实证） |
-| `execution/market_data.py` | 经 `ingest/yahoo_bars` 刷新日线、装载历史、交易所本地日截止视图（`LiveMarketView`，与引擎 `MarketView` 同鸭型）、新鲜度闸 |
-| `execution/shadow_ledger.py` | 事件溯源影子账本：event_id 幂等（复发事件带尝试计数）；写前意向；歧义冻结；组合视图（借鉴 QMT 台账，fill id 作幂等键） |
-| `execution/ledger_store.py` | 账本持久化子层：JSONL fsync 追加、原子快照替换、装载完整性规则（拒空基底重建、日志领先快照检测） |
-| `execution/risk_gate.py` | 只收紧风控闸：限额缺失/为零即整体失效关闭；卖量钳到持仓；数量地板 4dp |
-| `execution/order_router.py` | 唯一下单出口：意向先落账 → POST → 回执落账；DRY_RUN 短路；未带 `--allow-orders` 降级演练并 CRITICAL |
+| `client.py` | REST 传输：legacy 单钥鉴权、逐端点令牌桶限频、GET 重试；下单 POST 永不重试（venue 无幂等键），200 但不可解析同样抛 `OrderSubmitAmbiguousError` |
+| `execution/instruments.py` | 标的映射（`META→FB_US_EQ`，S4 已验证）与场次日历：`Session` 记录、半日市判定、15:30 决策键（US 表无 `CLOSE` 事件，常规收盘由 `AFTER_HOURS_OPEN` 标记） |
+| `execution/market_data.py` | 1h/1d 刷新与读取、日内截止视图（`LiveMarketView`，与引擎 `MarketView` 同鸭型）、日内新鲜度闸（含 FX 必须落在决策键前 90 分钟） |
+| `execution/strategy_loader.py` | 执行侧按路径加载策略模块并校验身份；支持日内壳的 `make_strategy()` 工厂注入日线历史 |
+| `execution/shadow_ledger.py` | 事件溯源影子账本：event_id 幂等（复发事件带尝试计数）、写前意向、歧义冻结、组合视图 |
+| `execution/ledger_store.py` | 账本持久化子层：JSONL fsync 追加、原子快照替换、装载完整性规则 |
+| `execution/risk_gate.py` | 只收紧风控闸：限额缺失或为零即整体失效关闭；必须处于提交窗口内；卖量钳到持仓；数量地板 4dp；拒单理由与回测同词表 |
+| `execution/order_router.py` | 唯一下单出口：意向先落账 → POST → 回执落账；DRY_RUN 短路；未带 `--allow-orders` 降级演练并 CRITICAL；`extendedHours` 恒为 false |
 | `execution/order_monitor.py` | 挂单轮询至离场 + 从 `history/orders` 账单收割成交（含逐笔税费），对齐量后退休订单 |
-| `execution/reconciler.py` | 账本 vs 账户对账（共用账户单向查；API 单凭 `initiatedFrom=API` 归因）；歧义只凭正证据解除，判无须最小年龄门；**不自动修账** |
-| `execution/daily_cycle.py` | 相位编排与全部闸门顺序；同日防重；`_diff_to_intents` 镜像引擎差分语义 |
-| `execution/run_a0.py` | CLI：decide / settle / status / init-ledger / halt（halt 文件无代码删除路径） |
-| `strategy/__init__.py` | 版本注册表 `STRATEGIES[(name, version)]`（§4.6 分派表），执行侧唯一策略入口 |
+| `execution/reconciler.py` | 账本与账户单向对账；歧义只凭正证据解除（ticker+方向+数量+建单时刻），不自动修账 |
+| `execution/session_cycle.py` | 相位编排与全部闸门顺序；按场次防重；决策后等到收盘前提交瞬间；`_diff_to_intents` 镜像引擎差分语义与提交顺序 |
+| `execution/run_a0.py` | CLI：decide / settle / status / init-ledger / halt，带 fcntl 单实例锁 |
 
 状态落地：`common/paths.execution_state_dir("t212")` → `data/t212/execution_state/`
-（账本日志/快照、周期状态、halt 旗标、日历缓存；机器本地，不入库）。
+（账本日志与快照、场次状态、halt 旗标、日历缓存；机器本地，不入库）。
+
+回测一致性由 `tests/execution/test_backtest_equivalence.py` 以真实数据守卫：
+同一决策键下，实盘数据路径与引擎数据路径喂给同一策略模块的目标必须逐标的相等。
 
 ### 2.1 `common/` 现有模块
 

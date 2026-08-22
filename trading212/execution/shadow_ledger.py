@@ -4,7 +4,8 @@ account.
 Responsibility: track strategy-owned cash, positions and open orders as an
 append-only event journal plus an atomic snapshot, idempotent per event.
 Not responsible for: talking to the venue (client.py), deciding anything
-(daily_cycle.py), or comparing itself to the account (reconciler.py).
+(session_cycle.py), or comparing itself to the account
+(reconciler.py).
 
 Why a shadow book when T212 returns itemized bills: the account is shared
 state (manual app trades land in the same positions endpoint) and the API
