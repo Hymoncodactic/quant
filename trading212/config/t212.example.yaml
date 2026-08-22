@@ -1,44 +1,49 @@
 # Trading 212 配置模板。复制为 t212.paper.yaml / t212.live.yaml 后填写。
-# 密钥不在此处：已存于 secrets/trading212_api_key.txt（CLAUDE.md §4.2）。
+# 密钥不在此处：secrets/trading212_api_key.txt（CLAUDE.md §3.2）。
 #
-# 【重要】本文件所有数值均为占位符，未经取证。Trading 212 的 API 能力
-# （是否支持下单、限频、历史数据深度、是否支持碎股）全部属未证实项，
-# 接入前必须按 CLAUDE.md §1.1 S4 查官方文档确认（工作记忆 未决项 2）。
+# 取证状态（2026-08-21）：
+#   已证实（S4，OpenAPI 镜像 data/reference/t212_openapi_v0_20260820.yaml +
+#   2026-08-21 实调接口）：demo/live 两个主机、legacy 单钥 Authorization 头、
+#   逐端点限频（写死在 trading212/client.py RATE_LIMITS，属物理常量）、
+#   下单接口无幂等键、休市市价单排队至下一开盘、账单含逐笔税费明细。
+#   注意 extendedHours 一律为 false：盘后成交会脱离收盘价口径。
+#   仍未证实：最小订单价值（帮助页下线，仅 Wayback 记 1 GBP/EUR）、
+#   下单数量精度（社区口径 4 位小数）、walletImpact.netValue 符号约定。
+#
+# risk 区块的每一项都影响实盘下单行为（CLAUDE.md §1.4）：取值由用户裁定。
+# 全部限额必须为正数才放行；0 或缺失 = 风控闸失效关闭（拒绝一切委托）。
 
 live: false                 # live 环境必须显式改为 true，否则执行层拒绝下单
 
 account:
-  base_ccy: GBP             # 用户明言：账户内存放英镑（S6）
-  # 非英镑计价标的须建模 FX 换算与费用，口径未证实
+  base_ccy: GBP             # 用户明言（S6），且 2026-08-21 account/summary 实证 currency=GBP
 
 endpoints:
-  rest_base: ""             # 未证实
   secret_name: trading212_api_key   # 传给 common.secrets.get_secret() 的名字
-
-rate_limits:                # 未证实
-  read_per_sec: 0
-  trade_per_sec: 0
-
-costs:                      # 未证实：佣金 / 印花税 / FX 费 / 点差
-  commission_bps: 0
-  stamp_duty_bps: 0         # 英股买入印花税，须确认适用范围与豁免
-  fx_fee_bps: 0
+  # rest 主机按 QUANT_ENV 自动选择：paper→demo.trading212.com，live→live.trading212.com
+  # （S4：OpenAPI servers 块）。不在此处配置，防止环境与主机错配。
 
 execution:
-  dry_run: true
-  order_timeout_sec: 60
-  max_replace_times: 3
-  stale_seconds: 10
-  fractional_shares: false  # 未证实：是否支持碎股
+  dry_run: true             # 默认演练。改 false 属 §1.4 用户决策，且每次运行仍需 --allow-orders
+  history_start: "2010-01-04"   # 硬性：波动闸的扩展分位对日线起点敏感，改了会翻转闸判定
+                                # （fixplans/t212/a0/01_strategy.md §3）
+  submit_lead_sec: 60       # 收盘前多少秒提交市价单；对齐回测 close_window_sec=60
+  max_wait_sec: 2400        # 决策算完后等待提交时刻的上限（秒），覆盖 15:30 → 15:59
+  settle_max_wait_min: 90   # settle 阶段等待成交的上限（分钟）；超时只告警不撤单
+  settle_poll_sec: 30       # 轮询挂单间隔（秒）；下限 5 秒由限频决定
+  strategy:
+    name: a0                # 信号唯一副本
+    version: "0.0.1"
+    intraday_name: a0_intraday    # 日内时序适配层，不含信号
+    intraday_version: "0.0.1"
 
-risk:
-  max_order_notional: 0     # GBP
-  max_position_notional: 0
-  max_gross_notional: 0
-  max_daily_orders: 0
-  max_daily_loss: 0
-  stop_loss_pct: 0
+risk:                       # 全部由用户裁定后填写；0 = 拒绝一切委托（失效关闭）
+  max_order_notional_gbp: 0     # 单笔委托参考名义上限（GBP）
+  max_gross_notional_gbp: 0     # 策略总敞口上限（GBP，按决策价估值）
+  max_daily_orders: 0           # 单个决策日的委托笔数上限
+  min_order_value_gbp: 0        # 低于此名义的委托按尘埃丢弃；venue 下限未证实（Wayback：1 GBP/EUR）
+  fee_buffer: 0                 # 买入预留比例（FX 费 0.15% + 滑点垫），如 0.005
+  # A0 在盘中 15:30 决策、收盘前 60 秒提交、按收盘价成交；提交窗口之外一律拒绝。
 
 ingest:
   periods: ["1d"]
-  start_date: ""

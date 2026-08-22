@@ -37,6 +37,8 @@ Public functions:
     equity_intraday_path(group, symbol, interval, start, end)  Intraday bars for one month.
     equity_curated_root(data_root=None)             The t212 curated tree, root injectable.
     equity_interval_dir(group, symbol, interval, data_root=None)  One symbol-interval directory.
+    execution_state_dir(venue)                      Live execution ledger and cycle state.
+    dashboard_state_dir(venue)                      Dashboard snapshots and samples.
     month_bounds(period_start, latest)              Calendar-anchored start and end labels.
     stamp_freq(stamp)                               Classify a stamp as daily or monthly.
     docs_data_dir(source)                           Documentation directory of one source.
@@ -81,7 +83,9 @@ __all__ = [
     "venue_dir", "config_dir", "data_dir", "bar_path",
     "binance_partition_path", "binance_partition_dir",
     "equity_daily_path", "equity_intraday_path",
-    "equity_curated_root", "equity_interval_dir", "month_bounds", "stamp_freq",
+    "equity_curated_root", "equity_interval_dir", "execution_state_dir",
+    "dashboard_state_dir",
+    "month_bounds", "stamp_freq",
     "docs_data_dir", "data_spec_path", "manifest_path", "gaps_path",
     "ROOT", "DIR_DATA", "DIR_DOCS", "DIR_DOCS_DATA", "DIR_REFERENCE",
     "DIR_SECRETS", "DIR_LOGS", "DIR_REPORTS",
@@ -195,6 +199,31 @@ def binance_partition_path(market: str, dataset: str, symbol: str,
     """
     return (binance_partition_dir(market, dataset, symbol, period)
             / f"year={stamp[:4]}" / f"{stamp}.parquet")
+
+
+def execution_state_dir(venue: str) -> Path:
+    """Return the directory for one venue's live-execution state.
+
+    Holds the execution layer's event-sourced ledger (journal + snapshot),
+    cycle state and the halt flag. Kept under data/ because it is
+    machine-local mutable state that must never enter version control, but
+    it is NOT market data: neither the raw nor the curated layer applies.
+    """
+    _check_venue(venue)
+    return DIR_DATA / venue / "execution_state"
+
+
+def dashboard_state_dir(venue: str) -> Path:
+    """Return the directory for one venue's dashboard state.
+
+    Holds the latest live snapshot and the append-only per-day sample files
+    the dashboard charts. Kept under data/ because it is machine-local
+    mutable state that must never enter version control, and separate from
+    execution_state_dir because losing it costs a chart, while losing the
+    execution state costs the ledger.
+    """
+    _check_venue(venue)
+    return DIR_DATA / venue / "dashboard"
 
 
 def bar_path(venue: str, layer: str, instrument: str, period: str, date_str: str) -> Path:

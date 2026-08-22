@@ -1,0 +1,178 @@
+{
+  "app": {
+    "title": "A0 交易看板",
+    "orders_title": "手动下单",
+    "nav_dashboard": "总览",
+    "nav_orders": "手动下单",
+    "refresh": "刷新",
+    "loading": "读取中…",
+    "never": "还没有数据",
+    "yes": "是",
+    "no": "否",
+    "unknown": "不知道",
+    "currency_prefix": "£",
+    "dash": "—"
+  },
+  "status": {
+    "env": "环境",
+    "strategy": "策略",
+    "collector": "实时数据",
+    "collector_on": "正在更新",
+    "collector_off": "已停止",
+    "broker": "券商连接",
+    "broker_ok": "正常",
+    "broker_bad": "连不上",
+    "halt": "紧急停止",
+    "halt_on": "已触发（策略不会下单）",
+    "halt_off": "未触发",
+    "updated": "最后更新",
+    "ticks": "已采集",
+    "ticks_unit": "次"
+  },
+  "kpi": {
+    "equity": "策略总资产",
+    "cash": "策略现金",
+    "holdings": "持仓市值",
+    "account_total": "账户总值",
+    "account_free": "账户可用现金",
+    "positions": "持仓只数",
+    "gbp": "英镑",
+    "no_price": "行情不全，暂时算不出"
+  },
+  "setup": {
+    "heading": "开始自动交易前，先把这些填好",
+    "intro": "下面每一项都必须填。只要有一项空着，程序就不会下任何单——这是故意的。",
+    "money_heading": "给这个策略用多少钱",
+    "money_hint": "只填你愿意交给这个策略的钱，不必是账户里的全部。设好之后不能改，要改得重新建账本。",
+    "money_placeholder": "例如 500",
+    "money_create": "建立策略账本",
+    "money_done": "账本已建立",
+    "save": "保存设置",
+    "saved": "已保存",
+    "ready": "都填好了，可以开始",
+    "not_ready": "还差几项没填",
+    "fields": {
+      "max_order_notional_gbp": {
+        "label": "单笔最多买多少钱",
+        "hint": "一次下单最多花多少英镑。18 只股票平均分的话，大约是总资金的十八分之一再留点余量。"
+      },
+      "max_gross_notional_gbp": {
+        "label": "最多同时持有多少钱的股票",
+        "hint": "所有持仓加起来的上限。一般填成和策略资金差不多。"
+      },
+      "max_daily_orders": {
+        "label": "一天最多下多少单",
+        "hint": "防止程序反复下单的保险。策略一天最多 18 单，填 40 有足够余量。"
+      },
+      "min_order_value_gbp": {
+        "label": "小于多少钱就不下单了",
+        "hint": "金额太小的单不值得下，直接跳过。"
+      },
+      "fee_buffer": {
+        "label": "买入时预留多少比例付手续费",
+        "hint": "填 0.005 表示多留 0.5%。换汇费大约是 0.15%，留一点余量更稳。"
+      },
+      "submit_lead_sec": {
+        "label": "收盘前多少秒下单",
+        "hint": "默认 60 秒。这个数字和回测里的设定一致，改了实盘就和回测对不上。"
+      },
+      "dry_run": {
+        "label": "先演练，不真的下单",
+        "hint": "打开时程序只记录「本来会下什么单」，不会真的买卖。确认无误后再关掉。"
+      }
+    },
+    "problems": {
+      "missing": "还没填",
+      "not_a_number": "这里要填数字",
+      "must_be_positive": "要填一个大于 0 的数",
+      "must_not_be_negative": "不能填负数",
+      "fee_buffer_too_large": "留得太多了，应该小于 20%",
+      "not_a_switch": "这个开关还没设置"
+    },
+    "modal_title": "还有几项没填好",
+    "modal_intro": "下面这些填好之后才能开始自动交易：",
+    "modal_ok": "知道了",
+    "ledger_missing": "还没建立策略账本，先在上面填一个金额并点「建立策略账本」",
+    "problem_separator": " —— "
+  },
+  "controls": {
+    "heading": "实时数据",
+    "note": "这里的开始和停止只管数据更新，不会动策略。停掉之后策略照常按计划运行，下次打开看板会把这段时间的策略状态从账本和账单里补回来，只是这段时间的秒级曲线不存在。",
+    "start": "开始实时更新",
+    "stop": "停止实时更新",
+    "shutdown": "关闭看板",
+    "shutdown_note": "关闭后网页就打不开了，需要重新双击启动文件。",
+    "shutdown_confirm": "确定要关闭看板吗？关闭后要重新双击启动文件才能再打开。策略不受影响。"
+  },
+  "charts": {
+    "equity_title": "资产变化",
+    "equity_y": "英镑",
+    "equity_series": "策略总资产",
+    "cash_series": "现金",
+    "holdings_series": "持仓市值",
+    "positions_title": "各只股票的持仓市值",
+    "positions_y": "英镑",
+    "empty": "还没有采集到数据。点上面的「开始实时更新」就会开始记录。",
+    "gap_note": "曲线中断的地方是看板停着、没有采集数据的时段。"
+  },
+  "table": {
+    "heading": "当前持仓",
+    "symbol": "股票",
+    "qty": "股数",
+    "price": "最新价（美元）",
+    "value": "市值（英镑）",
+    "fresh": "行情",
+    "fresh_ok": "较新",
+    "fresh_stale": "偏旧",
+    "empty": "现在没有持仓。",
+    "book_missing": "还没有策略账本，所以看不到持仓。",
+    "book_frozen": "账本已冻结，需要人工处理后才能继续。原因："
+  },
+  "orders": {
+    "heading": "手动下单",
+    "warning": "这个页面会直接向券商下单，绕过策略。买入卖出的后果由你自己承担。",
+    "attribution": "手动下的单不会记进策略账本。如果你手动卖掉了策略持有的股票，下一次对账会失败并停下策略——这是有意为之，避免策略按错误的账本继续交易。",
+    "pick": "选择股票",
+    "custom": "或直接填券商代码",
+    "qty": "股数",
+    "qty_hint": "买入填正数，卖出填负数。例如 0.5 是买半股，-0.5 是卖半股。",
+    "rehearse": "只演练，不真的下单",
+    "confirm_box": "我已经看清楚上面的内容，确认下这一单",
+    "submit": "下单",
+    "history": "最近的手动下单记录",
+    "history_empty": "还没有手动下单记录。",
+    "confirm_title": "再确认一次",
+    "confirm_real": "这是真实下单，会用真钱成交：",
+    "confirm_rehearse": "这是演练，不会真的下单：",
+    "confirm_go": "确认下单",
+    "confirm_cancel": "再想想",
+    "outcome": {
+      "submitted": "已提交给券商",
+      "rehearsed": "演练完成，没有真的下单",
+      "refused": "没有下单",
+      "rejected": "券商拒绝了",
+      "ambiguous": "结果不明——可能已经下成功了，请立刻到券商 App 里核对"
+    },
+    "reasons": {
+      "not_confirmed": "你还没有勾选确认",
+      "quantity_is_zero": "股数不能是 0",
+      "quantity_not_a_number": "股数要填数字",
+      "config_not_live": "配置里没有开启实盘，所以只能演练"
+    },
+    "table": {
+      "time": "时间",
+      "ticker": "代码",
+      "qty": "股数",
+      "outcome": "结果",
+      "detail": "说明"
+    },
+    "reason_wrap": [
+      "（",
+      "）"
+    ]
+  },
+  "errors": {
+    "fetch": "读取失败，稍后会自动重试。",
+    "broker_hint": "连不上券商时，账户数字会显示为「不知道」，但策略账本和曲线照常显示。"
+  }
+}
