@@ -1,19 +1,42 @@
 """Fill booking for the T212 broker simulator.
 
 Responsibility: turn a raw matched price into an executed fill -- spread and
-slippage, per-symbol volume budget, cost stack, ledger booking, reservation
-arithmetic, order state -- and close orders cleanly.
-Not responsible for: deciding whether an order matches (broker_sim.py,
-engine/matching.py) or admission (admission.py).
+slippage, the per-symbol volume budget, the cost stack, ledger booking,
+reservation arithmetic and order state -- and close orders cleanly with a
+reason string for the audit trail.
 
-Split out of broker_sim.py on 2026-08-22 to respect the 400-line module cap
-(quant-code-standards section 4.2); functions take the broker as an explicit
-collaborator.
+Out of scope: deciding whether an order matches, which belongs to
+backtest/t212/broker_sim.py and backtest/engine/matching.py; admission
+checks, which belong to backtest/t212/admission.py; the same-close attempt,
+which belongs to backtest/t212/same_close.py; the cost arithmetic itself,
+which belongs to backtest/t212/costs.py.
 
 Public functions:
     fill_order(broker, order, bar, raw, step, key, ledger, extra_bps, at_close)
+        Price the raw match (half spread plus slippage, or the caller's
+        extra_bps for a same-close fill), cap it by the symbol's remaining
+        bar volume budget, run the cost stack, gate on free cash net of other
+        orders' reservations, book the fill into the ledger, and advance the
+        order state. Returns the Fill, or None when nothing could execute.
     close_order(broker, order, status, reason, ledger)
+        Terminal transition: set status and reason, drop the reservation.
+
+Constants:
+    ZERO
+        Decimal("0"), so Decimal comparisons never mix in a float.
+    _QTY_STEP
+        Decimal("0.00000001"): the 8 dp holding grid (largest fractional
+        precision observed in real positions, fault catalog F8).
+
+Inputs: None. Pure computation over the broker, ledger and bar objects.
+Outputs: None directly; fills are booked into the ledger passed in.
+
+Change log:
+    2026-08-22  Extracted from broker_sim.py (fill_order was _fill, close_order
+                was _close) to respect the 400-line module cap once the
+                same-close execution path was added.
 """
+
 
 from __future__ import annotations
 

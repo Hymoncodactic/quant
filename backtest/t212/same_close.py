@@ -1,24 +1,39 @@
 """Same-close execution: fill a market order at the decision bar's close.
 
-Responsibility: the "last minute before the close" convention
-(EngineConfig.fill_timing == "same_close", user ruling 2026-08-22 recorded in
-research/decisions/20260822_close_execution_timing.md). A strategy computed
-on the close places its market order about one minute before the session
-ends; the fill is modeled at the official close, charged adversely with the
-calibrated close-proximity gap (CostConfig.close_gap_bps) on top of spread
-and slippage, and only succeeds when the latency draw fits inside
-CostConfig.close_window_sec -- otherwise the order keeps its next-open
-eligibility and spills to the following session like any queued order.
-Not responsible for: next-open matching (broker_sim.py) or fill booking
-(fills.py).
+Responsibility: the "last minute before the close" convention selected by
+EngineConfig.fill_timing == "same_close" (user ruling 2026-08-22, recorded in
+research/decisions/20260822_close_execution_timing.md). A strategy computed on
+the close places its market order about one minute before the session ends;
+the fill is modeled at the official close, charged adversely with the
+calibrated close-proximity gap on top of spread and slippage, and only
+succeeds when the latency draw fits inside the close window -- otherwise the
+order keeps its next-open eligibility and spills to the following session
+like any queued order. This is a declared deviation from backtest-discipline
+hard list items 1 and 2; the result file name carries the mode.
 
-This is a declared deviation from backtest-discipline hard list items 1-2;
-the result file name carries the mode so it can never be mistaken for the
-conservative default.
+Out of scope: next-open matching and the order lifecycle, which belong to
+backtest/t212/broker_sim.py; fill pricing and booking, which belong to
+backtest/t212/fills.py; the gap and window parameters, which belong to
+backtest/t212/costs.py (CostConfig.close_gap_bps, close_window_sec).
 
 Public functions:
     try_same_close_fill(broker, order, key, ledger, latency_sec)
+        Attempt the close fill; None leaves the order on the next-open path.
+        Preconditions, each a real-world reason the close fill would not
+        happen: market order only; latency inside the close window; the
+        symbol actually traded on this key; cooldown clear.
+
+Constants: None.
+
+Inputs: None. Pure computation over the broker, ledger and bar objects.
+Outputs: None directly; a successful fill is booked into the ledger.
+
+Change log:
+    2026-08-22  Created for the same_close fill timing. Gap defaults come from
+                the 2026-08-22 calibration on local 1m data (1,061 samples):
+                median 4.8 bps, P75 10.7 bps.
 """
+
 
 from __future__ import annotations
 

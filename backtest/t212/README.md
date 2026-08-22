@@ -75,10 +75,13 @@
 | `costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数，取值均注明官方出处 | 成本口径的唯一实现；删除后成交价不含真实成本，回测结论系统性偏乐观 | `broker_sim.py`、`admission.py`、`tests/backtest/test_costs.py` |
 | `faults.py` | 平台故障注入，16 类，来源均为公开实例 | 故障模型的唯一实现；删除后回测默认「平台永不出错」，属乐观偏差 | `broker_sim.py`、`tests/backtest/test_broker.py` |
 | `admission.py` | 订单准入检查（固定顺序）与最坏成本预估 | 下单前的资金与合规闸；删除后会提交资金不足或不合规的订单 | `broker_sim.py` |
-| `broker_sim.py` | T212 撮合模拟器：订单生命周期、成交定价、费用、延迟 | 实现 `backtest/engine/broker.py` 的 BrokerSim 协议，是本线接入引擎的核心件 | `runner.py`、`tests/backtest/test_broker.py` |
+| `broker_sim.py` | T212 撮合模拟器：订单生命周期、撤单/过期/资格判定、提交与 same_close 尝试 | 实现 `backtest/engine/broker.py` 的 BrokerSim 协议，是本线接入引擎的核心件 | `runner.py`、`tests/backtest/test_broker.py`、`test_same_close.py` |
+| `fills.py` | 成交记账：点差/滑点、按标的×bar 的成交量预算、费用栈、资金闸、账本与冻结额、订单终态 | 成交的唯一落账路径（next_open 与 same_close 共用）；删除后无法成交。从 broker_sim 拆出以守 400 行上限 | `broker_sim.py`、`same_close.py` |
+| `same_close.py` | `fill_timing=same_close` 的收盘成交：市价单、延迟在 60 秒窗内、当根有 bar、冷却清零四条前置，满足即按收盘价 + 收盘临近滑点成交 | 收盘价策略口径的唯一实现（用户裁定 2026-08-22）；删除后只剩 next_open | `broker_sim.py`、`tests/backtest/test_same_close.py` |
 | `runner.py` | 组装点，一次调用串起读数据、建 feed、建 broker、跑 engine、算 metrics、落地六步 | 本线唯一对外入口；删除后调用方须自行组装六个部件 | `scripts/20260820_t212_backtest_smoke.py`、`scripts/20260821_a0_framework_backtest.py` |
 | `README.md` | 本文件。本市场的口径、成交模型、成本表、故障目录与已知乐观偏差 | 记录本线全部场所特有口径的出处 | 改动本层任何文件前的必读件 |
 
 ## 8. 变更记录
 
 2026-08-22 按 `CLAUDE.md` §4.3 补 §7 文件清单与本节。原有 §1 至 §6 未改动。
+2026-08-22 新增 `fills.py`、`same_close.py`（成交时序可选）；`broker_sim.py` 作用表述同步。§2 成交模型补 same_close 行。

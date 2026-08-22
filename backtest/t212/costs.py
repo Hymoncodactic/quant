@@ -88,6 +88,8 @@ Change log:
     2026-08-22  Header expanded to the six-section spec; the fact sources of
                 the previous header and of the inline constant comments are
                 carried over into "Parameters and constants".
+    2026-08-22  close_gap_bps (worst 11 / actual 5, calibrated on 1,061 local 1m
+                samples) and close_window_sec (60) for same_close execution.
 """
 
 from __future__ import annotations

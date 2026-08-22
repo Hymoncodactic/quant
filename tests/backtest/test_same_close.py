@@ -1,11 +1,36 @@
 """Same-close execution mode (EngineConfig.fill_timing == "same_close").
 
-Pins the user-ruled convention of 2026-08-22: a close-price strategy places
-its market order in the last minute of the session, so the fill is modeled
-at the decision bar's close plus the calibrated close-proximity gap, and
-spills to the next open only when the latency draw exceeds the close window
-or the market is closed on that key.
+Responsibility: pin the user-ruled convention of 2026-08-22. A close-price
+strategy places its market order in the last minute of the session, so the
+fill is modeled at the decision bar's close plus the calibrated
+close-proximity gap, and spills to the next open only when the latency draw
+exceeds the close window or the market is closed on that key. Five cases:
+the close fill at close x (1 + gap) on the decision bar (open differs from
+close, so the price discriminates); a 120-second latency draw against a
+60-second window spilling to the next open at the open price with no gap; a
+closed market on the decision key queuing to the next bar; the engine
+integration where buy-and-hold fills on bar 0 and the result stem carries
+fill-same_close; and the timing guard rejecting an at_close fill when the
+engine is NOT in same_close mode.
+
+Out of scope: next-open fill timing, covered by tests/backtest/test_broker.py
+and test_engine.py; the gap calibration itself, recorded in
+research/decisions/20260822_close_execution_timing.md.
+
+Public functions: None (pytest collects test_* functions).
+
+Constants:
+    GAP
+        Decimal("11"): the worst-tier close gap in bps, passed explicitly so
+        the expected fill price is computed from a known value.
+
+Inputs: None. Synthetic bars built in-process; no data/ access.
+Outputs: None.
+
+Change log:
+    2026-08-22  Created with the same_close fill timing.
 """
+
 
 from __future__ import annotations
 

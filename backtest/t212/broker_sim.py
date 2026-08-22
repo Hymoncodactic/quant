@@ -38,6 +38,9 @@ Outputs: None.
 
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  fill_timing constructor argument; same_close attempt after
+                admission; fill_order/close_order moved to fills.py and the
+                close attempt to same_close.py to respect the 400-line cap.
 """
 
 from __future__ import annotations

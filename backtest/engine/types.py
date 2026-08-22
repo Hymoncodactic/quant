@@ -45,6 +45,9 @@ Outputs: None.
 
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  EngineConfig.fill_timing (next_open | same_close) and
+                Fill.at_close added for the last-minute-before-close
+                execution convention (user ruling 2026-08-22).
 """
 
 from __future__ import annotations

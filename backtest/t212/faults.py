@@ -82,6 +82,8 @@ Change log:
                 and the INFERRED warning of the previous header are carried
                 over, and the inline parameter evidence is collected under
                 "Parameters and constants".
+    2026-08-22  latency_seconds() and bars_from_seconds() split out of
+                latency_extra_bars() so the close window can compare seconds.
 """
 
 from __future__ import annotations

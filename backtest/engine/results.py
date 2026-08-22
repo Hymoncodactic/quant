@@ -38,6 +38,8 @@ Outputs:
 
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Result stem carries fill-<timing> so same_close runs can never
+                be mistaken for the conservative default.
 """
 
 from __future__ import annotations

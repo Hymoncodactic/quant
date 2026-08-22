@@ -60,6 +60,9 @@ Outputs: None. Frames are returned in memory as RunResult.
 
 Change log:
     2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Drain submit-time fills (same_close mode) after the submission
+                loop; timing guard admits at_close fills only in that mode;
+                trades frame carries an at_close column.
 """
 
 from __future__ import annotations

@@ -61,6 +61,7 @@ built by backtest.engine.results.run_name from the config):
 Change log:
     2026-08-22  Header expanded to the six-section spec; the fee-tier mapping
                 of the previous header is carried over into "Responsibility".
+    2026-08-22  fill_timing validated and passed to the broker.
 """
 
 from __future__ import annotations
