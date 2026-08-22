@@ -67,13 +67,39 @@ def get_state(ctx, collector) -> tuple[int, dict[str, Any]]:
     """Everything the main page repaints on each poll."""
     book = ctx.book_state()
     readiness = settings.describe(ctx.cfg, ledger_ready=bool(book.get("exists")))
-    return 200, {"snapshot": snapshots.read_snapshot(_VENUE),
+    snapshot = snapshots.read_snapshot(_VENUE)
+    return 200, {"snapshot": snapshot,
                  "collector": collector.state(),
                  "readiness": readiness,
                  "halted": ctx.halted(),
                  "book": book,
+                 "funding": _funding(book, snapshot),
                  "env": ctx.env,
                  "strategy_id": ctx.strategy_id}
+
+
+def _funding(book: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Compare the book's allocation against the account's free cash.
+
+    The allocation is a bookkeeping figure: creating the book moves no money
+    and never touches the account. Nothing reconciles the two at creation
+    time, so a book allocated more than the account holds looks perfectly
+    healthy right up to the moment the venue starts refusing buys. Surfacing
+    the comparison is what turns that into something visible beforehand.
+    """
+    allocated = book.get("cash_gbp")
+    account = (snapshot or {}).get("account") or {}
+    if not account.get("ok") or allocated is None:
+        return {"known": False, "allocated_gbp": allocated,
+                "account_free_gbp": None, "over_account": False}
+    cash = ((account.get("summary") or {}).get("cash") or {})
+    free = cash.get("availableToTrade")
+    if free is None:
+        return {"known": False, "allocated_gbp": allocated,
+                "account_free_gbp": None, "over_account": False}
+    return {"known": True, "allocated_gbp": float(allocated),
+            "account_free_gbp": float(free),
+            "over_account": float(allocated) > float(free)}
 
 
 def get_history(ctx, days: int, max_points: int) -> tuple[int, dict[str, Any]]:

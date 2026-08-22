@@ -86,7 +86,7 @@ def test_live_view_matches_engine_view_targets():
     # --- live path -----------------------------------------------------
     start = (pd.Timestamp(DECISION_DATE) - pd.Timedelta(days=40)).date().isoformat()
     live_frames = market_data.load_frames(feed_symbols, "1h", start, DECISION_DATE)
-    market_data.assert_intraday_ready(live_frames, key, symbols + [state], fx)
+    market_data.assert_intraday_ready(live_frames, key, symbols, state, fx)
     live_view = market_data.build_view(live_frames, key)
     history = market_data.daily_rows(symbols + [state], HISTORY_START,
                                      DECISION_DATE)
@@ -124,13 +124,13 @@ def test_freshness_gate_rejects_a_missing_fx_bar():
     key = _decision_key(DECISION_DATE)
     start = (pd.Timestamp(DECISION_DATE) - pd.Timedelta(days=10)).date().isoformat()
     frames = market_data.load_frames(feed_symbols, "1h", start, DECISION_DATE)
-    market_data.assert_intraday_ready(frames, key, symbols + [state], fx)
+    market_data.assert_intraday_ready(frames, key, symbols, state, fx)
 
     holed = dict(frames)
     fx_key = key - pd.Timedelta(minutes=market_data.FX_LAG_MINUTES)
     holed[fx] = frames[fx][frames[fx]["ts"] != fx_key].reset_index(drop=True)
     with pytest.raises(RuntimeError, match="GBPUSD"):
-        market_data.assert_intraday_ready(holed, key, symbols + [state], fx)
+        market_data.assert_intraday_ready(holed, key, symbols, state, fx)
 
 
 def test_view_excludes_bars_after_the_decision_key():

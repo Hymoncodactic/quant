@@ -66,6 +66,12 @@ Change log:
                 gating from the venue calendar, the 15:30 decision key, the
                 intraday shim with injected daily history, a wait until the
                 pre-close submission instant, and per-session deduplication.
+    2026-08-23  Hard submission deadline: past the grace period, or past
+                the close, the batch is abandoned rather than sent, since
+                a late market order fills at the next open and silently
+                swaps the caliber. The risk gate's submission window is
+                now read from the clock instead of passed as a constant,
+                and settle verifies where each fill landed.
 """
 
 from __future__ import annotations
@@ -94,6 +100,7 @@ log = get_logger("t212.execution")
 
 DEFAULT_SUBMIT_LEAD_SEC = 60
 DEFAULT_MAX_WAIT_SEC = 2400
+DEFAULT_SUBMIT_GRACE_SEC = 30
 
 DECISION_PARAM_OVERRIDES = {
     "decision_time_local": instruments.DECISION_TIME_NY,
@@ -127,6 +134,8 @@ class _Cycle:
                                                  DEFAULT_SUBMIT_LEAD_SEC))
         self.max_wait_sec = int(execution.get("max_wait_sec",
                                               DEFAULT_MAX_WAIT_SEC))
+        self.submit_grace_sec = int(execution.get("submit_grace_sec",
+                                                  DEFAULT_SUBMIT_GRACE_SEC))
         self.state_dir = execution_state_dir("t212")
         self.halt_path = self.state_dir / "halt"
         self.calendar_cache = self.state_dir / "exchange_calendar.json"
@@ -229,8 +238,8 @@ def decide(cfg: dict[str, Any], armed: bool,
     if not verdict.ok:
         return _abort(f"reconcile mismatch: {verdict.problems}")
 
-    view, history = _assemble_market(cycle, session, key, trade_symbols,
-                                     state_symbol, fx_symbol)
+    view, history, thin = _assemble_market(cycle, session, key, trade_symbols,
+                                           state_symbol, fx_symbol)
 
     fee_buffer = Decimal(str((cfg.get("risk") or {}).get("fee_buffer", "0")))
     portfolio = ledger.portfolio_view(fee_buffer)
@@ -244,19 +253,25 @@ def decide(cfg: dict[str, Any], armed: bool,
     intents = _diff_to_intents(cycle, targets, ledger, view, session)
     held_notional = _positions_ref_notional(ledger, view, cycle.params)
     orders_done = int(state.get("orders_by_session", {}).get(session_id, 0))
+    gate_now = pd.Timestamp.now(tz="UTC")
+    in_window = (key <= gate_now
+                 < session.close_utc + pd.Timedelta(seconds=0))
     gate = risk_gate.check_intents(
         intents, portfolio, held_notional, cfg.get("risk") or {},
-        orders_today=orders_done, in_submit_window=True,
+        orders_today=orders_done, in_submit_window=in_window,
         halt_path=cycle.halt_path)
     if gate.closed:
         return _abort(f"risk gate closed: {gate.summary()}") | {
             "targets": {s: str(q) for s, q in targets.items()},
             "intents": len(intents)}
 
-    waited = _wait_for_submit_instant(submit_at, cycle.max_wait_sec,
-                                      cycle.halt_path)
+    waited = _wait_for_submit_instant(submit_at, session.close_utc,
+                                      cycle.submit_grace_sec,
+                                      cycle.max_wait_sec, cycle.halt_path)
     if isinstance(waited, str):
-        return _abort(waited)
+        return _abort(waited) | {
+            "targets": {s: str(q) for s, q in targets.items()},
+            "intents": len(intents)}
 
     report = order_router.submit_intents(gate.approved, ledger, cycle.client,
                                          pd.Timestamp(session.date_ny),
@@ -273,6 +288,7 @@ def decide(cfg: dict[str, Any], armed: bool,
             "close_utc": str(session.close_utc),
             "targets": {s: str(q) for s, q in targets.items()},
             "intents": len(intents), "gate": gate.summary(),
+            "symbols_without_decision_bar": thin,
             "submit": report.summary(),
             "dry_run": cycle.dry_run or not armed,
             "ambiguous": report.ambiguous.symbol if report.ambiguous else None}
@@ -296,25 +312,49 @@ def _assemble_market(cycle: _Cycle, session, key: pd.Timestamp,
                           - pd.Timedelta(days=market_data.INTRADAY_SESSIONS_LOADED
                                          * 2)).date())
     frames = market_data.load_frames(feed_symbols, _INTERVAL, intraday_start, end)
-    market_data.assert_intraday_ready(frames, key,
-                                      trade_symbols + [state_symbol], fx_symbol)
+    thin = market_data.assert_intraday_ready(frames, key, trade_symbols,
+                                             state_symbol, fx_symbol)
     view = market_data.build_view(frames, key)
     history = market_data.daily_rows(trade_symbols + [state_symbol],
                                      cycle.history_start, end)
-    return view, history
+    return view, history, thin
 
 
-def _wait_for_submit_instant(submit_at: pd.Timestamp, max_wait_sec: int,
+def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
+                             grace_sec: int, max_wait_sec: int,
                              halt_path) -> None | str:
-    """Sleep until the pre-close submission instant; abort reason on failure.
+    """Sleep until the submission instant; return an abort reason instead of
+    submitting when that instant has already gone by.
 
-    The halt flag is re-checked while waiting, so a halt raised between the
+    This is the last gate before real orders, and the only one evaluated at
+    the moment they actually go out. Everything before it ran on a clock
+    reading taken at the top of decide(), with data refreshes and several
+    REST round trips in between; being late by then is entirely possible.
+
+    Late is not a smaller version of on time. A market order that misses the
+    close is queued by the venue to the NEXT session's open, which is the
+    next_open timing the ruling explicitly did not choose. Sending it anyway
+    would swap the caliber silently, so past the grace period the whole
+    batch is abandoned and the session simply goes undecided.
+
+    The halt flag is re-read while waiting, so a halt raised between the
     decision and the submission still stops the orders.
     """
     while True:
         now = pd.Timestamp.now(tz="UTC")
         remaining = (submit_at - now).total_seconds()
         if remaining <= 0:
+            late = -remaining
+            if now >= close_utc:
+                return (f"the session closed at {close_utc}; an order sent now "
+                        f"would fill at the next open, which is not the "
+                        f"authoritative timing")
+            if late > grace_sec:
+                return (f"submission instant {submit_at} passed {late:.0f}s ago, "
+                        f"beyond submit_grace_sec {grace_sec}; refusing to send "
+                        f"orders that may miss the close")
+            log.warning("[cycle] submitting %.0fs late, inside the %ds grace",
+                        late, grace_sec)
             return None
         if remaining > max_wait_sec:
             return (f"submission instant {submit_at} is {remaining:.0f}s away, "
@@ -351,8 +391,25 @@ def settle(cfg: dict[str, Any]) -> dict[str, Any]:
     tickers = {s: instruments.order_ticker(s) for s in trade_symbols}
     verdict = reconciler.reconcile(cycle.client, ledger, tickers)
 
+    # The authoritative timing fills at the decision session's close. A fill
+    # that arrived hours later came from the next session's open instead,
+    # which is the timing the ruling did not choose; from that point the live
+    # book is no longer comparable to the baseline. Raising the halt flag
+    # only STOPS trading, never starts it, and clearing it is a manual act,
+    # so stopping on the spot is the conservative response
+    # (fixplans/t212/a0/02_execution.md section 8 item 4).
+    breaches = order_monitor.fill_timing_breaches(ledger)
+    if breaches and not cycle.halted():
+        cycle.halt_path.parent.mkdir(parents=True, exist_ok=True)
+        cycle.halt_path.touch()
+        log.critical("[settle] fill timing breach, halt raised: %s", breaches)
+        ledger.record_note(str(pd.Timestamp.now(tz="UTC").value),
+                           "FILL_TIMING_BREACH", {"breaches": breaches})
+
     return {"phase": "settle", "resolved_ambiguities": resolved,
             "settle": report.summary(), "reconcile": verdict.summary(),
+            "fill_timing_breaches": breaches,
+            "halted": cycle.halted(),
             "positions": {s: str(q) for s, q in ledger.positions.items()},
             "cash_gbp": str(ledger.cash_gbp)}
 

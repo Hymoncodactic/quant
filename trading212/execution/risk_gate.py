@@ -53,6 +53,10 @@ Change log:
                 where the daily version required the market to be CLOSED.
                 The insufficient-cash rejection adopted the backtest's
                 reason string so both audit tables use one vocabulary.
+    2026-08-23  Cash budget now rolls with approved sells, matching the
+                backtest, which books a same-close sell inside submit()
+                so its proceeds reach later intents in the same batch
+                (research/decisions/20260823_a0_live_execution_calibers.md).
 """
 
 from __future__ import annotations
@@ -177,6 +181,17 @@ def check_intents(intents: list[OrderIntent], ledger_view,
             continue
         intent = verdict
         cost = intent.ref_notional_gbp * (Decimal("1") + fee_buffer)
+        if intent.quantity < 0:
+            # A sell approved earlier in this batch funds the buys that come
+            # after it. Under the authoritative same_close timing the
+            # backtest books a sell inside broker.submit() itself
+            # (backtest/t212/same_close.py via fills.py apply_fill), so its
+            # cash is available to later intents in the same batch. Holding a
+            # static budget here would reject buys the backtest accepts and
+            # push the live rejection rate above the recorded baseline.
+            # Proceeds are credited NET of the same buffer rather than gross,
+            # so the estimate stays on the conservative side of the real fill.
+            budget += intent.ref_notional_gbp * (Decimal("1") - fee_buffer)
         if intent.quantity > 0:
             if cost > budget:
                 # Same reason string the backtest's admission layer records

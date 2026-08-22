@@ -31,8 +31,9 @@ Public functions:
     load_frames(symbols, interval, start, end)  Read stored bars per symbol.
     daily_rows(symbols, start, end)         Shim-format adjusted daily rows.
     build_view(frames, cutoff_ts)           Cutoff-enforced LiveMarketView.
-    assert_intraday_ready(frames, decision_key, exact_symbols, fx_symbol)
-                                            Freshness gate for one decision.
+    assert_intraday_ready(frames, decision_key, trade_symbols, state_symbol,
+                          fx_symbol)        Freshness gate; returns the trade
+                                            symbols that lack a decision bar.
 
 Public classes:
     LiveBar          One OHLCV bar; field-compatible with the engine's Bar.
@@ -50,6 +51,10 @@ Constants:
                             690 of 691 backtest decision keys; the one
                             exception was an FX data hole, which this gate
                             now refuses rather than silently mispricing.
+    FX_CURRENT_LAG_MINUTES int  30. The in-progress FX bar at a decision.
+                            Its presence is what makes the strategy's
+                            positional lookup land on the same bar the cost
+                            path resolves to by time.
     INTRADAY_SESSIONS_LOADED int  40. Sessions of 1h history handed to the
                             shim. It only reads today's bars and the previous
                             session's last bar, so a deeper window changes no
@@ -69,13 +74,19 @@ Change log:
                 that pins the FX bar to decision_key minus FX_LAG_MINUTES.
                 The old five-day FX tolerance was a daily-scale rule and is
                 useless at 1h.
+    2026-08-23  The freshness gate also requires the in-progress FX bar,
+                because the strategy reaches its rate positionally and
+                would otherwise drop an hour back unnoticed. A trade
+                symbol missing its decision bar is now reported rather
+                than fatal: the backtest keeps deciding and lets that
+                one order queue.
 """
 
 from __future__ import annotations
 
 __all__ = ["group_for", "refresh_bars", "load_frames", "daily_rows",
            "build_view", "assert_intraday_ready", "LiveBar", "LiveMarketView",
-           "GROUPS", "FX_SYMBOL", "FX_LAG_MINUTES",
+           "GROUPS", "FX_SYMBOL", "FX_LAG_MINUTES", "FX_CURRENT_LAG_MINUTES",
            "INTRADAY_SESSIONS_LOADED"]
 
 from dataclasses import dataclass
@@ -92,6 +103,7 @@ log = get_logger("t212.execution")
 GROUPS = ("us_equity", "us_etf", "uk_tradable")
 FX_SYMBOL = "GBPUSD=X"
 FX_LAG_MINUTES = 90
+FX_CURRENT_LAG_MINUTES = 30
 INTRADAY_SESSIONS_LOADED = 40
 
 _TZ_LONDON = "Europe/London"
@@ -261,7 +273,8 @@ def build_view(frames: dict[str, pd.DataFrame],
 
 def assert_intraday_ready(frames: dict[str, pd.DataFrame],
                           decision_key: pd.Timestamp,
-                          exact_symbols: list[str], fx_symbol: str) -> None:
+                          trade_symbols: list[str], state_symbol: str,
+                          fx_symbol: str) -> list[str]:
     """Refuse to decide unless every series is exactly where it must be.
 
     Three conditions, each a way the decision would silently diverge from the
@@ -278,22 +291,42 @@ def assert_intraday_ready(frames: dict[str, pd.DataFrame],
          tolerating staleness.
     """
     problems: list[str] = []
+    thin: list[str] = []
     prior_key = decision_key - pd.Timedelta(hours=1)
-    for symbol in exact_symbols:
+    for symbol in list(trade_symbols) + [state_symbol]:
         stamps = set(frames[symbol]["ts"])
+        newest = frames[symbol]["ts"].max() if not frames[symbol].empty else None
         if decision_key not in stamps:
-            newest = frames[symbol]["ts"].max() if not frames[symbol].empty else None
-            problems.append(f"{symbol}: no bar at decision key {decision_key} "
-                            f"(newest {newest})")
-        elif prior_key not in stamps:
+            if symbol == state_symbol:
+                problems.append(f"{symbol}: no bar at decision key "
+                                f"{decision_key} (newest {newest})")
+            else:
+                # One trade symbol without a bar at the key is not a reason
+                # to skip the session. The backtest decides anyway and lets
+                # that symbol's order queue; aborting here would cost every
+                # other symbol its decision and put the live book on a path
+                # the baseline never took.
+                thin.append(symbol)
+            continue
+        if prior_key not in stamps:
             problems.append(f"{symbol}: missing the information bar {prior_key}")
+    fx_stamps = set(frames[fx_symbol]["ts"])
+    newest_fx = frames[fx_symbol]["ts"].max() if not frames[fx_symbol].empty else None
     fx_key = decision_key - pd.Timedelta(minutes=FX_LAG_MINUTES)
-    if fx_key not in set(frames[fx_symbol]["ts"]):
-        newest = frames[fx_symbol]["ts"].max() if not frames[fx_symbol].empty else None
+    if fx_key not in fx_stamps:
         problems.append(f"{fx_symbol}: no bar at {fx_key} "
-                        f"(decision key minus {FX_LAG_MINUTES}m; newest {newest})")
+                        f"(decision key minus {FX_LAG_MINUTES}m; newest {newest_fx})")
+    fx_current = decision_key - pd.Timedelta(minutes=FX_CURRENT_LAG_MINUTES)
+    if fx_current not in fx_stamps:
+        problems.append(f"{fx_symbol}: no bar at {fx_current} (the in-progress "
+                        f"bar; without it the strategy would size off a rate an "
+                        f"hour older than the cost path uses; newest {newest_fx})")
     if problems:
         raise RuntimeError("intraday freshness gate failed: " + "; ".join(problems))
+    if thin:
+        log.warning("[bars] no decision-key bar for %s; deciding without a "
+                    "fresh price for them", ", ".join(sorted(thin)))
+    return thin
 
 
 class LiveMarketView:

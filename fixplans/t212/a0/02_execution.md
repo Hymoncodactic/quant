@@ -267,15 +267,17 @@ FINRA TAF、SEC 费。actual 档滑点 0 bps、无时段加宽。
 
 | # | 事项 | 需要谁定 |
 |:--:|---|---|
-| 1 | 方案 A 还是方案 B（§3.3） | 用户 |
-| 2 | 现金不足拒单是否为可接受口径（§7.1） | 用户 |
+| 1 | ~~成交时序取 same_close 还是 next_open（§3.3）~~ | 已决 2026-08-23：取 `same_close`。见 `research/decisions/20260823_a0_live_execution_calibers.md` §一、§二 |
+| 2 | ~~现金不足拒单是否为可接受口径（§7.1）~~ | 已决 2026-08-23：按回测结构，卖买同批提交。执行层的现金预算已改为随卖单滚动，以复现基线拒单结构。同上裁定 §三 |
 | 3 | 行情数据源及其复权口径（§5） | 用户 + 取证 |
 | 4 | 实盘点差与滑点实测（§7.3） | 模拟盘实测 |
-| 5 | `trading212/execution/` 目前 0 行；`client.py`、paper/live 配置均未建 | 后续任务 |
+| 5 | ~~`trading212/execution/` 目前 0 行；`client.py`、paper/live 配置均未建~~ | 已建。执行层与客户端见 `ARCHITECTURE.md` §2.3；口径核验与已修缺陷见上述裁定 §四 |
+| 6 | `fee_buffer` 取值（回测准入比率 actual 0.0016024 / worst 0.0021032） | 用户。见上述裁定 §六 |
 
 ## 变更记录
 
 | 日期 | 变更 |
 |---|---|
 | 2026-08-22 | 建档。依据 `research/decisions/20260822_a0_intraday_frequency_ruling.md` 与该轮回测产物。 |
+| 2026-08-23 | §10 第 1、2、5 项按用户裁定关闭，新增第 6 项；口径实现与核验见 `research/decisions/20260823_a0_live_execution_calibers.md`。 |
 | 2026-08-22 | 迁入 `fixplans/t212/a0/`（`CLAUDE.md` §六：fixplans 只放交易代码规格）。权威成交时序改为 `same_close`，§2.4/§3/§4 按重跑结果改写；§7.1 补入封锁事件实测；§8 对账项按 same_close 改写并增拒单项。 |

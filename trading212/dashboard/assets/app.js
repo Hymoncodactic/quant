@@ -80,7 +80,13 @@
 
   function buildFields(readiness) {
     var host = $("settings-fields");
-    if (host.dataset.built === "1") { fillFields(readiness); return; }
+    if (host.dataset.built === "1") {
+      // Only refill from the server while the form is untouched. The state
+      // poll runs every few seconds, and refilling an edited form would wipe
+      // every field the reader had already typed except the focused one.
+      if (host.dataset.dirty !== "1") fillFields(readiness);
+      return;
+    }
     host.innerHTML = "";
     readiness.fields.forEach(function (f) {
       var meta = L.setup.fields[f.id] || { label: f.id, hint: "" };
@@ -112,7 +118,18 @@
       host.appendChild(wrap);
     });
     host.dataset.built = "1";
+    host.addEventListener("input", markDirty);
+    host.addEventListener("change", markDirty);
     fillFields(readiness);
+  }
+
+  function markDirty() {
+    $("settings-fields").dataset.dirty = "1";
+    text("ready-flag", L.setup.unsaved);
+  }
+
+  function clearDirty() {
+    $("settings-fields").dataset.dirty = "0";
   }
 
   function fillFields(readiness) {
@@ -134,12 +151,16 @@
     return out;
   }
 
-  function showProblems(problems) {
+  function clearProblemMarks() {
     (STATE.readiness.fields || []).forEach(function (f) {
       var wrap = $("field-" + f.id), err = $("err-" + f.id);
       if (wrap) wrap.classList.remove("bad");
       if (err) { err.classList.add("hidden"); err.textContent = ""; }
     });
+  }
+
+  function showProblems(problems) {
+    clearProblemMarks();
     var items = [];
     problems.forEach(function (p) {
       var meta = L.setup.fields[p.field] || { label: p.field };
@@ -212,6 +233,13 @@
       return "<div class='kpi'><div class='k'>" + r[0] +
              "</div><div class='v" + dim + "'>" + r[1] + "</div></div>";
     }).join("");
+  }
+
+  function paintFunding() {
+    var f = STATE.funding || {};
+    var el = $("funding-note");
+    el.classList.toggle("hidden", !f.over_account);
+    if (f.over_account) el.textContent = L.setup.over_account;
   }
 
   function paintTable() {
@@ -313,8 +341,10 @@
     return getJSON("/api/state").then(function (s) {
       STATE = s;
       buildFields(s.readiness);
-      paintStatus(); paintKPIs(); paintTable(); drawPositions();
-      text("ready-flag", s.readiness.ready ? L.setup.ready : L.setup.not_ready);
+      paintStatus(); paintKPIs(); paintFunding(); paintTable(); drawPositions();
+      if ($("settings-fields").dataset.dirty !== "1") {
+        text("ready-flag", s.readiness.ready ? L.setup.ready : L.setup.not_ready);
+      }
       $("money-btn").disabled = !!s.readiness.ledger_ready;
       if (s.readiness.ledger_ready) text("money-btn", L.setup.money_done);
     }).catch(function () { /* transient; the next poll retries */ });
@@ -341,9 +371,11 @@
       postJSON("/api/settings", collectFields()).then(function (r) {
         if (r.status === 200) {
           STATE.readiness = r.body.readiness;
-          showProblems([]);
-          text("ready-flag", r.body.readiness.ready ? L.setup.ready : L.setup.not_ready);
-          if (!r.body.readiness.ledger_ready) showProblems([]);
+          clearProblemMarks();
+          clearDirty();
+          fillFields(r.body.readiness);
+          text("ready-flag", r.body.readiness.ready
+            ? L.setup.saved_ready : L.setup.saved_need_ledger);
         } else {
           showProblems(r.body.problems || []);
         }
@@ -354,7 +386,7 @@
       var v = $("money-input").value;
       postJSON("/api/ledger/init", { cash_gbp: v }).then(function (r) {
         var err = $("money-err");
-        if (r.status === 200) { err.classList.add("hidden"); refreshState(); }
+        if (r.status === 200) { err.classList.add("hidden"); clearDirty(); refreshState(); }
         else {
           err.textContent = L.setup.problems[r.body.problem] || r.body.problem;
           err.classList.remove("hidden");

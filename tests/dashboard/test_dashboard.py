@@ -128,6 +128,42 @@ def test_a_torn_last_line_does_not_break_reading(sample_dir):
 
 
 # ----------------------------------------------------------------------
+# Allocation versus the account
+# ----------------------------------------------------------------------
+
+def _snapshot(free):
+    return {"account": {"ok": True, "summary": {"cash": {"availableToTrade": free}}}}
+
+
+def test_allocation_over_account_free_cash_is_flagged():
+    """Creating a book moves no money, so nothing else would catch this."""
+    from trading212.dashboard.api import _funding
+    out = _funding({"cash_gbp": 1000.0}, _snapshot(0.0))
+    assert out["known"] and out["over_account"] is True
+
+
+def test_allocation_within_account_free_cash_is_not_flagged():
+    from trading212.dashboard.api import _funding
+    out = _funding({"cash_gbp": 400.0}, _snapshot(500.0))
+    assert out["known"] and out["over_account"] is False
+
+
+def test_unreachable_account_reports_unknown_rather_than_safe():
+    """With no account figure the comparison is unknown, never 'fine'."""
+    from trading212.dashboard.api import _funding
+    out = _funding({"cash_gbp": 1000.0},
+                   {"account": {"ok": False, "reason": "no route to host"}})
+    assert out["known"] is False and out["over_account"] is False
+    assert out["account_free_gbp"] is None
+
+
+def test_no_book_reports_unknown():
+    from trading212.dashboard.api import _funding
+    out = _funding({"cash_gbp": None}, _snapshot(500.0))
+    assert out["known"] is False
+
+
+# ----------------------------------------------------------------------
 # Manual orders
 # ----------------------------------------------------------------------
 

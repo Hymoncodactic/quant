@@ -22,22 +22,59 @@ the account currency. First real (or demo) fills must confirm this against
 the account cash movement -- registered as an open verification item in
 WORKING_MEMORY.md.
 
+Fill-timing verification: the authoritative timing fills at the decision
+session's own close, roughly a minute after the order is sent. An order that
+misses the close is queued by the venue to the NEXT session's open, which is
+the timing the ruling did not choose. The two are hours apart, so comparing
+each fill against the moment its order was sent tells them apart with room to
+spare. Nothing else in the live layer would notice the difference: the book,
+the reconciliation and the logs all look healthy either way
+(fixplans/t212/a0/02_execution.md section 8 item 4).
+
 Public classes:
     SettleReport
 
 Public functions:
     poll_until_settled(client, ledger, expected_ccy, max_wait_sec, poll_sec)
     harvest_order(client, ledger, order_id, expected_ccy)
+    fill_timing_breaches(ledger, journal_since)   Fills that missed the close.
+
+Constants:
+    _POLL_MIN_SEC          float  5.0, the pending-orders rate limit.
+    MAX_FILL_LAG_HOURS     float  4.0. A same-close fill lands about a minute
+                                  after submission; a next-open fill lands
+                                  around seventeen hours later. Four hours
+                                  sits far from both, so late reporting of a
+                                  close fill cannot be mistaken for a breach.
+
+Inputs:
+    GET /api/v0/equity/orders, /equity/history/orders   (through client.py)
+    data/t212/execution_state/<strategy_id>_journal.jsonl
+Outputs:
+    None directly; fills are booked through shadow_ledger.py.
+
+Change log:
+    2026-08-21  Created for the daily cycle.
+    2026-08-22  Side validated against the book, null bill fields refused, and
+                the history walk stopped assuming one order's fills are
+                contiguous.
+    2026-08-23  Added fill_timing_breaches(): a fill that landed hours after
+                its order was sent came from the next session's open, not the
+                decision session's close.
 """
 
 from __future__ import annotations
 
-__all__ = ["SettleReport", "poll_until_settled", "harvest_order"]
+__all__ = ["SettleReport", "poll_until_settled", "harvest_order",
+           "fill_timing_breaches", "MAX_FILL_LAG_HOURS"]
 
+import json
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+
+import pandas as pd
 
 from common.logging_setup import get_logger
 from trading212.client import T212Client
@@ -45,6 +82,7 @@ from trading212.client import T212Client
 log = get_logger("t212.execution")
 
 _POLL_MIN_SEC = 5.0     # pending-orders endpoint allows 1 req / 5 s
+MAX_FILL_LAG_HOURS = 4.0
 
 
 @dataclass
@@ -197,3 +235,47 @@ def _apply_fill(ledger, order_id: int, side: str, fill: dict[str, Any],
                        cash_delta_gbp=cash_delta,
                        taxes=wallet.get("taxes") or [],
                        filled_at=str(fill.get("filledAt")))
+
+
+# ============================================================================
+# [3] Fill-timing verification
+# ============================================================================
+
+def fill_timing_breaches(ledger, journal_path=None) -> list[dict[str, Any]]:
+    """Fills that landed too long after their order was sent.
+
+    Reads the ledger's own journal rather than the venue, so the check works
+    on what was actually booked and stays available after the fact. Each
+    breach names the order, both instants and the lag, which is what a person
+    needs to decide whether the session is still comparable to the baseline.
+    """
+    from trading212.execution.ledger_store import journal_path as default_path
+    path = journal_path or default_path(ledger._dir, ledger._strategy_id)
+    if not path.exists():
+        return []
+    submitted: dict[int, str] = {}
+    breaches: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = event.get("payload") or {}
+        if event.get("event_type") == "ORDER_SUBMITTED":
+            submitted[int(payload.get("order_id", -1))] = event.get("ts_utc")
+        elif event.get("event_type") == "FILL":
+            order_id = int(payload.get("order_id", -1))
+            sent, landed = submitted.get(order_id), payload.get("filled_at")
+            if not sent or not landed or landed == "None":
+                continue
+            try:
+                lag = (pd.Timestamp(landed) - pd.Timestamp(sent)).total_seconds() / 3600
+            except (ValueError, TypeError):
+                continue
+            if lag > MAX_FILL_LAG_HOURS:
+                breaches.append({"order_id": order_id, "fill_id": payload.get("fill_id"),
+                                 "submitted_at": sent, "filled_at": landed,
+                                 "lag_hours": round(lag, 2)})
+    return breaches

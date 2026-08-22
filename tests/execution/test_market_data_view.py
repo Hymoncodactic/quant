@@ -27,7 +27,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from trading212.execution.market_data import (FX_LAG_MINUTES,
+from trading212.execution.market_data import (FX_CURRENT_LAG_MINUTES,
+                                              FX_LAG_MINUTES,
                                               assert_intraday_ready,
                                               build_view)
 
@@ -48,13 +49,18 @@ def _session_stamps(key, count=7):
     return [key - pd.Timedelta(hours=h) for h in range(count - 1, -1, -1)]
 
 
-def _fx_frame(key, extra=0):
-    """FX bars on the hour; the one in force starts FX_LAG_MINUTES earlier."""
+def _fx_frame(key):
+    """FX bars on the hour.
+
+    Two of them matter: the one in force, starting FX_LAG_MINUTES before the
+    key, and the in-progress one starting FX_CURRENT_LAG_MINUTES before it.
+    The strategy reaches the first only by taking the last-but-one bar, so it
+    lands correctly only while the second is present.
+    """
     base = key - pd.Timedelta(minutes=FX_LAG_MINUTES)
     stamps = [base - pd.Timedelta(hours=h) for h in range(5, -1, -1)]
-    stamps += [base + pd.Timedelta(hours=h) for h in range(1, extra + 1)]
-    frame = _equity_frame(stamps, close=1.25)
-    return frame
+    stamps.append(key - pd.Timedelta(minutes=FX_CURRENT_LAG_MINUTES))
+    return _equity_frame(sorted(stamps), close=1.25)
 
 
 def _frames(key=KEY):
@@ -64,15 +70,39 @@ def _frames(key=KEY):
 
 
 def test_gate_passes_on_a_well_formed_session():
-    assert_intraday_ready(_frames(), KEY, ["NVDA", "QQQ"], "GBPUSD=X")
+    assert assert_intraday_ready(_frames(), KEY, ["NVDA"], "QQQ",
+                                 "GBPUSD=X") == []
 
 
-def test_missing_decision_bar_is_refused():
-    """No bar at the key means the session is not trading normally."""
+def test_one_thin_trade_symbol_does_not_stop_the_session():
+    """The backtest decides anyway and lets that symbol's order queue, so
+    aborting here would cost every other symbol its decision."""
     frames = _frames()
     frames["NVDA"] = frames["NVDA"][frames["NVDA"]["ts"] != KEY].reset_index(drop=True)
-    with pytest.raises(RuntimeError, match="NVDA"):
-        assert_intraday_ready(frames, KEY, ["NVDA", "QQQ"], "GBPUSD=X")
+    assert assert_intraday_ready(frames, KEY, ["NVDA"], "QQQ",
+                                 "GBPUSD=X") == ["NVDA"]
+
+
+def test_missing_state_symbol_bar_is_refused():
+    """The state symbol gates the whole decision; without it there is none."""
+    frames = _frames()
+    frames["QQQ"] = frames["QQQ"][frames["QQQ"]["ts"] != KEY].reset_index(drop=True)
+    with pytest.raises(RuntimeError, match="QQQ"):
+        assert_intraday_ready(frames, KEY, ["NVDA"], "QQQ", "GBPUSD=X")
+
+
+def test_missing_in_progress_fx_bar_is_refused():
+    """Without it the strategy silently sizes off a rate an hour older than
+    the cost path uses, and the pinned bar alone would not catch it."""
+    frames = _frames()
+    current = KEY - pd.Timedelta(minutes=FX_CURRENT_LAG_MINUTES)
+    frames["GBPUSD=X"] = frames["GBPUSD=X"][
+        frames["GBPUSD=X"]["ts"] != current].reset_index(drop=True)
+    # Discriminative: the pinned key-90m bar is still there, so a gate that
+    # only checked that one would have passed.
+    assert (KEY - pd.Timedelta(minutes=FX_LAG_MINUTES)) in set(frames["GBPUSD=X"]["ts"])
+    with pytest.raises(RuntimeError, match="in-progress"):
+        assert_intraday_ready(frames, KEY, ["NVDA"], "QQQ", "GBPUSD=X")
 
 
 def test_missing_information_bar_is_refused():
@@ -81,7 +111,7 @@ def test_missing_information_bar_is_refused():
     prior = KEY - pd.Timedelta(hours=1)
     frames["QQQ"] = frames["QQQ"][frames["QQQ"]["ts"] != prior].reset_index(drop=True)
     with pytest.raises(RuntimeError, match="QQQ"):
-        assert_intraday_ready(frames, KEY, ["NVDA", "QQQ"], "GBPUSD=X")
+        assert_intraday_ready(frames, KEY, ["NVDA"], "QQQ", "GBPUSD=X")
 
 
 def test_fx_hole_is_refused_rather_than_tolerated():
@@ -94,7 +124,7 @@ def test_fx_hole_is_refused_rather_than_tolerated():
     # available" rule would have passed here.
     assert not frames["GBPUSD=X"].empty
     with pytest.raises(RuntimeError, match="GBPUSD"):
-        assert_intraday_ready(frames, KEY, ["NVDA", "QQQ"], "GBPUSD=X")
+        assert_intraday_ready(frames, KEY, ["NVDA"], "QQQ", "GBPUSD=X")
 
 
 def test_view_cuts_off_at_the_decision_key():

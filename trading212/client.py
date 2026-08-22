@@ -38,6 +38,28 @@ Public functions (methods of T212Client):
     cancel_order(order_id)                DELETE /equity/orders/{id}
     history_orders(...)                   GET /equity/history/orders (one page)
     iter_history_orders(...)              Generator over history pages
+
+Constants:
+    T212_BASE_PAPER / T212_BASE_LIVE  str  Venue hosts. Source: the OpenAPI
+                                      mirror's servers block, retrieved
+                                      2026-08-20.
+    TIMEOUT_REST_SEC  float  30.0, the default per-request timeout. Suits a
+                             batch caller; an interactive one passes its own.
+    RATE_LIMITS       dict   Requests per second per endpoint group. Source:
+                             the per-endpoint rate-limit lines in the same
+                             mirror, plus the live response headers probed
+                             2026-08-21.
+
+Inputs:
+    The Trading 212 public API v0.
+Outputs:
+    None.
+
+Change log:
+    2026-08-21  Created.
+    2026-08-23  timeout_sec and max_attempts parameterized so an interactive
+                caller can fail fast on an unreachable venue; order placement
+                stays single-attempt whatever they are set to.
 """
 
 from __future__ import annotations

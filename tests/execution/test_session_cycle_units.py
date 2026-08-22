@@ -195,3 +195,62 @@ def test_intraday_shim_stays_silent_off_the_decision_minute():
                       off_key)
     strategy = load_intraday_strategy("a0_intraday", "0.0.1", {"NVDA": [], "QQQ": []})
     assert strategy(view, _portfolio(), params) == {}
+
+
+# ----------------------------------------------------------------------
+# The submission deadline
+# ----------------------------------------------------------------------
+
+def test_submitting_before_the_instant_waits_then_proceeds(tmp_path):
+    """A run that is early simply waits; nothing is refused."""
+    from trading212.execution.session_cycle import _wait_for_submit_instant
+    now = pd.Timestamp.now(tz="UTC")
+    out = _wait_for_submit_instant(now + pd.Timedelta(seconds=1),
+                                   now + pd.Timedelta(minutes=1),
+                                   grace_sec=30, max_wait_sec=60,
+                                   halt_path=tmp_path / "halt")
+    assert out is None
+
+
+def test_slightly_late_submission_is_allowed_inside_the_grace(tmp_path):
+    from trading212.execution.session_cycle import _wait_for_submit_instant
+    now = pd.Timestamp.now(tz="UTC")
+    out = _wait_for_submit_instant(now - pd.Timedelta(seconds=5),
+                                   now + pd.Timedelta(minutes=1),
+                                   grace_sec=30, max_wait_sec=60,
+                                   halt_path=tmp_path / "halt")
+    assert out is None
+
+
+def test_late_beyond_the_grace_refuses_to_submit(tmp_path):
+    """Sending late would fill at the next open, which is the timing the
+    ruling did not choose; the batch is abandoned instead."""
+    from trading212.execution.session_cycle import _wait_for_submit_instant
+    now = pd.Timestamp.now(tz="UTC")
+    out = _wait_for_submit_instant(now - pd.Timedelta(minutes=5),
+                                   now + pd.Timedelta(minutes=1),
+                                   grace_sec=30, max_wait_sec=60,
+                                   halt_path=tmp_path / "halt")
+    assert isinstance(out, str) and "grace" in out
+
+
+def test_after_the_close_refuses_regardless_of_grace(tmp_path):
+    from trading212.execution.session_cycle import _wait_for_submit_instant
+    now = pd.Timestamp.now(tz="UTC")
+    out = _wait_for_submit_instant(now - pd.Timedelta(seconds=5),
+                                   now - pd.Timedelta(seconds=1),
+                                   grace_sec=3600, max_wait_sec=60,
+                                   halt_path=tmp_path / "halt")
+    assert isinstance(out, str) and "closed" in out
+
+
+def test_halt_raised_while_waiting_stops_the_batch(tmp_path):
+    from trading212.execution.session_cycle import _wait_for_submit_instant
+    halt = tmp_path / "halt"
+    halt.touch()
+    now = pd.Timestamp.now(tz="UTC")
+    out = _wait_for_submit_instant(now + pd.Timedelta(seconds=30),
+                                   now + pd.Timedelta(minutes=5),
+                                   grace_sec=30, max_wait_sec=600,
+                                   halt_path=halt)
+    assert isinstance(out, str) and "halt" in out

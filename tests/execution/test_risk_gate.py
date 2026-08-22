@@ -122,3 +122,36 @@ def test_gross_cap_counts_held_positions(tmp_path):
                            halt_path=tmp_path / "halt")
     assert report.approved == []
     assert "gross" in report.rejected[0][1]
+
+
+def test_a_sell_funds_a_later_buy_in_the_same_batch(tmp_path):
+    """The backtest books a same-close sell inside submit(), so its cash
+    reaches later intents. A static budget would reject this buy and push the
+    live rejection rate above the recorded baseline."""
+    sell = OrderIntent(intent_id="s1", symbol="NVDA", ticker="NVDA_US_EQ",
+                       quantity=D("-3"), ref_price_usd=D("175"),
+                       fx_usd_per_gbp=D("1.35"))
+    buy = _intent(symbol="AAPL", qty="1", intent_id="b1")
+    view = LedgerPortfolioView(cash_gbp=D("10"), available_cash_gbp=D("10"),
+                               positions={"NVDA": D("3")},
+                               pending_signed_qty={})
+    report = check_intents([sell, buy], view, D("0"), RISK, orders_today=0,
+                           in_submit_window=True, halt_path=tmp_path / "halt")
+    assert [i.symbol for i in report.approved] == ["NVDA", "AAPL"]
+    assert report.rejected == []
+
+
+def test_a_buy_before_any_sell_still_fails_on_the_starting_cash(tmp_path):
+    """Order is load bearing: the same pair the other way round cannot fund
+    itself, exactly as in the backtest."""
+    buy = _intent(symbol="AAPL", qty="1", intent_id="b1")
+    sell = OrderIntent(intent_id="s1", symbol="NVDA", ticker="NVDA_US_EQ",
+                       quantity=D("-3"), ref_price_usd=D("175"),
+                       fx_usd_per_gbp=D("1.35"))
+    view = LedgerPortfolioView(cash_gbp=D("10"), available_cash_gbp=D("10"),
+                               positions={"NVDA": D("3")},
+                               pending_signed_qty={})
+    report = check_intents([buy, sell], view, D("0"), RISK, orders_today=0,
+                           in_submit_window=True, halt_path=tmp_path / "halt")
+    assert [i.symbol for i in report.approved] == ["NVDA"]
+    assert any("insufficient_free_for_stocks_buy" in r for _, r in report.rejected)

@@ -18,6 +18,7 @@
 | `20260821_a0_framework_comparison.md` | A0 策略经 T212 回测框架的对比回测裁定，锚定策略模块 `trading212/strategy/a0_v0_0_1.py` 与参数基线 `trading212/config/strategies/a0_v0_0_1.yaml` | A0 的权威口径记录。删除后该策略的回测结论失去判定依据，报告中的数字无法追溯到裁定 | `WORKING_MEMORY.md` 时间线；A0 相关报告的 Reference 清单 |
 | `20260821_backtest_data_sources.md` | 双线接入的数据源范围裁定，性质为用户明言（S6），约束 `backtest/` 各 runner 的数据接入配置 | 界定哪些数据源可用于回测。删除后 Binance 作为数据源而非交易场所这一区分失去权威记录 | `backtest/okx/README.md` 引用；`common/paths.py` 的 DATA_SOURCES 与 VENUES 之分以此为据 |
 | `20260821_paid_data_sources.md` | 付费数据源裁定：退市股覆盖与深度日内历史的可得性与成本，价格为当日实取页面 | 记录已调查过的数据缺口与报价，避免重复调研。删除后同一问题会被再查一遍 | 后续数据采购决策 |
+| `20260823_a0_live_execution_calibers.md` | A0 实盘执行的三项口径裁定（S6）：成交时序取 `same_close`、现金不足拒单按回测结构、保留手动下单页；含对抗性核验发现并修复的五项口径缺陷与一项不可消除的分歧 | `trading212/execution/` 的口径来源。删除后实盘为何这样实现失去权威记录，且 `fixplans/t212/a0/02_execution.md` §10 已关闭的三项无从追溯 | `fixplans/t212/a0/02_execution.md` §10；`trading212/execution/` 各模块的变更记录 |
 | `20260822_close_execution_timing.md` | 成交时序裁定（S6）：收盘价策略按决策 bar 收盘成交（`fill_timing=same_close`），含收盘临近滑点的 1m 实测校准表与限定 | `backtest/` same_close 模式的权威依据与对 `/backtest-discipline` §二.1/2 偏离的项目级声明；删除后该模式失去口径来源 | `backtest/README.md` §3、`backtest/t212/same_close.py`、各使用 same_close 的策略预注册 |
 
 ## 3. 子目录索引
