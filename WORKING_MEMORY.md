@@ -53,6 +53,20 @@
   **前一 UTC 日 23:00**——跨标的日线对齐必须按交易所本地日期。已补记
   `docs/data/t212/DATA_SPEC.md` §3。
 
+- **T212 实盘执行层已建成（2026-08-21，本工作树，DRY_RUN 态）**：`trading212/client.py`
+  + `trading212/execution/` 9 模块 + 策略注册表，模块登记见 `ARCHITECTURE.md` §2.3，
+  操作规程见 `trading212/execution/README.md`。A0 信号模块从主树复制（字节一致），
+  执行与回测共用同一份。74 项执行层测试全过；live 只读+dry-run 冒烟全链路通过
+  （决策日 2026-08-20 算出 15 条意向；风控全零时失效关闭且不占用决策日；同日防重
+  与并发锁均实测生效）。**真实下单四重闸全部未开**：dry_run=true、risk 全零、
+  无 --allow-orders、账户 API 可见资金为 0。
+- **T212 关键 S4 事实已落 `data/reference/`（2026-08-21 实调）**：密钥为 live 环境
+  legacy 单钥（demo 401）；账户 currency=GBP 但 totalValue=0（历史已实现盈亏
+  £3,661.16）；`t212_instruments_20260821.json`（17,398 个标的，TECH18 全部命中
+  `_US_EQ`，**META 的美股 ticker 是 FB_US_EQ**）；`t212_exchanges_20260821.json`
+  （US 时段表无 CLOSE 事件，常规收盘=当日 AFTER_HOURS_OPEN 20:00Z，周末界=
+  AFTER_HOURS_CLOSE，日历窗仅约 6 周滚动）。
+
 ## 未决项
 
 | # | 事项 | 需要谁定 | 备注 |
@@ -72,6 +86,10 @@
 | 13 | T212 费用细节的经验校验：FX 费与税费的舍入规则、PTM 对 ETF 是否实收、最小订单值现行值（帮助页已下线，仅 Wayback + 员工帖）、下单数量精度现行上限（官方无文档，实测 4 位） | 用户 + demo 账户实测 | 待将来对 demo 环境下单后用 `GET /equity/history/orders` 的 walletImpact.taxes 逐项对账；回测成本列已按同一枚举命名以便对账 |
 | 14 | T212 API 的 POST→FILLED 实测延迟无公开数据（实盘 API 下单 2025-10-01 才开放）；故障注入的 p/q/r/k 概率参数全为推断值 | 用户裁定是否实测 + 敏感性 | 延迟档位与证据见 `fixplans/t212_faults/02_latency_model.md`；报告结论前须跑参数敏感性 |
 | 15 | 回测框架待办：F3 outage 抽样发生器（v0 仅显式窗口）；`avoid_first_bar` 由策略层承担；对账层故障目录（fault_catalog §4）待实盘执行层设计时启用 | 后续任务 | 见各 fixplan 变更记录 |
+| 16 | **账户 API 可见资金为 0**（totalValue=0、availableToTrade=0，2026-08-21 实调）——与「T212 存放英镑」的既有认知矛盾。资金是否在另一账户类型（API 仅覆盖 Invest 与 Stocks ISA）或需入金 | 用户 | 不阻塞 dry-run；阻塞模拟盘与实盘 |
+| 17 | A0 实盘参数三项：init-ledger 资金分配额度、`t212.live.yaml` risk 区块全部限额、执行排期（建议本地 08:30 settle→decide） | 用户 | 全零=失效关闭；见 `trading212/execution/README.md` §2 |
+| 18 | demo 账户 practice API key（现有 key 仅 live 有效）——上线路径第 3 步模拟盘的前提；顺带实测三件事：`walletImpact.netValue` 符号约定与税费包含关系（併入 13 号）、API 下单的 `initiatedFrom` 是否确为字面 `API`（归因机制依赖它，现仅有 schema 枚举证据）、POST 到成交的实际延迟 | 用户 | `QUANT_ENV=paper` 已预留 demo 主机 |
+| 19 | 执行层两项弱化设计需用户明示接受或另建：B4 日内亏损熔断（A0 日频单批次，未实现）；E5 CRITICAL 告警仅落日志，无外部触达通道 | 用户 | 见风险审查报告 |
 
 ## 时间线
 
@@ -121,4 +139,6 @@
 | 2026-08-20 16:xx | `fixplans/` 建立（README + framework 5 份 + t212_faults 2 份 + validation 2 份）。本地实证 bar 语义两条（判别力样本）：日内 ts=bar 开始（AAPL 1h 首根夏 13:30/冬 14:30 UTC，随 DST 切换）；日线 ts=交易所本地零点转 UTC，伦敦标的 BST 期间落前一 UTC 日 23:00（SGLN.L 交易日 06-29 → ts 06-28 23:00Z）。后者补记入 `docs/data/t212/DATA_SPEC.md` §3。回滚：删 fixplans/ 与 DATA_SPEC 增补段 |
 | 2026-08-20 17:xx | 引擎代码落地：`backtest/engine/` 8 模块（types/feed/matching/ledger/engine/metrics/results/broker 协议）+ `backtest/t212/` 7 模块（data_source/instruments/costs/faults/admission/broker_sim/runner），16 类故障开关，`tests/backtest/` 判别力测试，`scripts/20260820_t212_backtest_smoke.py` 真实数据冒烟（BST 边界 + 2026-07-03 美假日窗口，6 项断言含 FX 前视判别）。`common/paths.py` 增 `equity_curated_root`/`equity_interval_dir`。ARCHITECTURE §1/§2.2 同步登记。回滚：整棵工作树未提交，`git checkout -- .` + 删除未跟踪件即回 |
 | 2026-08-20 23:2x | 对抗性审查工作流（4 查错员 ×39 发现，每条 2 反驳者验证；21 个验证员因会话限额中断，由本方逐条裁定）→ 修复 24 项。关键修复：混交易所 1h 时间轴 30 分钟前视泄漏（撮合资格由「合并时间轴步数」改为「时间」eligible_ts，引擎加日内成交时间断言；美股 1h 在 :30 网格、伦敦在 :00 网格，步数制会用到未形成的收盘信息）；止损限价可即成腿曾按 bar 未交易过的价格成交；卖侧止损限价曾采信触发前的 high；STOP 部分成交后丢失触发态；PTM 曾按笔而非按订单收；夏普与年化收益曾用不同日基底；重叠点差窗口未随 DST；F13 上限改按标的×bar 聚合；执行时资金闸曾可挪用他单冻结。三项按 fixplans 规则改计划留痕（F12 拒单+重提语义、F3 抽样发生器降待办、avoid_first_bar 归策略层）。broker_sim 超 400 行拆出 admission.py。终态：71 测试 + 冒烟 6/6 全过；全部 9 份 fixplan 补变更记录。回滚：同上一行 |
+| 2026-08-21 11:3x | **对抗性审查修复 9 项**（4 查错员×13 发现，逐条 2 轮反驳验证，10 项确证全修，86 项测试过）：(1) `order_monitor` 账单方向缺省成买入→改为 side 必须为 BUY/SELL 且与账本意向符号交叉核对，矛盾即拒收；(2) 账单 quantity/netValue 为 null 曾静默记零→改为拒收待重试；(3) `_history_items_for` 早停假设同单成交在列表中连续→改全量扫描（同 ticker 手工成交夹层会截断收割并假性冻结）；(4) 账本 SUBMIT/REJECT/AMBIG/RESOLVE 事件 id 加尝试计数 `#n`（QMT J1 教训：无生命周期因子的幂等键跨周期撞车，二次歧义曾不冻结）；(5) `load()` 增日志领先快照检测（崩溃于 journal fsync 与快照替换之间不再静默丢事件）；(6) 解歧证据收紧：ticker+方向+|数量|+createdAt≥歧义时刻-10min+排除本方已知订单（`knows_order`），旧日同量反向单不再冒充丢失单；(7) `client` 200 响应解析失败改抛歧义而非拒单（200=已受理，解析失败仍是活单）；(8) 路由器只认 `PermanentError` 为已证实拒单，POST 后一切意外（含回执落账失败）走歧义冻结；(9) decide 增开盘前安全边距（默认 10 分钟，防临开盘提交穿入盘中成交）。另补 `run_a0` fcntl 单实例锁（并发第二实例实测被拒）。回滚：本批全部在前一行新增文件内，随前一行回滚一并消失 |
+| 2026-08-21 11:xx | **T212 实盘执行层 v0 建成（本工作树，全程 DRY_RUN）**：`common/paths.py` 增 `execution_state_dir()`；新增 `trading212/client.py`（REST 传输：legacy 单钥鉴权、逐端点令牌桶、GET 重试、**下单 POST 单次尝试**，歧义抛 `OrderSubmitAmbiguousError`）与 `trading212/execution/` 9 模块（instruments 映射与日历 / market_data 截止视图与新鲜度闸 / shadow_ledger 事件溯源账本 / risk_gate 失效关闭闸 / order_router 写前意向 / order_monitor 账单收割 / reconciler 单向对账 / daily_cycle 编排 / run_a0 CLI 带 fcntl 单实例锁）；`trading212/strategy/__init__.py` 建版本注册表；A0 信号模块与参数从主树复制（cmp 字节一致）。账本设计借鉴 QMT 参考脚本（event_id 幂等、原子快照、拒空基底重建、歧义冻结、保锁优先），T212 以 fill id 为天然幂等键。S4 取证：`data/reference/t212_{instruments,exchanges}_20260821.json`（META→FB_US_EQ；US 时段表常规收盘=AFTER_HOURS_OPEN，无 CLOSE 事件——该发现修正了首版日历判定）。验证：74 项测试（判别力样本含 4dp 余数、越日 bar 泄漏、双验证员歧义冻结）+ live 只读/dry-run 冒烟（15 意向、失效关闭、同日防重、并发锁）。配置 `t212.live.yaml`/`t212.paper.yaml`（gitignore）risk 全零。回滚：删 `trading212/client.py`、`trading212/execution/`（保留 `__init__.py` 与 `.gitkeep`）、`tests/execution/`、`trading212/strategy/{__init__.py 恢复为空, a0_v0_0_1.py}`、config 三份还原、`common/paths.py` 去掉 `execution_state_dir`、`ARCHITECTURE.md` 删 §2.3；`data/t212/execution_state/` 整目录删除即清状态 |
 | 2026-08-21 00:xx | 策略接入与双线数据源读取层：新增 `backtest/engine/strategy_loader.py`（按 (venue, name, version) 加载 `<venue>/strategy/` 模块，校验 STRATEGY_NAME/STRATEGY_VERSION 与 `compute_targets` 契约，契约文档 `fixplans/framework/06_strategy_plugin.md`）、`backtest/okx/data_source.py`（Binance 归档 spot klines → 引擎 bar schema，UTC 日对齐、USDT 计价；本地存量 9 个 USDT 对 × 1d/1m × 2017-08 起）；feed 计价币白名单参数化并纳入 USDT；`common/paths.py` 的 `binance_partition_dir` 增 data_root 注入。80 项测试全过；okx 读取层真实数据抽验（2024-02-25~03-05 跨闰日 10 行/标的）。待办：okx 撮合/成本适配器（OKX 费率等 S4 现查）+ 账本 `_gbp` 字段中性化（PATCH 级，须字节级等价证明）。回滚：删三个新文件与 06 号计划，还原 feed/paths 的新参数 |

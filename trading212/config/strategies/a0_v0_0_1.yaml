@@ -1,0 +1,18 @@
+# A0 v0.0.1 baseline parameters. Ablation arms are derived from this file by
+# the entry script with explicit, logged overrides; this file holds the TRUE
+# A0 definition (research/decisions/20260820_regime_lf_ruling.md section 3).
+trade_symbols: [AAPL, AMAT, AMD, AMZN, AVGO, DELL, GOOGL, INTC, LRCX, META,
+                MRVL, MSFT, MU, NVDA, ORCL, PLTR, TSLA, TSM]
+state_symbol: QQQ
+fx_symbol: GBPUSD=X
+signal_mode: tsmom252
+tsmom_lookback: 252
+trend_ma: 200
+vol_window: 20
+vol_pct_threshold: 0.80
+vol_min_history: 756
+use_vol_gate: true
+use_trend_gate: true
+warmup_bars: 260
+live_from: "2018-01-01"
+slot_headroom: 0.99

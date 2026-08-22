@@ -1,0 +1,233 @@
+"""Pre-trade risk gate: rejects or shrinks intents, never enlarges them.
+
+Responsibility: the last decision layer before the order router. Every check
+either passes an intent through unchanged, trims it DOWN, or rejects it;
+nothing here may increase a quantity, flip a side, or invent an order
+(live-trading-architecture skill, RiskGate contract).
+Not responsible for: computing targets (strategy), submitting (router), or
+account truth (reconciler).
+
+Fail-closed configuration: every limit must be explicitly set and positive
+in the venue configuration's risk section. A missing or zero limit REJECTS
+everything rather than defaulting to "unlimited" -- an unset risk file must
+never be interpreted as permission (CLAUDE.md section 1.4: parameters that
+shape live orders belong to the user).
+
+Public classes:
+    OrderIntent      One desired order, strategy-symbol domain
+    GateReport       Approved intents + per-rejection reasons
+
+Public functions:
+    check_intents(intents, ledger_view, positions_ref_notional_gbp, cfg_risk,
+                  orders_today, market_open, halt_path)   Run the whole gate
+    halt_active(halt_path)                                Is the halt flag set
+
+Public constants:
+    T212_QTY_STEP, REQUIRED_RISK_KEYS
+"""
+
+from __future__ import annotations
+
+__all__ = ["OrderIntent", "GateReport", "check_intents", "halt_active",
+           "T212_QTY_STEP", "REQUIRED_RISK_KEYS"]
+
+from dataclasses import dataclass, replace
+from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
+
+from common.logging_setup import get_logger
+
+log = get_logger("t212.execution")
+
+# ============================================================================
+# [1] Constants
+# ============================================================================
+
+# Order quantity step. NOT officially documented: the current OpenAPI spec
+# carries no precision field (minTradeQuantity was removed from it), and the
+# only evidence is community/staff posts of a historical 4-decimal cap
+# (WORKING_MEMORY open item 13). 4 dp is therefore the conservative floor;
+# the strategy already quantizes to the same step.
+T212_QTY_STEP = Decimal("0.0001")
+
+# Every one of these must be present and positive in cfg["risk"]; the gate
+# fails closed otherwise. Values are the user's call, not code defaults.
+REQUIRED_RISK_KEYS = ("max_order_notional_gbp", "max_gross_notional_gbp",
+                      "max_daily_orders", "min_order_value_gbp", "fee_buffer")
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    """One desired order before venue translation.
+
+    quantity is SIGNED shares (negative sells, mirroring the venue
+    convention); ref_price_usd is the decision close, fx is USD per GBP.
+    ref_notional_gbp is derived once at construction so every layer prices
+    the intent identically.
+    """
+    intent_id: str
+    symbol: str
+    ticker: str
+    quantity: Decimal
+    ref_price_usd: Decimal
+    fx_usd_per_gbp: Decimal
+
+    @property
+    def ref_notional_gbp(self) -> Decimal:
+        return abs(self.quantity) * self.ref_price_usd / self.fx_usd_per_gbp
+
+
+@dataclass
+class GateReport:
+    approved: list[OrderIntent]
+    rejected: list[tuple[OrderIntent, str]]
+    # True when a fatal precondition (halt, unset limits, open session)
+    # closed the gate for the whole batch. The cycle treats a closed gate as
+    # an ABORTED run, not a completed decision day, so fixing the
+    # configuration allows a same-day retry.
+    closed: bool = False
+
+    def summary(self) -> str:
+        state = "CLOSED " if self.closed else ""
+        return (f"{state}{len(self.approved)} approved, "
+                f"{len(self.rejected)} rejected"
+                + ("" if not self.rejected else ": "
+                   + "; ".join(f"{i.symbol} {r}" for i, r in self.rejected)))
+
+
+# ============================================================================
+# [2] Gate
+# ============================================================================
+
+def halt_active(halt_path: Path) -> bool:
+    """The halt flag is a plain file; existence means stop. Creating it takes
+    one shell command in an emergency, and no code path deletes it."""
+    return halt_path.exists()
+
+
+def check_intents(intents: list[OrderIntent], ledger_view,
+                  positions_ref_notional_gbp: Decimal, cfg_risk: dict,
+                  orders_today: int, market_open: bool,
+                  halt_path: Path) -> GateReport:
+    """Run every gate over the intents; tighten-only.
+
+    Args:
+        intents: Desired orders from the target diff.
+        ledger_view: LedgerPortfolioView (strategy-owned book).
+        positions_ref_notional_gbp: GBP value of held strategy positions at
+            decision prices, for the gross-exposure check.
+        cfg_risk: The venue configuration's risk mapping.
+        orders_today: Orders already submitted this trading day.
+        market_open: Whether the regular session is open NOW. A0 submits
+            while closed (queued to the open); submitting into a live
+            session would fill at an unmodeled price, so it is rejected
+            wholesale unless allow_submit_while_open is set.
+        halt_path: Halt-flag file.
+    """
+    fatal = _fatal_precondition(cfg_risk, market_open, halt_path)
+    if fatal:
+        log.error("[risk] gate closed: %s", fatal)
+        return GateReport(approved=[], rejected=[(i, fatal) for i in intents],
+                          closed=True)
+
+    fee_buffer = Decimal(str(cfg_risk["fee_buffer"]))
+    max_order = Decimal(str(cfg_risk["max_order_notional_gbp"]))
+    max_gross = Decimal(str(cfg_risk["max_gross_notional_gbp"]))
+    min_value = Decimal(str(cfg_risk["min_order_value_gbp"]))
+    max_daily = int(cfg_risk["max_daily_orders"])
+
+    approved: list[OrderIntent] = []
+    rejected: list[tuple[OrderIntent, str]] = []
+    budget = ledger_view.available_cash_gbp
+    gross = positions_ref_notional_gbp
+
+    for intent in intents:
+        verdict = _check_one(intent, ledger_view, max_order, min_value)
+        if isinstance(verdict, str):
+            rejected.append((intent, verdict))
+            continue
+        intent = verdict
+        cost = intent.ref_notional_gbp * (Decimal("1") + fee_buffer)
+        if intent.quantity > 0:
+            if cost > budget:
+                rejected.append((intent, f"buy cost {cost:.2f} exceeds available "
+                                         f"cash {budget:.2f}"))
+                continue
+            if gross + intent.ref_notional_gbp > max_gross:
+                rejected.append((intent, f"gross would exceed "
+                                         f"max_gross_notional_gbp {max_gross}"))
+                continue
+            budget -= cost
+            gross += intent.ref_notional_gbp
+        if orders_today + len(approved) + 1 > max_daily:
+            rejected.append((intent, f"max_daily_orders {max_daily} reached"))
+            continue
+        approved.append(intent)
+
+    report = GateReport(approved=approved, rejected=rejected)
+    log.info("[risk] %s", report.summary())
+    return report
+
+
+# ============================================================================
+# [3] Internals
+# ============================================================================
+
+def _fatal_precondition(cfg_risk: dict, market_open: bool,
+                        halt_path: Path) -> str | None:
+    """Conditions that close the gate for every intent at once."""
+    if halt_active(halt_path):
+        return f"halt flag present at {halt_path}"
+    for key in REQUIRED_RISK_KEYS:
+        raw = cfg_risk.get(key)
+        try:
+            value = Decimal(str(raw))
+        except Exception:
+            return f"risk.{key} is not a number ({raw!r}); gate fails closed"
+        if key != "fee_buffer" and value <= 0:
+            return f"risk.{key} must be set positive by the user; gate fails closed"
+        if key == "fee_buffer" and not (0 <= value < Decimal("0.2")):
+            return f"risk.fee_buffer {raw!r} outside [0, 0.2); gate fails closed"
+    if market_open and not cfg_risk.get("allow_submit_while_open", False):
+        return ("regular session is open; A0 submits only while closed so "
+                "queued orders fill at the next open")
+    return None
+
+
+def _check_one(intent: OrderIntent, ledger_view, max_order: Decimal,
+               min_value: Decimal) -> "OrderIntent | str":
+    """Per-intent checks. Returns the (possibly trimmed) intent or a reason."""
+    if intent.quantity == 0:
+        return "zero quantity"
+    if intent.ref_price_usd <= 0 or intent.fx_usd_per_gbp <= 0:
+        return "non-positive reference price or FX"
+
+    quantity = intent.quantity
+    magnitude = abs(quantity).quantize(T212_QTY_STEP, rounding=ROUND_DOWN)
+    if magnitude == 0:
+        return f"below quantity step {T212_QTY_STEP}"
+
+    if quantity < 0:
+        held = ledger_view.positions.get(intent.symbol, Decimal("0"))
+        pending = ledger_view.pending_signed_qty.get(intent.symbol, Decimal("0"))
+        # Quantity already committed to in-flight sell orders is not sellable
+        # again; pending is signed, so only its negative part subtracts.
+        sellable = held + min(pending, Decimal("0"))
+        if sellable <= 0:
+            return "sell with no strategy-owned position (never short)"
+        if magnitude > sellable:
+            magnitude = sellable.quantize(T212_QTY_STEP, rounding=ROUND_DOWN)
+            if magnitude == 0:
+                return "held quantity rounds to zero at the venue step"
+
+    trimmed = replace(intent, quantity=magnitude.copy_sign(quantity))
+    if trimmed.ref_notional_gbp < min_value:
+        # Minimum order value: helpcentre article 360008095497 said 1
+        # GBP/EUR; page now login-gated, so the config value is the
+        # conservative, user-owned floor (unverified venue fact).
+        return f"notional {trimmed.ref_notional_gbp:.2f} below " \
+               f"min_order_value_gbp {min_value}"
+    if trimmed.ref_notional_gbp > max_order:
+        return f"notional {trimmed.ref_notional_gbp:.2f} exceeds " \
+               f"max_order_notional_gbp {max_order}"
+    return trimmed
