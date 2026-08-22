@@ -1,0 +1,188 @@
+[
+ {
+  "trade_start": "2011-01-03",
+  "trade_end": "2011-07-01",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, SO/WEC, FE/PPL"
+ },
+ {
+  "trade_start": "2011-07-05",
+  "trade_end": "2011-12-30",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, SO/WEC, NEE/SRE"
+ },
+ {
+  "trade_start": "2012-01-03",
+  "trade_end": "2012-07-02",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, DUK/SO, KIM/REG"
+ },
+ {
+  "trade_start": "2012-07-03",
+  "trade_end": "2013-01-03",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CPT/VMRK, DUK/SO"
+ },
+ {
+  "trade_start": "2013-01-04",
+  "trade_end": "2013-07-05",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, ESS/MAA, DUK/SO"
+ },
+ {
+  "trade_start": "2013-07-08",
+  "trade_end": "2014-01-03",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, DUK/WEC, PEG/WEC"
+ },
+ {
+  "trade_start": "2014-01-06",
+  "trade_end": "2014-07-07",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, ACGL/ALL, ADP/PAYX"
+ },
+ {
+  "trade_start": "2014-07-08",
+  "trade_end": "2015-01-05",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, KIM/REG, ESS/MAA"
+ },
+ {
+  "trade_start": "2015-01-06",
+  "trade_end": "2015-07-07",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, KIM/O, CVX/XOM"
+ },
+ {
+  "trade_start": "2015-07-08",
+  "trade_end": "2016-01-05",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, FITB/RF, KIM/O"
+ },
+ {
+  "trade_start": "2016-01-06",
+  "trade_end": "2016-07-06",
+  "pairs": 20,
+  "example": "TFC/WFC, KIM/O, KIM/REG"
+ },
+ {
+  "trade_start": "2016-07-07",
+  "trade_end": "2017-01-04",
+  "pairs": 20,
+  "example": "PNC/WFC, AZO/ORLY, KIM/REG"
+ },
+ {
+  "trade_start": "2017-01-05",
+  "trade_end": "2017-07-06",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, KIM/REG, EXPD/UPS"
+ },
+ {
+  "trade_start": "2017-07-07",
+  "trade_end": "2018-01-04",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CLX/KMB, ETR/WEC"
+ },
+ {
+  "trade_start": "2018-01-05",
+  "trade_end": "2018-07-06",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, ETR/WEC, MS/RJF"
+ },
+ {
+  "trade_start": "2018-07-09",
+  "trade_end": "2019-01-07",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, MRSH/WTW, DUK/SO"
+ },
+ {
+  "trade_start": "2019-01-08",
+  "trade_end": "2019-07-09",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CPT/MAA, ETR/WEC"
+ },
+ {
+  "trade_start": "2019-07-10",
+  "trade_end": "2020-01-07",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CPT/MAA, BLK/TROW"
+ },
+ {
+  "trade_start": "2020-01-08",
+  "trade_end": "2020-07-08",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, JPM/PNC, ETR/SO"
+ },
+ {
+  "trade_start": "2020-07-09",
+  "trade_end": "2021-01-06",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, MA/V, CSX/NSC"
+ },
+ {
+  "trade_start": "2021-01-07",
+  "trade_end": "2021-07-08",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, DHR/TMO, FITB/RF"
+ },
+ {
+  "trade_start": "2021-07-09",
+  "trade_end": "2022-01-05",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, AON/WTW, FISV/GPN"
+ },
+ {
+  "trade_start": "2022-01-06",
+  "trade_end": "2022-07-08",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CSX/UNP, PPL/SO"
+ },
+ {
+  "trade_start": "2022-07-11",
+  "trade_end": "2023-01-06",
+  "pairs": 20,
+  "example": "CPT/MAA, DUK/WEC, FITB/KEY"
+ },
+ {
+  "trade_start": "2023-01-09",
+  "trade_end": "2023-07-11",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, MCO/SPGI, AME/ETN"
+ },
+ {
+  "trade_start": "2023-07-12",
+  "trade_end": "2024-01-09",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, PEG/SO, RSG/WM"
+ },
+ {
+  "trade_start": "2024-01-10",
+  "trade_end": "2024-07-11",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, CPT/MAA, PEG/SO"
+ },
+ {
+  "trade_start": "2024-07-12",
+  "trade_end": "2025-01-10",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, MA/V, MO/PM"
+ },
+ {
+  "trade_start": "2025-01-13",
+  "trade_end": "2025-07-15",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, DUK/EIX, ESS/VMRK"
+ },
+ {
+  "trade_start": "2025-07-16",
+  "trade_end": "2026-01-13",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, MCO/SPGI, DUK/SO"
+ },
+ {
+  "trade_start": "2026-01-14",
+  "trade_end": "2026-07-16",
+  "pairs": 20,
+  "example": "GOOG/GOOGL, DUK/PPL, HBAN/MTB"
+ }
+]

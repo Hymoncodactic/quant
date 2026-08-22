@@ -66,19 +66,30 @@ def positions(z: pd.Series, variant: str, entry: float = ENTRY_Z,
     """
     state = 0                    # +1 long spread (a cheap), -1 short spread
     last_leg = "a"
+    stopped = False              # a stopped-out pair stays flat for the window
     wa, wb = [], []
     for value in z.to_numpy():
         if np.isnan(value):
             value = 0.0
         if state == 0:
-            if value >= entry:
-                state, last_leg = -1, "b"
-            elif value <= -entry:
-                state, last_leg = 1, "a"
+            # A stop-out must LOCK OUT re-entry, not merely close for a day.
+            # Without the lock the machine reopens on the next bar while |z| is
+            # still beyond entry, so a spread sitting above the stop chatters
+            # open/closed every bar: measured 26 position changes in a 126-day
+            # window on DOV/IEX, an annualized 65.6 units of turnover, which at
+            # 16bp per unit fabricates a 10.5%/year cost drag that belongs to
+            # the bug and not to the strategy.
+            if not stopped:
+                if value >= entry:
+                    state, last_leg = -1, "b"
+                elif value <= -entry:
+                    state, last_leg = 1, "a"
         else:
             crossed = (state == 1 and value >= EXIT_Z) or \
                       (state == -1 and value <= EXIT_Z)
-            if crossed or abs(value) >= stop:
+            if abs(value) >= stop:
+                state, stopped = 0, True
+            elif crossed:
                 state = 0
         if variant == "MN":
             wa.append(0.5 * state)
