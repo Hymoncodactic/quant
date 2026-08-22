@@ -154,15 +154,28 @@ class CostConfig:
     # improves sharply when this drops is capacity illusion and must be
     # downgraded (the skill's 教训条款).
     cooldown_bars: int = 2
+    # Same-close execution (EngineConfig.fill_timing == "same_close"): the
+    # order is placed about one minute before the close but the fill is
+    # modeled at the official close, so the gap between the two is charged
+    # adversely. Calibrated 2026-08-22 on local 1m data (51 symbols x 21
+    # sessions, 1,061 samples): |price 1 min before close - daily close|
+    # median 4.8 bps, P75 10.7, P90 22.3; US single names P75 16.4. Worst
+    # tier takes P75 rounded up, actual tier the median. Short calibration
+    # window (30-day 1m history cap) -- rerun when more 1m data accrues.
+    close_gap_bps: Decimal = Decimal("11")
+    # Seconds before the close inside which the order must reach the venue
+    # to count as a same-close fill; a latency draw beyond it spills the
+    # order to the next open (user statement: last minute is feasible).
+    close_window_sec: int = 60
 
     @staticmethod
     def actual_tier() -> "CostConfig":
         """The measured-costs comparison tier: no extra slippage, no session
-        widening, structural-floor cooldown. Spread itself stays on (it is a
-        measurement, not a stress)."""
+        widening, structural-floor cooldown, median close gap. Spread itself
+        stays on (it is a measurement, not a stress)."""
         return CostConfig(slippage_bps=Decimal("0"),
                           spread_session_multiplier=Decimal("1"),
-                          cooldown_bars=1)
+                          cooldown_bars=1, close_gap_bps=Decimal("5"))
 
 
 # ============================================================================

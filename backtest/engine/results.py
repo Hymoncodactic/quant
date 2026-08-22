@@ -76,7 +76,8 @@ def _code_version() -> dict[str, Any]:
 
 
 def run_name(config: EngineConfig) -> str:
-    """Canonical stem: strategy, version, arm, window, fee tier, seed.
+    """Canonical stem: strategy, version, arm, window, fee tier, fill
+    timing, seed.
 
     Parameters go into the name (quant-code-standards section 4.5.1); a probe
     run is branded so it can never be mistaken for a reportable result.
@@ -84,7 +85,8 @@ def run_name(config: EngineConfig) -> str:
     version = config.strategy_version.replace(".", "_")
     stem = (f"{config.strategy_name}_v{version}_{config.arm}"
             f"_{config.start}_{config.end}"
-            f"_fee-{config.fee_tier}_seed{config.seed}")
+            f"_fee-{config.fee_tier}_fill-{config.fill_timing}"
+            f"_seed{config.seed}")
     if config.lookahead_probe:
         stem += "_PROBE"
     return stem
