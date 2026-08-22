@@ -33,7 +33,7 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 ```
 
 策略模块契约（常量 + `compute_targets(view, portfolio, params) -> {标的: 目标股数}`）
-见 `fixplans/framework/06_strategy_plugin.md`；加载器对名字/版本不符直接拒载。
+见 `docs/backtest/framework/06_strategy_plugin.md`；加载器对名字/版本不符直接拒载。
 
 ## 3. 引擎时序（每根 bar 固定四步）
 
@@ -42,7 +42,16 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 3. 目标持仓与（持仓 + 在途）差分 → 市价单提交，数量向下取整到场所精度。
 4. `ledger.mark()`：估值与占用采样（在提交之后，冻结资金进占用峰值）。
 
-**无未来函数保证**：t 的决策最早在 t+1 个完整 bar 间隔后成交；撮合资格按
+**成交时序可选**（`EngineConfig.fill_timing`）：
+- `next_open`（默认，保守口径）：t 的决策最早在 t+1 个完整 bar 间隔后成交。
+- `same_close`：收盘价策略在收盘前约 1 分钟下单，市价单按决策 bar 的**收盘价**
+  成交，额外承担实测校准的收盘临近滑点（worst 11bp / actual 5bp，依据
+  `research/decisions/20260822_close_execution_timing.md`）；延迟抽样超过 60 秒
+  或该标的当根无 bar 时自动落到下一开盘。属对硬清单第 1/2 条的**声明式偏离**，
+  须在策略预注册中写明；结果文件名带 `fill-same_close`。
+- 频率：`interval ∈ {1m, 2m, 5m, 1h, 1d}`（本地已落地周期），两种时序对任意频率有效。
+
+**无未来函数保证**（next_open 下）：t 的决策最早在 t+1 个完整 bar 间隔后成交；撮合资格按
 **时间**（非时间轴步数）判定，混交易所交错网格不会提前半个间隔成交；引擎内
 置两条运行时断言（同步成交、日内成交时间）+ 两条结构性保证（视图游标、FX
 可得性），违反即抛异常终止。前视探针臂（`lookahead_probe=True`）仅供检验，
@@ -52,8 +61,8 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 
 | # | 项 | 状态 |
 |:--:|---|---|
-| 1 | 信号 ≤t、成交 ≥t+1 | 已开（时间制资格 + 双断言） |
-| 2 | 成交价对手价/下一根开盘 | 已开（开盘 ± 半点差；挂单须**严格穿透**限价才成交，触及不成交） |
+| 1 | 信号 ≤t、成交 ≥t+1 | 已开（时间制资格 + 双断言）；`same_close` 为声明式偏离，须预注册写明 |
+| 2 | 成交价对手价/下一根开盘 | 已开（开盘 ± 半点差；挂单须**严格穿透**限价才成交，触及不成交）；`same_close` 用收盘价 + 实测收盘临近滑点 |
 | 3 | 滑点固定 bps 可配 | 已开（worst 档 5bp） |
 | 4 | 费率双档、主口径最坏档 | 已开（`fee_tier=worst/actual`，档名进文件名） |
 | 5 | 容量上限不外推 | 已开（单 bar 成交量 10%，按标的×bar 聚合，余量跨 bar 结转） |
@@ -113,3 +122,25 @@ result, metrics, paths = run_t212_backtest(config, strategy)
 `broker_sim.py`（实现 `backtest/engine/broker.py` 的 BrokerSim 协议）+
 一个 runner 组装点。年化因子、日历语义、清算估值全部由适配层注入，
 引擎零默认值。
+
+## 9. 文件清单
+
+本节按 `CLAUDE.md` §4.3 登记本目录直属文件。子目录的文件清单在各自 `README.md` 中。
+
+| 文件 | 作用 | 存在必要性 | 谁在用 |
+|---|---|---|---|
+| `__init__.py` | 把 `backtest` 声明为常规包，模块头说明本包分层 | 全项目 `from backtest.X import ...` 以它为包根；删除后包导入失效 | `tests/backtest/` 全部测试、`scripts/` 下三个回测入口 |
+| `README.md` | 本文件。引擎接入方式与引擎对外保证 | 唯一说明「怎么用引擎」与「引擎保证什么」的文档；口径裁定在 `fixplans/`，二者不重复 | 新增市场适配层时的入口文档 |
+
+## 10. 子目录索引
+
+| 子目录 | 内容 | 说明文档 |
+|---|---|---|
+| `engine/` | 场所无关的事件驱动引擎，11 个模块 | `backtest/engine/README.md` |
+| `okx/` | crypto 线适配层，当前只有数据读取 | `backtest/okx/README.md` |
+| `t212/` | 股票线适配层，数据、成本、故障、撮合、组装 | `backtest/t212/README.md` |
+| `results/` | 每轮结果落地位置 | gitignore，不放 `README.md`（`CLAUDE.md` §4.3），命名与内容见 §5 |
+
+## 11. 变更记录
+
+2026-08-22 按 `CLAUDE.md` §4.3 补 §9 文件清单、§10 子目录索引与本节。原有 §1 至 §8 未改动。

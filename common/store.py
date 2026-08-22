@@ -1,18 +1,56 @@
 """Parquet writing and reading for the market data lake.
 
-The write configuration here is not a default; it is the outcome of benchmarks on
-real BTCUSDT data, and each choice below cites the measurement that justifies it.
-Changing any of them without re-measuring is how a lake silently doubles in size.
+Responsibility: write one partition atomically and read partitions back. Every
+Parquet file in the lake is written through write_table(), so compression, row
+grouping, column encoding and sort order are decided in exactly one place. The
+write configuration is not a set of defaults; each value is the outcome of a
+benchmark on real BTCUSDT data and is stated below with the measurement that
+justifies it. Changing any of them without re-measuring is how a lake silently
+doubles in size. The write is atomic because a long ingest will be interrupted,
+and a partition written directly to its final path leaves a truncated file that
+still satisfies an existence check, so a resumed run skips it and the corruption
+survives silently.
+
+Out of scope: deciding which partition to write and what it contains, which
+belongs to each ingest module; path construction, which belongs to
+common/paths.py; field, unit and time-zone definitions, which belong to
+docs/data/<source>/DATA_SPEC.md.
 
 Public functions:
-    write_table(table, path, sort_by=None)   Write one partition, atomically
-    read_dataset(root, **filters)            Read a partitioned dataset via DuckDB
-    parquet_stats(path)                      Row count, byte size, bytes per row
-    is_readable_parquet(path)                Whether a file is a complete Parquet file
-    clear_stale_temps(root)                  Remove temp files left by an interrupted run
+    write_table(table, path, sort_by="ts")  Write one partition atomically.
+    read_dataset(root, columns=None, where=None, limit=None)  Query in place, via DuckDB.
+    parquet_stats(path)                     Rows, bytes, bytes per row, row groups.
+    is_readable_parquet(path)               Whether a file is a complete Parquet file.
+    clear_stale_temps(root)                 Remove temp files left by an interrupted run.
 
-Public constants:
-    COMPRESSION, COMPRESSION_LEVEL, ROW_GROUP_SIZE
+Constants:
+    COMPRESSION        str  "zstd". Beats snappy on size and beats gzip on write
+                            speed by roughly 8x. Source: benchmark on BTCUSDT data.
+    COMPRESSION_LEVEL  int  3. pyarrow's zstd default is level 1, not level 3;
+                            passing 3 explicitly measured 8% smaller on one day of
+                            BTCUSDT trades, 7.15 MB against 6.58 MB. Source: the
+                            same benchmark.
+    ROW_GROUP_SIZE     int  131072 rows. File size is flat above 500k rows per
+                            group, but selective-query latency degrades 16x from
+                            100k to 3M because min/max statistics can no longer
+                            prune, and DuckDB's own guidance is 100k to 1M.
+                            Source: the same benchmark.
+    TEMP_SUFFIX        str  ".writing". Partitions are written to this suffix and
+                            then renamed onto the target, so an interrupted run
+                            leaves a file that is either absent or complete.
+
+Inputs:
+    Parquet files under the root the caller supplies. Requires pyarrow;
+    read_dataset() imports duckdb lazily and returns a pandas DataFrame.
+Outputs:
+    The Parquet file at the path the caller supplies, plus a transient sibling
+    named <file><TEMP_SUFFIX>, which is renamed onto the target on success and
+    removed on any failure, including KeyboardInterrupt and SystemExit.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec. The public-function list
+                previously recorded write_table's sort_by default as None; the
+                code default is the timestamp column "ts".
 """
 
 from __future__ import annotations

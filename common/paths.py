@@ -1,45 +1,79 @@
 """Project path constants and data partition path construction.
 
-This is the single source of truth for paths: every other module takes its paths
-from here rather than assembling them itself. Layout is documented in
-ARCHITECTURE.md section 3.
+Responsibility: be the single source of truth for paths. Every other module takes
+its paths from here rather than assembling them itself, because once a layout
+forks, the writing side and the reading side point at different directories and
+neither raises an error. The layout is documented in ARCHITECTURE.md section 3.
 
-A trading venue and a data source are deliberately separate concepts. OKX and
+A trading venue and a data source are deliberately separate registries. OKX and
 Trading 212 are venues: orders are sent to them. Binance is a data source only,
 because UK retail cannot trade crypto derivatives (FCA, in force since
 2021-01-06) and api.binance.com answers HTTP 451 from this host anyway. Keeping
 the two registries apart stops a data-only source from acquiring an empty
 execution directory, and stops venue code from assuming every source can trade.
 
-Everything that DESCRIBES the data lives under docs/data/<source>/ inside the
+Everything that describes the data lives under docs/data/<source>/ inside the
 repository, never under data/. The data tree is excluded from version control in
 full and is expected to move to an external disk, so a specification or a
 manifest kept beside the bytes would walk off with the disk and leave the
-repository with no record of what the data was or how to rebuild it.
+repository with no record of what the data was or how to rebuild it. Several
+constructors accept a data_root override, because code may run from a git
+worktree while the lake lives beside the main working copy.
+
+Out of scope: opening any file. This module builds Path objects and validates
+slugs, nothing more. Parquet input and output belongs to common/store.py,
+configuration loading to common/config.py, credential loading to
+common/secrets.py, and venue-specific conventions such as symbol mapping or fee
+schedules to crypto_trading/ and trading212/.
 
 Public functions:
-    venue_dir(venue)                                Venue source directory
-    config_dir(venue)                               Venue configuration directory
-    data_dir(source, layer)                         Data layer of one source (raw / curated)
-    bar_path(source, layer, inst, period, date_str) Single-day bar file
-    binance_partition_path(market, dataset, symbol, period, stamp)  Binance partition
-    binance_partition_dir(market, dataset, symbol, period)          Its parent directory
-    equity_daily_path(group, symbol, year)          Daily bars for one calendar year
-    equity_intraday_path(group, symbol, interval, start, end)  Intraday bars for one month
-    equity_curated_root(data_root=None)             t212 curated tree, root injectable
-    equity_interval_dir(group, symbol, interval, data_root=None)  One symbol-interval dir
-    execution_state_dir(venue)                      Live execution ledger and cycle state
-    month_bounds(period_start, latest)              Calendar-anchored start and end labels
-    stamp_freq(stamp)                               Classify a partition stamp daily/monthly
-    docs_data_dir(source)                           Versioned documentation for one source
-    data_spec_path(source)                          Field and unit specification
-    manifest_path(source)                           Rebuild manifest (JSONL)
-    gaps_path(source)                               Gap register (CSV)
+    venue_dir(venue)                                Source directory of one tradable venue.
+    config_dir(venue)                               That venue's configuration directory.
+    data_dir(source, layer)                         One layer of one data source.
+    bar_path(venue, layer, instrument, period, date_str)  Single-day bar file.
+    binance_partition_path(market, dataset, symbol, period, stamp)  One archive partition file.
+    binance_partition_dir(market, dataset, symbol, period)  The directory holding them.
+    equity_daily_path(group, symbol, year)          Daily bars for one calendar year.
+    equity_intraday_path(group, symbol, interval, start, end)  Intraday bars for one month.
+    equity_curated_root(data_root=None)             The t212 curated tree, root injectable.
+    equity_interval_dir(group, symbol, interval, data_root=None)  One symbol-interval directory.
+    execution_state_dir(venue)                      Live execution ledger and cycle state.
+    month_bounds(period_start, latest)              Calendar-anchored start and end labels.
+    stamp_freq(stamp)                               Classify a stamp as daily or monthly.
+    docs_data_dir(source)                           Documentation directory of one source.
+    data_spec_path(source)                          Field, unit and time-zone specification.
+    manifest_path(source)                           Rebuild manifest, JSONL.
+    gaps_path(source)                               Gap register, CSV.
 
-Public constants:
-    ROOT, DIR_DATA, DIR_DOCS, DIR_DOCS_DATA, DIR_REFERENCE, DIR_SECRETS,
-    DIR_LOGS, DIR_REPORTS, DIR_RESEARCH, DIR_SCRIPTS, DIR_BACKTEST_RESULTS,
-    VENUE_DIRS, VENUES, DATA_SOURCES, LAYERS
+Constants:
+    ROOT                  Path   Repository root, derived from this file's location.
+    DIR_DATA              Path   ROOT/data, the whole lake. Excluded from git.
+    DIR_DOCS              Path   ROOT/docs, committed.
+    DIR_DOCS_DATA         Path   ROOT/docs/data, the versioned counterpart of DIR_DATA.
+    DIR_REFERENCE         Path   ROOT/data/reference, venue facts from official sources.
+    DIR_SECRETS           Path   ROOT/secrets, the sole credential location.
+                                 Source: CLAUDE.md section 3.2.
+    DIR_LOGS              Path   ROOT/logs, written by common/logging_setup.py.
+    DIR_REPORTS           Path   ROOT/reports.
+    DIR_RESEARCH          Path   ROOT/research.
+    DIR_SCRIPTS           Path   ROOT/scripts.
+    DIR_BACKTEST_RESULTS  Path   ROOT/backtest/results.
+    VENUE_DIRS            dict   Venue slug to source directory. The slug is the only
+                                 legal venue identifier in code.
+                                 Source: quant-code-standards section 1.3.
+    VENUES                tuple  The venue slugs, ("okx", "t212").
+    DATA_SOURCES          tuple  Slugs allowed under data/, ("binance", "okx", "t212").
+                                 A superset of VENUES: a source supplies data whether
+                                 or not orders can be sent to it.
+    LAYERS                tuple  The two data layers, ("raw", "curated").
+
+Inputs:
+    None. Paths are constructed and never opened.
+Outputs:
+    None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

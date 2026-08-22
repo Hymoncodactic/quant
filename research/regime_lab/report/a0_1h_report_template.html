@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A0 策略小时频回测 · 净值 / 开仓区间 / 回撤</title>
+<script>__PLOTLY_JS__</script>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f6f6f4; --surface:#fcfcfb; --border:#e2e1dc;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#87867f;
+  --series-equity:#2a78d6; --series-exposure:#1baf7a; --series-dd:#e34948;
+  --marker-buy:#008300; --marker-sell:#e34948;
+  --band:rgba(27,175,122,.085); --dd-fill:rgba(227,73,72,.16); --grid:#eceae5;
+  --accent:#2a78d6;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#111110; --surface:#1a1a19; --border:#33322e;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8b8a80;
+    --series-equity:#3987e5; --series-exposure:#199e70; --series-dd:#e66767;
+    --marker-buy:#008300; --marker-sell:#e66767;
+    --band:rgba(25,158,112,.10); --dd-fill:rgba(230,103,103,.20); --grid:#2a2926;
+    --accent:#3987e5;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#111110; --surface:#1a1a19; --border:#33322e;
+  --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#8b8a80;
+  --series-equity:#3987e5; --series-exposure:#199e70; --series-dd:#e66767;
+  --marker-buy:#008300; --marker-sell:#e66767;
+  --band:rgba(25,158,112,.10); --dd-fill:rgba(230,103,103,.20); --grid:#2a2926;
+  --accent:#3987e5;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text-primary);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+main{max-width:1180px;margin:0 auto;padding:28px 20px 72px}
+h1{font-size:1.5rem;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:1.05rem;margin:34px 0 10px;letter-spacing:-.005em}
+.sub{color:var(--text-secondary);font-size:.9rem;margin:0 0 14px}
+.badges{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 24px}
+.badge{font-size:.74rem;padding:3px 9px;border:1px solid var(--border);
+  border-radius:999px;color:var(--text-secondary);background:var(--surface)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:12px;margin-bottom:10px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:14px 16px}
+.kpi .label{font-size:.74rem;color:var(--text-muted);letter-spacing:.02em}
+.kpi .value{font-size:1.6rem;font-weight:600;margin:3px 0 2px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.kpi .note{font-size:.72rem;color:var(--text-secondary)}
+.limit{font-size:.8rem;color:var(--text-secondary);background:var(--surface);
+  border:1px solid var(--border);border-left:3px solid var(--accent);
+  border-radius:8px;padding:11px 14px;margin:14px 0 26px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px 16px 8px;margin-bottom:12px}
+.card .ct{font-size:1rem;font-weight:600;margin:0 0 2px}
+.card .cs{font-size:.8rem;color:var(--text-secondary);margin:0 0 12px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+.seg{font-size:.78rem;padding:5px 12px;border:1px solid var(--border);background:var(--bg);
+  color:var(--text-secondary);border-radius:7px;cursor:pointer;font-family:inherit}
+.seg[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+#chart{width:100%;height:760px}
+.exp{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:26px;overflow:hidden}
+.exp button{width:100%;display:flex;align-items:center;gap:9px;background:none;border:0;
+  padding:13px 16px;cursor:pointer;color:var(--text-primary);font-size:.87rem;
+  font-family:inherit;text-align:left}
+.exp button .chev{margin-left:auto;transition:transform .22s ease;color:var(--text-muted)}
+.exp button[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.exp .body{max-height:0;overflow:hidden;transition:max-height .3s ease}
+.exp .body.open{max-height:1900px}
+.exp .inner{padding:0 16px 16px;font-size:.85rem;color:var(--text-secondary)}
+.exp h4{font-size:.83rem;color:var(--text-primary);margin:14px 0 6px}
+.legend-item{display:flex;align-items:flex-start;gap:9px;margin:6px 0}
+.dot{width:11px;height:11px;border-radius:3px;flex:none;margin-top:5px}
+.src{font-size:.76rem;color:var(--text-muted);margin-top:12px;padding-top:9px;border-top:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:6px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--text-muted);font-weight:600;font-size:.75rem;letter-spacing:.02em}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;
+  background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var(--border)}
+.ok{color:var(--marker-buy)} .bad{color:var(--series-dd)}
+#theme{font-size:.76rem;padding:5px 12px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text-secondary);border-radius:7px;
+  cursor:pointer;font-family:inherit;flex:none}
+.hdr{display:flex;align-items:flex-start;gap:16px;justify-content:space-between}
+.hdr .txt{min-width:0}
+</style>
+</head>
+<body>
+<main>
+  <div class="hdr">
+    <div class="txt">
+      <h1>A0 策略 · 小时频回测</h1>
+      <p class="sub">每场次 15:30 bar 决策、信息止于 14:30 bar 收盘、次场次开盘成交。净值曲线 + 开仓区间 + 回撤。单一路径回测，零假设检验，非投资建议。<strong>窗口落在既有验证段之内，非样本外。</strong></p>
+    </div>
+    <button id="theme">切换主题</button>
+  </div>
+  <div class="badges" id="badges"></div>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="limit" id="limit"></div>
+
+  <div class="card">
+    <p class="ct">图 1 · 净值、开仓区间与回撤</p>
+    <p class="cs" id="chart-sub"></p>
+    <div class="toolbar">
+      <button class="seg" id="tg-markers" aria-pressed="true">成交点</button>
+      <button class="seg" id="tg-bands" aria-pressed="true">开仓区间底纹</button>
+      <button class="seg" id="tg-log" aria-pressed="false">净值对数轴</button>
+    </div>
+    <div id="chart"></div>
+  </div>
+
+  <div class="exp">
+    <button aria-expanded="false" id="exp-btn">
+      <span>ⓘ</span><span><strong>图 1 怎么读</strong> · 上格是钱的多少，中格是钱有没有在市场里，下格是从最高点回落了多少</span>
+      <span class="chev">▾</span>
+    </button>
+    <div class="body" id="exp-body"><div class="inner">
+      <h4>图例说明</h4>
+      <div class="legend-item"><span class="dot" style="background:var(--series-equity)"></span>
+        <span><strong>账户净值</strong> — 现金加持仓市值，英镑，清算口径（卖侧点差、换汇费、卖侧税已扣）。起点 £10,000。</span></div>
+      <div class="legend-item"><span class="dot" style="background:var(--band);border:1px solid var(--series-exposure)"></span>
+        <span><strong>开仓区间</strong>（上格底纹）— 底纹覆盖的日期区间内账户持有股票；空白处为全现金，由波动闸或趋势闸关断。</span></div>
+      <div class="legend-item"><span class="dot" style="background:var(--marker-buy);border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)"></span>
+        <span><strong>▲ 买入日</strong> — 该交易日有买入成交，纵坐标取当日净值。悬停显示笔数、金额与标的。</span></div>
+      <div class="legend-item"><span class="dot" style="background:var(--marker-sell);border-radius:0;clip-path:polygon(0 0,100% 0,50% 100%)"></span>
+        <span><strong>▼ 卖出日</strong> — 该交易日有卖出成交。买卖以<strong>形状</strong>区分而不只靠颜色，用于色觉障碍与黑白打印。</span></div>
+      <div class="legend-item"><span class="dot" style="background:var(--series-exposure)"></span>
+        <span><strong>持仓占比</strong>（中格）— 持仓市值 ÷ 净值，0% 为全现金，100% 为满仓。</span></div>
+      <div class="legend-item"><span class="dot" style="background:var(--series-dd)"></span>
+        <span><strong>回撤</strong>（下格）— 当前净值相对历史最高净值的跌幅，始终 ≤ 0。</span></div>
+
+      <h4>怎么读</h4>
+      <p>三格共用同一时间轴，横向拖动或框选可同步缩放。上格纵轴是英镑金额；中格与下格纵轴是百分比。
+      对照上格底纹与下格谷底可以看出：闸关断（底纹消失）通常发生在回撤扩大之后而非之前——这是闸的滞后代价，
+      不是预警能力。</p>
+
+      <h4>该图支持的陈述</h4>
+      <p>回撤最深一段与其起止日期标注在图内。全期持仓占比均值与在场天数占比见 KPI 卡。
+      净值曲线在闸关断期间保持水平，是全现金状态的直接体现。</p>
+
+      <p class="src" id="chart-src"></p>
+    </div></div>
+  </div>
+
+  <h2>最深回撤</h2>
+  <table id="dd-table"></table>
+
+  <h2>证据清单</h2>
+  <p class="sub">每行为报告引用到的文件，核实状态由取数管线在生成时读盘写入。</p>
+  <table id="ev-table"></table>
+
+  <h2>口径与限定</h2>
+  <table id="ref-table"></table>
+</main>
+
+<script id="payload" type="application/json">__DATA_JSON__</script>
+<script>
+const D = JSON.parse(document.getElementById('payload').textContent);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const gbp = n => '£' + n.toLocaleString('en-GB', {maximumFractionDigits:0});
+const pct = (n,d=1) => (n*100).toFixed(d) + '%';
+
+document.getElementById('badges').innerHTML = [
+  `策略 ${D.run.strategy}`, `bar ${D.run.interval}`,
+  `决策时刻 ${D.run.decision_time} NY`, `成交时序 ${D.run.fill_timing}（收盘前约 1 分钟下单、按收盘价成交）`,
+  `本金 ${gbp(D.run.initial_cash_gbp)}`,
+  `费率档 ${D.run.fee_tier}（T212 实际费率）`, `标的 ${D.run.symbol_count} 只美股科技`,
+  `窗口 ${D.run.live_from} 起 ${D.kpi.trading_days} 个交易场次`,
+  `${D.kpi.fills} 笔成交 / ${D.kpi.orders_total} 单（被拒 ${D.kpi.orders_rejected}）`,
+  `日频对照终值 ${gbp(D.kpi.control_final_equity)}`,
+  `次开成交口径终值 ${gbp(D.kpi.next_open_final_equity)}`
+].map(t => `<span class="badge">${t}</span>`).join('');
+
+const K = D.kpi;
+document.getElementById('kpis').innerHTML = [
+  ['年化收益率', pct(K.cagr,2), `复利口径 · 252 交易日/年 · ${D.run.live_from} 起`],
+  ['最大回撤', pct(K.max_dd,2), `逐日净值曲线对历史峰值`],
+  ['夏普比率', K.sharpe.toFixed(2), `无风险利率 0 · 年化波动 ${pct(K.ann_vol,1)}`],
+  ['盈亏比', K.profit_factor.toFixed(2), `平仓胜率 ${pct(K.win_rate,1)}`],
+  ['成本拖累', pct(K.cost_drag_pct/100,2), `累计 ${gbp(K.costs_gbp)} · 主要为 0.15% 换汇费`]
+].map(([l,v,n]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join('');
+
+document.getElementById('limit').innerHTML =
+  `<strong>限定：</strong>本金分母为初始投入 ${gbp(D.run.initial_cash_gbp)}；` +
+  `峰值占用口径见本轮裁定（占用峰值 ${gbp(K.capital_peak_gbp)}，占用口径总收益 ${pct(K.total_return_on_capital,1)}）。` +
+  `<strong>窗口 ${D.run.live_from} 至 ${D.series.dates[D.series.dates.length-1]} 完全落在既有 A0 验证段（2018 起）之内，不是样本外</strong>，` +
+  `本图不是独立确认，是同一段样本的更细粒度重放。` +
+  `<strong>年化 ${pct(K.cagr,2)} 不是小时频带来的</strong>：同一窗口、同一成交时序的日频对照臂终值为 ` +
+  `${gbp(K.control_final_equity)}，与本臂 ${gbp(K.final_equity)} 相差 ${pct((K.final_equity/K.control_final_equity-1),2)}；` +
+  `与既有日频 A0 的 20.97%（2018 起窗口）之差几乎全部来自窗口不同，不是频率不同。` +
+  `成交时序为 <strong>same_close</strong>：收盘前约 1 分钟下单、按决策 bar 收盘价成交，` +
+  `在点差与滑点之上另计 close_gap 5bp（actual 档，据 1,061 个本地 1m 样本实测校准）；` +
+  `该口径下全程不在开盘价成交。次开成交口径的对照终值为 ${gbp(K.next_open_final_equity)}。` +
+  `${K.orders_rejected} / ${K.orders_total} 单（${pct(K.orders_rejected/K.orders_total,0)}）因现金不足未成交，` +
+  `故本曲线是一个只执行了部分目标交易的账本。` +
+  `日内臂按原始日内价成交与估值，<strong>不含分红</strong>；本窗口等权累计分红效应 +1.57%，是日频对照的顺风。` +
+  `标的池为 2026 年仍存续的 18 只美股科技股，<strong>带存活者偏差</strong>；` +
+  `同一结构套在 QQQ 单资产上的研究口径为年化 15.5% / 回撤 11.3%。单一路径、无置信区间。`;
+
+document.getElementById('chart-sub').textContent =
+  `${D.series.dates[0]} 至 ${D.series.dates[D.series.dates.length-1]}，共 ${K.trading_days} 个交易日；` +
+  `其中 ${K.days_in_market} 日持有仓位（${pct(K.days_in_market/K.trading_days,0)}），平均持仓占比 ${pct(K.mean_exposure,0)}。`;
+document.getElementById('chart-src').textContent =
+  `数据来源：${D.evidence[0].path}（净值/现金逐日）、${D.evidence[1].path}（逐笔成交）。` +
+  `持仓占比 =（净值 − 现金）÷ 净值。回撤 = 净值 ÷ 历史最高净值 − 1。`;
+
+const W = D.worst_drawdown;
+document.getElementById('dd-table').innerHTML =
+  `<tr><th>项</th><th>值</th></tr>` +
+  `<tr><td>峰值日</td><td>${W.peak_date}（${gbp(W.peak_equity)}）</td></tr>` +
+  `<tr><td>谷底日</td><td>${W.trough_date}（${gbp(W.trough_equity)}）</td></tr>` +
+  `<tr><td>深度</td><td class="bad">−${W.depth_pct}%</td></tr>`;
+
+document.getElementById('ev-table').innerHTML =
+  `<tr><th>编号</th><th>类别</th><th>文件</th><th>在报告中支持什么</th><th>核实</th></tr>` +
+  D.evidence.map(e => `<tr><td><code>${e.id}</code></td><td>${e.kind}</td><td><code>${e.path}</code></td>` +
+    `<td>${e.supports}</td><td>${e.found
+      ? `<span class="ok">存在</span> ${(e.bytes/1024).toFixed(0)}KB · md5 ${e.md5_8}`
+      : '<span class="bad">磁盘上未找到</span>'}</td></tr>`).join('');
+
+document.getElementById('ref-table').innerHTML =
+  `<tr><th>决策 / 结论</th><th>依据类型</th><th>精确来源</th></tr>` +
+  [['净值、持仓占比、回撤三条序列','B 本地数据','R-1 逐日 equity 记录，列 equity_gbp / cash_gbp'],
+   ['成交点标注','B 本地数据','R-2 逐笔 trades，按日期与方向聚合'],
+   ['KPI 与锚定断言（CAGR / 回撤 / 夏普 / 终值）','B 本地数据','R-5 a0_intraday_comparison_20260822.csv 的 interval=1h / arm=1h / fee_tier=actual 行'],
+   ['A0 信号定义（动量 + 波动闸 + 趋势闸）','A 本地代码','C-1 compute_targets；参数见 C-2'],
+   ['成交时序：15:30 bar 决策、次场次开盘成交','A 本地代码','C-2 时序适配层；成交价规则 backtest/engine/matching.py:match_market'],
+   ['费率：0.15% 双边换汇费等','A 本地代码','backtest/t212/costs.py（出处为 T212 帮助中心，引注在该文件 docstring）'],
+   ['存活者偏差与 QQQ 对照 15.5% / 11.3%','A 本地 md','V-1 研究裁定 §1 结论 4'],
+   ['持仓时间、换手率、订单拒绝率','A 本地 md','V-1 本轮裁定 §3 与 §5'],
+   ['本图不含统计显著性检验','—','单一路径回测，未做 bootstrap 置信区间'],
+   ['窗口非样本外','A 本地 md','V-1 本轮裁定 §9 条 1：2023-11~2026-08 完全落在既有 A0 验证段内'],
+   ['日内臂不含分红，日频对照含分红','B 本地数据','V-1 本轮裁定 §7：本窗口等权累计分红效应 +1.574%'],
+   ['39.0% 订单因现金不足未成交','B 本地数据','V-1 本轮裁定 §5，原因全部 insufficient_free_for_stocks_buy'],
+  ].map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('');
+
+const state = {markers:true, bands:true, log:false};
+
+function traces(){
+  const s = D.series;
+  const buys = D.markers.filter(m => m.side === 'buy');
+  const sells = D.markers.filter(m => m.side === 'sell');
+  const mk = (arr, name, color, sym) => ({
+    x: arr.map(m=>m.date), y: arr.map(m=>m.y), type:'scatter', mode:'markers', name,
+    marker:{symbol:sym, size:6, color, opacity:.72,
+            line:{width:.6, color:css('--surface')}},
+    visible: state.markers ? true : 'legendonly', xaxis:'x', yaxis:'y',
+    customdata: arr.map(m=>[m.n, m.value_gbp, m.symbols]),
+    hovertemplate:'%{x}<br>'+name+' %{customdata[0]} 笔 · £%{customdata[1]:,.0f}<br>%{customdata[2]}<extra></extra>'
+  });
+  return [
+    {x:s.dates, y:s.equity, type:'scatter', mode:'lines', name:'账户净值',
+     line:{color:css('--series-equity'), width:2}, xaxis:'x', yaxis:'y',
+     hovertemplate:'£%{y:,.0f}<extra>净值</extra>'},
+    mk(buys,'买入',css('--marker-buy'),'triangle-up'),
+    mk(sells,'卖出',css('--marker-sell'),'triangle-down'),
+    {x:s.dates, y:s.exposure_pct, type:'scatter', mode:'lines', name:'持仓占比',
+     line:{color:css('--series-exposure'), width:1.4}, fill:'tozeroy',
+     fillcolor:css('--band'), xaxis:'x', yaxis:'y2',
+     hovertemplate:'%{y:.0f}%<extra>持仓占比</extra>'},
+    {x:s.dates, y:s.drawdown_pct, type:'scatter', mode:'lines', name:'回撤',
+     line:{color:css('--series-dd'), width:1.6}, fill:'tozeroy',
+     fillcolor:css('--dd-fill'),
+     xaxis:'x', yaxis:'y3', hovertemplate:'%{y:.1f}%<extra>回撤</extra>'}
+  ];
+}
+
+function layout(){
+  const bands = state.bands ? D.holding_spans.map(sp => ({
+    type:'rect', xref:'x', yref:'y domain', x0:sp.x0, x1:sp.x1, y0:0, y1:1,
+    fillcolor:css('--band'), line:{width:0}, layer:'below'
+  })) : [];
+  return {
+    paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+    font:{color:css('--text-secondary'), size:11.5,
+      family:'-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif'},
+    margin:{l:64, r:22, t:16, b:34},
+    hovermode:'x unified',
+    hoverlabel:{bgcolor:css('--surface'), bordercolor:css('--border'),
+      font:{color:css('--text-primary'), size:11.5}},
+    showlegend:true,
+    legend:{orientation:'h', y:1.055, x:0, font:{size:11}},
+    shapes: bands.concat([{type:'line', xref:'paper', yref:'y3', x0:0, x1:1, y0:0, y1:0,
+      line:{color:css('--border'), width:1}}]),
+    xaxis:{domain:[0,1], anchor:'y3', gridcolor:css('--grid'), zeroline:false,
+      showspikes:true, spikemode:'across', spikethickness:1,
+      spikecolor:css('--text-muted'), spikedash:'dot',
+      rangeslider:{visible:true, thickness:.055, bgcolor:css('--bg'),
+        bordercolor:css('--border'), borderwidth:1}},
+    yaxis:{domain:[.53,1], title:{text:'账户净值 (£)', standoff:8},
+      gridcolor:css('--grid'), zeroline:false, tickformat:',.0f',
+      type: state.log ? 'log' : 'linear'},
+    yaxis2:{domain:[.375,.495], title:{text:'持仓占比', standoff:8},
+      gridcolor:css('--grid'), zeroline:false, range:[0,105], ticksuffix:'%',
+      tickvals:[0,50,100]},
+    yaxis3:{domain:[.135,.325], title:{text:'回撤', standoff:8},
+      gridcolor:css('--grid'), zeroline:false, ticksuffix:'%'},
+    annotations:[{
+      xref:'x', yref:'y3', x:W.trough_date, y:-W.depth_pct,
+      text:`最深 −${W.depth_pct}%<br>${W.peak_date} → ${W.trough_date}`,
+      showarrow:true, arrowhead:0, arrowcolor:css('--text-muted'), ax:44, ay:-26,
+      font:{size:10.5, color:css('--text-secondary')},
+      bgcolor:css('--surface'), bordercolor:css('--border'), borderwidth:1, borderpad:4
+    }]
+  };
+}
+
+function draw(){
+  Plotly.react('chart', traces(), layout(),
+    {displayModeBar:true, displaylogo:false, responsive:true,
+     modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d']});
+}
+draw();
+
+const toggle = (id, key) => {
+  const b = document.getElementById(id);
+  b.addEventListener('click', () => {
+    state[key] = !state[key];
+    b.setAttribute('aria-pressed', String(state[key]));
+    draw();
+  });
+};
+toggle('tg-markers','markers'); toggle('tg-bands','bands'); toggle('tg-log','log');
+
+const eb = document.getElementById('exp-btn'), ebody = document.getElementById('exp-body');
+eb.addEventListener('click', () => {
+  const open = eb.getAttribute('aria-expanded') === 'true';
+  eb.setAttribute('aria-expanded', String(!open));
+  ebody.classList.toggle('open', !open);
+});
+
+document.getElementById('theme').addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : (cur === 'light' ? 'dark'
+    : (matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark'));
+  document.documentElement.setAttribute('data-theme', next);
+  draw();
+});
+</script>
+</body>
+</html>

@@ -1,42 +1,34 @@
-"""T212 strategy registry: versioned modules behind a dispatch table.
+"""Trading 212 strategy package: the single copy of this venue's signals.
 
-Adding a strategy version = adding a module file + one registry entry
-(quant-code-standards sections 4.5.1 and 4.6); nothing else changes. The
-backtest reaches the same modules through
-backtest/engine/strategy_loader.py; this registry is the execution-side
-entry so the two layers stay import-independent while sharing the single
-signal copy (ARCHITECTURE.md section 2.0).
+Responsibility: declare the strategy layer as a regular Python package, so that
+"from trading212.strategy import a0_v0_0_1" resolves. The package holds the one
+and only implementation of each signal; the backtest and any future execution
+layer import the same file, so a "backtest version" and a "live version" cannot
+diverge. Modules here are pure functions: they take a market view, a portfolio
+and a parameter mapping, and return target share counts.
 
-Public functions:
-    get_strategy(name, version)   The module's compute_targets callable
+Naming rule per ARCHITECTURE.md section 2.0.1: a module is named
+<name>_v<major>_<minor>_<patch>.py, and its STRATEGY_NAME and STRATEGY_VERSION
+must agree with the file name or backtest/engine/strategy_loader.py refuses to
+load it. Note that strategy_loader.py loads by file path through
+importlib.util.spec_from_file_location and therefore bypasses this package;
+only direct imports such as the one in a0_intraday_v0_0_1.py use it.
+
+Out of scope: parameter values, which belong to trading212/config/strategies/
+and are read once by the entry layer and passed in through params; fill
+simulation and cost modeling, which belong to backtest/t212/; order submission,
+which belongs to trading212/execution/.
+
+Public functions: None. This module defines no symbol and imports nothing.
+Importing a strategy module here would give every consumer numpy and pandas,
+and would also make module import order matter for a layer whose whole contract
+is purity.
+
+Constants: None.
+
+Inputs: None.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
-
-from __future__ import annotations
-
-__all__ = ["get_strategy", "STRATEGIES"]
-
-from trading212.strategy import a0_v0_0_1
-
-# (name, version) -> module. Every module must declare STRATEGY_NAME /
-# STRATEGY_VERSION and a pure compute_targets(view, portfolio, params).
-STRATEGIES = {
-    ("a0", "0.0.1"): a0_v0_0_1,
-}
-
-
-def get_strategy(name: str, version: str):
-    """Return compute_targets for one registered strategy version.
-
-    Raises:
-        KeyError: Unknown (name, version).
-        ValueError: The module's declared identity disagrees with the key
-            (the registry would then attribute results to the wrong logic).
-    """
-    key = (name, version)
-    if key not in STRATEGIES:
-        raise KeyError(f"unregistered strategy {key}; known: {sorted(STRATEGIES)}")
-    module = STRATEGIES[key]
-    if (module.STRATEGY_NAME, module.STRATEGY_VERSION) != key:
-        raise ValueError(f"registry key {key} maps to a module declaring "
-                         f"({module.STRATEGY_NAME!r}, {module.STRATEGY_VERSION!r})")
-    return module.compute_targets

@@ -1,5 +1,9 @@
 """Column layouts for each Binance bulk-archive dataset.
 
+Responsibility: hold the authoritative layout table SPECS keyed by
+(market, dataset), expose lookup by that key, and resolve which timestamp unit
+applies to a file covering a given market and date.
+
 Binance publishes no schema documentation for most of these datasets, so every
 layout below was established by downloading a file and inspecting it. Two traps
 are encoded here because they will silently corrupt an ingest otherwise:
@@ -10,12 +14,40 @@ are encoded here because they will silently corrupt an ingest otherwise:
        are milliseconds. Futures stayed milliseconds throughout. Parsing a 2025
        spot file as milliseconds puts the data 55,000 years in the future.
 
-Public functions:
-    spec_for(market, dataset)    Return the DatasetSpec for one dataset
-    timestamp_unit(market, day)  Resolve the timestamp unit for a given date
+Out of scope: downloading, checksum verification and parsing, which belong to
+crypto_trading/ingest/binance_archive.py; persistence and the recorded meaning
+of the landed columns, which belong to common/store.py and docs/data/binance/.
 
 Public classes:
-    DatasetSpec                  Column names, dtypes and header presence
+    DatasetSpec    Layout of one dataset: column names in file order, whether a
+                   header row is present, the primary timestamp column, the
+                   columns dropped at ingest, and whether the path carries a bar
+                   interval segment.
+
+Public functions:
+    spec_for(market, dataset)    Return the DatasetSpec for one dataset; raises
+                                 KeyError for a combination not ingested here.
+    timestamp_unit(market, day)  Return "us" or "ms" for a file covering that
+                                 date.
+
+Constants:
+    MICROSECOND_SWITCH  str   Date "2025-01-01", from which spot bulk files
+                              carry microsecond timestamps. Source: in a 2026
+                              spot trades file only 0.094% of timestamps are
+                              divisible by 1000, and there are more distinct
+                              microsecond values than millisecond values, so the
+                              sub-millisecond digits carry real information
+                              rather than padding.
+    SPECS               dict  Layout table, 13 entries: 3 spot datasets and 10
+                              USD-M futures datasets. Source: each entry was
+                              established by downloading a file and inspecting
+                              it, as noted above.
+
+Inputs / Outputs: None. This module is a pure lookup table; it reads no path or
+endpoint and writes none.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

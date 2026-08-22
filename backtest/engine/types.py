@@ -1,20 +1,53 @@
 """Core data structures for the event-driven backtest engine.
 
-Responsibility: enums and immutable-ish records shared by every engine module.
-Not responsible for: any behavior (matching, accounting, costs live elsewhere).
+Responsibility: the enums and records shared by every engine module and every
+venue adapter, namely the order type, order status and time-validity enums, one
+OHLCV bar, a strategy-side order request, broker-side order state, one
+execution with its itemized costs, and the complete run configuration. Order
+semantics mirror the Trading 212 Public API v0 contract (a sell is a negative
+quantity, validity is DAY or GOOD_TILL_CANCEL, orders are quantity-only),
+verified 2026-08-20 from data/reference/t212_openapi_v0_20260820.yaml. Design
+source: docs/backtest/framework/01_architecture.md section 2.
 
-Design source: fixplans/framework/01_architecture.md section 2. Order semantics
-mirror the Trading 212 Public API v0 contract, verified 2026-08-20 from
-data/reference/t212_openapi_v0_20260820.yaml (sell = negative quantity,
-time validity DAY | GOOD_TILL_CANCEL, quantity-only orders).
+Out of scope: all behavior. Matching belongs to matching.py, cash and position
+accounting to ledger.py, sequencing to engine.py, and venue fee and tax rules
+to backtest/t212/costs.py.
 
-Public data structures:
-    OrderType, OrderStatus, TimeInForce   Enums mirroring the venue contract
-    Bar                                   One OHLCV bar, prices in source units
-    OrderSpec                             Strategy-side order request
-    Order                                 Broker-side order state
-    Fill                                  One execution with itemized GBP costs
-    EngineConfig                          Full run configuration
+Public classes:
+    OrderType      Order types offered by the venue: MARKET, LIMIT, STOP,
+                   STOP_LIMIT.
+    OrderStatus    Simulator lifecycle states; the venue's eleven states are
+                   reduced to five because the pre-activation ones are not
+                   distinguishable at bar granularity.
+    TimeInForce    DAY, which expires at exchange-local midnight, or
+                   GOOD_TILL_CANCEL.
+    Bar            One OHLCV bar; prices are floats in the source quote
+                   currency and ts is the bar open time.
+    OrderSpec      Strategy-side order request; quantity is signed, in shares.
+    Order          Broker-side order state, mutated only by the broker
+                   simulator; exposes remaining_qty and is_open.
+    Fill           One execution, with the signed GBP cash movement and the
+                   itemized cost breakdown keyed by the venue's tax names.
+    EngineConfig   Complete configuration of one run, serialized in full into
+                   the result metadata.
+
+Constants:
+    INTERVAL_SECONDS   dict[str, int]   Seconds per bar for every stored
+                       interval: 1m, 2m, 5m, 1h, 1d. Source:
+                       docs/data/t212/DATA_SPEC.md section 5. Order eligibility
+                       is measured in time rather than in merged-timeline
+                       steps, because mixed-exchange intraday grids interleave
+                       (US 1h bars on the half hour, LSE on the hour) and one
+                       step is therefore not one interval.
+
+Inputs: None.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  EngineConfig.fill_timing (next_open | same_close) and
+                Fill.at_close added for the last-minute-before-close
+                execution convention (user ruling 2026-08-22).
 """
 
 from __future__ import annotations
@@ -53,7 +86,7 @@ class OrderType(Enum):
 class OrderStatus(Enum):
     """Simulator lifecycle states.
 
-    The real venue exposes 11 states (see fixplans/framework/03_order_lifecycle.md
+    The real venue exposes 11 states (see docs/backtest/framework/03_order_lifecycle.md
     section 1.3). The pre-activation states LOCAL/UNCONFIRMED/CONFIRMED are not
     distinguishable at bar granularity and are represented by the latency model
     instead; REPLACING/REPLACED have no API endpoint and are not simulated.
@@ -83,7 +116,7 @@ class Bar:
     Prices are floats in the SOURCE quote currency (USD, GBP or GBp pence);
     conversion to GBP happens only in the ledger and cost layer. ts is the bar
     OPEN time in UTC for intraday data and the exchange-local midnight for
-    daily data (verified 2026-08-20, fixplans/framework/02_data_layer.md
+    daily data (verified 2026-08-20, docs/backtest/framework/02_data_layer.md
     section 3).
     """
     ts: pd.Timestamp
@@ -165,6 +198,10 @@ class Fill:
     fx_mid: Decimal | None          # GBPUSD mid used, None for GBP/GBp fills
     cash_delta_gbp: Decimal         # signed GBP cash movement, costs included
     costs_gbp: dict[str, Decimal] = field(default_factory=dict)
+    # True when executed at the decision bar's CLOSE under fill_timing ==
+    # "same_close" (the last-minute-before-close convention); such a fill
+    # legitimately shares its step with the submission.
+    at_close: bool = False
 
 
 # ============================================================================
@@ -177,7 +214,7 @@ class EngineConfig:
 
     Everything here is serialized into the result metadata; a result file
     without its full configuration is unusable by decree
-    (fixplans/framework/05_metrics_reporting.md section 3.3).
+    (docs/backtest/framework/05_metrics_reporting.md section 3.3).
     """
     symbols: list[str]
     interval: str                   # "1d", "1h", "5m", "2m", "1m"
@@ -188,6 +225,19 @@ class EngineConfig:
     fee_tier: str = "worst"         # "worst" | "actual" (fixplans 04 section 6)
     seed: int = 20260820
     lookahead_probe: bool = False   # diagnostic only; results are stamped PROBE
+    # Execution timing of MARKET orders generated from a decision at bar t:
+    #   "next_open"  fill at the next bar's open (conservative default,
+    #                backtest-discipline hard list items 1-2);
+    #   "same_close" fill at bar t's close -- the order is placed in the last
+    #                minute of the session and the signal is computed on the
+    #                close (user ruling 2026-08-22, research/decisions/
+    #                20260822_close_execution_timing.md). A deviation from
+    #                the hard list that must be declared in the strategy's
+    #                prereg; it pays the calibrated close-proximity gap
+    #                (CostConfig.close_gap_bps) and only succeeds when the
+    #                latency draw fits in CostConfig.close_window_sec,
+    #                otherwise the order falls back to the next open.
+    fill_timing: str = "next_open"
     # Hard guard against zombie holdings: a HELD symbol whose feed produces
     # no bar for more than this many calendar days (while the timeline keeps
     # advancing) aborts the run instead of marking the position at its last

@@ -1,6 +1,96 @@
 """Broker simulator tests: fill timing, admission checks, order lifecycle and
-fault toggles. Discrimination design: fixplans/validation/02_test_plan.md
-U3-U6, U12, U14, U15, plus the fault catalog's F5-F13 behaviors."""
+fault toggles.
+
+Responsibility: pin the behavior of backtest/t212/broker_sim.py that decides
+whether a simulated fill could have happened in reality. Four groups are
+covered. Fill timing: a market order fills at the next bar's open, never on
+the bar it was submitted on, and queues across missing bars until the market
+reopens. Admission: quantity precision, minimum order value, unknown symbol,
+overselling and the buying-power buffer each reject with their own reason
+string. Lifecycle: sell reservations, DAY expiry against GTC survival,
+volume-capped partial fills carried across bars, and the rejected-but-live
+duplicate. Fault switches: the cancel race, the outage window and the
+reduce-only window. Discrimination design is recorded in
+docs/backtest/validation/02_test_plan.md items U3 to U6, U12, U14 and U15, plus the
+fault catalog behaviors F5 to F13; the discriminating numbers are stated in
+the section comments, for instance the next-bar-open case where the
+submission bar closes at 110 and the next bar opens at 120, so that a
+same-bar-close implementation would produce 110 and a same-bar-open one 100.
+
+Out of scope: fee and tax arithmetic, which is covered by
+tests/backtest/test_costs.py; the engine loop around the broker, covered by
+tests/backtest/test_engine.py; the 2026-08-20 review findings, covered by
+tests/backtest/test_review_regressions.py; the 2026-08-21 conservatism
+findings, covered by tests/backtest/test_conservatism_and_metrics.py.
+
+Public functions:
+    test_market_order_fills_next_bar_open(zero_spread)
+        A market order fills at the following bar's open, at that bar's step.
+    test_no_fill_on_submission_bar(zero_spread)
+        With no further bar delivered the order stays NEW and unfilled.
+    test_market_order_queues_until_market_reopens(zero_spread)
+        Bars absent from the feed do not fill the order; the next session's
+        open does.
+    test_quantity_precision_reject()
+        Under the F8 switch a quantity finer than four decimal places is
+        rejected while the four-decimal one is admitted.
+    test_minimum_order_value_reject(zero_spread)
+        An order below the minimum notional is rejected.
+    test_unknown_symbol_reject()
+        A symbol the broker has no market data for is rejected.
+    test_oversell_reject(zero_spread)
+        Selling equity that is not held is rejected.
+    test_buying_power_buffer(zero_spread)
+        Under the F9 switch the same buy fails against the buffered free cash
+        and passes without the buffer.
+    test_sell_reservation(zero_spread)
+        Under the F10 switch shares reserved by a pending sell cannot be sold
+        a second time.
+    test_day_expires_gtc_survives(zero_spread)
+        Under the F15 switch the same order expires as DAY and survives as
+        GTC.
+    test_partial_fill_carries_across_bars(zero_spread)
+        Under the F13 switch a 25-share order fills 10, 10 then 5 across three
+        bars and ends FILLED.
+    test_reject_with_live_duplicate(zero_spread)
+        Under the F5 and F6 switches the client sees a reject while a live
+        duplicate fills on the next bar.
+    test_cancel_race_toggle(zero_spread)
+        Under the F7 switch the cancel loses at probability 1 and wins at
+        probability 0.
+    test_outage_window_blocks_submissions(zero_spread)
+        Under the F3 switch submissions inside the window are rejected and
+        those outside it are admitted.
+    test_reduce_only_window(zero_spread)
+        Under the F4 switch buys inside the window are rejected and sells are
+        admitted.
+    test_limit_buy_prices(zero_spread)
+        A gapped open fills at the better open, a touch fills exactly at the
+        limit, and an unreached limit does not fill.
+
+Public classes: None.
+
+Constants:
+    D
+        Alias of decimal.Decimal. Quantities, prices and cash are Decimal
+        throughout the engine, so the tests never introduce a float where the
+        production path uses a Decimal.
+    TZ_NY
+        "America/New_York". Time zone the synthetic daily bars are stamped in;
+        it matches what backtest/t212/instruments.exchange_tz returns for the
+        unmapped test symbols.
+
+Inputs: None. Every bar is synthesized in process; no path under data/ is
+read.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec. bar_frame and
+                cost_cfg_clean are recorded as imported but unused in this
+                module at the time of writing; the import line is left as it
+                stands because changing code is outside the scope of this
+                change.
+"""
 
 from __future__ import annotations
 

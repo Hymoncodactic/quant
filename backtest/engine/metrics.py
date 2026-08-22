@@ -1,28 +1,52 @@
 """Performance metrics under the project's capital and rate conventions.
 
 Responsibility: turn one run's equity and trades frames into the mandatory
-statistics of fixplans/framework/05_metrics_reporting.md.
-Not responsible for: producing the frames (engine) or writing them (results).
+statistics of docs/backtest/framework/05_metrics_reporting.md. Five conventions are
+enforced here rather than left to the caller. Capital is the PEAK concurrent
+occupancy, cost basis plus reserved cash, never a planned allocation.
+Annualized return is total return divided by online days, times the
+annualization factor, divided by capital: simple scaling with no compounding.
+The annualization factor is an argument, because this module must stay
+venue-neutral and confusing 252 with 365 is a named failure mode. The signed
+median and the absolute-deviation median are reported as two separate numbers
+(CLAUDE.md section 2.3). Every statistic is an in-sample interval statistic and
+must be labeled as such by the caller's report rather than silently
+universalized. The authoritative headline return and drawdown read the
+liquidation-valued equity column when the venue supplies one; the mid-mark
+versions remain diagnostics. Floats are acceptable here because metrics are
+statistics, not ledger money (quant-code-standards section 5.1).
 
-Conventions enforced here:
-    - capital = PEAK concurrent occupancy (cost basis + reserved cash), never
-      a planned allocation;
-    - annualized return = total return / online days * factor / capital,
-      simple scaling, no compounding;
-    - the annualization factor is an argument -- this module must stay
-      venue-neutral (252 vs 365 confusion is a named failure mode);
-    - signed median and absolute-deviation median are separate numbers
-      (CLAUDE.md section 2.3);
-    - every statistic is an in-sample interval statistic and is labeled so by
-      the caller's report, not silently universalized.
-
-Floats are acceptable here: metrics are statistics, not ledger money
-(quant-code-standards section 5.1).
+Out of scope: producing the frames, which belongs to engine.py and ledger.py;
+writing them, which belongs to results.py; charting them, which belongs to
+report.py.
 
 Public functions:
-    compute_metrics(equity, trades, initial_cash, annualization_days)
-    realized_pnl_per_sell(trades)      Average-cost realized PnL replay
-    holding_episodes(trades, final_ts) Per-symbol open-position spans
+    compute_metrics(equity, trades, initial_cash_gbp, annualization_days)
+                                       All mandatory statistics of one run, as
+                                       a JSON-ready dict.
+    realized_pnl_per_sell(trades)      Average-cost replay of the fills; one
+                                       realized PnL per sell, matching the
+                                       ledger's accounting exactly so the two
+                                       cannot diverge.
+    holding_episodes(trades, final_ts) Per-symbol spans during which a position
+                                       was open; an episode still open at the
+                                       end of the window is closed at final_ts
+                                       and flagged open_at_end rather than
+                                       dropped.
+    naive_utc(ts)                      Strip the time zone, converting to UTC
+                                       first, so daily-mode naive keys and
+                                       tz-aware fill timestamps subtract on one
+                                       axis.
+
+Constants:
+    _SECONDS_PER_DAY   float   86400.0, the divisor turning a timedelta into
+                       calendar days for holding and drawdown durations.
+
+Inputs: None.
+Outputs: None. Statistics are returned in memory as a dict.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations
@@ -168,7 +192,7 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame,
     pnls = realized_pnl_per_sell(trades)
     out.update(_trade_stats(pnls))
     if not trades.empty:
-        # Turnover convention (ruled in fixplans/framework/
+        # Turnover convention (ruled in docs/backtest/framework/
         # 05_metrics_reporting.md section 2): BOTH legs, cost-inclusive --
         # the absolute GBP cash moved per fill. A buy-and-sell round trip of
         # one position therefore counts roughly twice its value.
@@ -201,7 +225,7 @@ def _daily_equity(equity: pd.DataFrame) -> pd.DataFrame:
 def _ratio_stats(rets: pd.Series, annualization_days: int) -> dict:
     """Sharpe, Sortino, annualized volatility from the daily return-on-capital
     series over online days. Risk-free rate fixed at 0 (metadata rule:
-    fixplans/framework/05_metrics_reporting.md section 2)."""
+    docs/backtest/framework/05_metrics_reporting.md section 2)."""
     out: dict = {"sharpe_rf0": None, "sortino_rf0": None,
                  "annualized_volatility_on_capital": None}
     if len(rets) < 2:
@@ -226,7 +250,7 @@ def _liquidation_stats(equity: pd.DataFrame, initial_cash_gbp: float,
 
     equity_liq_gbp marks positions at exit value (bid side, FX fee, sell
     taxes). The AUTHORITATIVE headline numbers are these; the mid-mark
-    versions stay as diagnostics (fixplans/framework/05_metrics_reporting.md).
+    versions stay as diagnostics (docs/backtest/framework/05_metrics_reporting.md).
     Absent column (no venue liquidation valuer) yields no keys.
     """
     if "equity_liq_gbp" not in equity.columns:

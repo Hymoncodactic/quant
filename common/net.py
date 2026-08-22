@@ -1,23 +1,51 @@
-"""Network primitives: exponential back-off and client-side rate limiting
-(quant-error-handling section 2).
+"""Retry timing and client-side rate limiting for outbound requests.
 
-Design notes:
-    - Only idempotent operations may be retried automatically. Order submission
-      is not idempotent, so this module deliberately offers no order retry: that
-      belongs with the caller, which must supply a client order id.
-    - Rate limiting is enforced proactively with a token bucket rather than
-      reactively on HTTP 429. Being throttled by the venue is a fault, not a
-      control mechanism.
-    - Concrete rate ceilings are venue facts, so each venue module supplies its
-      own from official documentation. Nothing is assumed here.
+Responsibility: supply the two network primitives every downloader and venue
+client shares (quant-error-handling section 2). backoff_seconds() returns the
+delay before a retry: a server-supplied retry hint always wins, because the venue
+knows when it will accept traffic again, and otherwise the delay grows
+exponentially and is multiplied by jitter, so that several processes throttled at
+the same instant do not retry in lockstep and re-create the burst that throttled
+them. TokenBucket enforces a rate ceiling proactively rather than reacting to
+HTTP 429, because being throttled by the venue is a fault and not a control
+mechanism. The three exception classes separate retryable from non-retryable
+failures.
+
+Out of scope: retrying an order. Order submission is not idempotent, so this
+module deliberately offers no order retry; that decision belongs to the caller,
+which must supply a client order id. Also out of scope: the concrete rate
+ceilings, which are venue facts and are supplied by each venue module from
+official documentation, and the HTTP session or client object, which each caller
+owns.
 
 Public functions:
-    backoff_seconds(attempt, retry_after=None)  Seconds to wait before a retry
+    backoff_seconds(attempt, retry_after=None)  Seconds to wait before retry number attempt.
 
 Public classes:
-    TokenBucket(rate_per_sec, burst=None)       Thread-safe token-bucket limiter
-    TransientError / RateLimitError             Retryable failures
-    PermanentError                              Non-retryable failures
+    TokenBucket(rate_per_sec, burst=None)  Thread-safe token-bucket limiter.
+    TransientError                         Retryable: network fault, throttling or a 5xx.
+    RateLimitError                         Throttled; carries the server's retry hint.
+    PermanentError                         Not retryable: auth, rejection, misconfiguration.
+
+Constants:
+    RETRY_MAX_ATTEMPTS  int    Attempts before giving up, 5.
+                               Source unknown, needs verification.
+    RETRY_BASE_SEC      float  First delay in seconds before jitter, 0.5.
+                               Source unknown, needs verification.
+    RETRY_MAX_SEC       float  Ceiling in seconds on any single delay, 30.0. It also
+                               caps a server-supplied hint.
+                               Source unknown, needs verification.
+    SAFETY_RATIO        float  Fraction of a venue's published ceiling actually used,
+                               0.7. Applied inside TokenBucket.__init__.
+                               Source unknown, needs verification.
+
+Inputs:
+    None. No socket is opened here; callers issue their own requests.
+Outputs:
+    None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

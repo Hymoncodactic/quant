@@ -13,7 +13,7 @@ from trading212.execution.daily_cycle import (_diff_to_intents,
                                               _positions_ref_notional)
 from trading212.execution.market_data import build_view
 from trading212.execution.shadow_ledger import LedgerPortfolioView
-from trading212.strategy import get_strategy
+from trading212.execution.strategy_loader import load_strategy
 
 D = Decimal
 DAY = pd.Timestamp("2026-08-20")
@@ -103,7 +103,7 @@ def test_a0_runs_on_live_view_and_buys_uptrends():
     portfolio = LedgerPortfolioView(cash_gbp=D("1000"),
                                     available_cash_gbp=D("1000"),
                                     positions={}, pending_signed_qty={})
-    compute = get_strategy("a0", "0.0.1")
+    compute = load_strategy("a0", "0.0.1")
     targets = compute(view, portfolio, _a0_params(["NVDA", "AAPL"]))
     # Rising series, trend gate open, vol gate held open by the min-history
     # floor: both symbols get positive equal-slot targets.
@@ -125,7 +125,7 @@ def test_a0_goes_flat_when_the_trend_gate_trips():
                                     available_cash_gbp=D("1000"),
                                     positions={"NVDA": D("2")},
                                     pending_signed_qty={})
-    compute = get_strategy("a0", "0.0.1")
+    compute = load_strategy("a0", "0.0.1")
     targets = compute(view, portfolio, _a0_params(["NVDA", "AAPL"]))
     # Gate closed: every active symbol is forced to zero, held or not.
     assert targets["NVDA"] == D("0")

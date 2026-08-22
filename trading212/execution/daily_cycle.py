@@ -48,7 +48,7 @@ from trading212.client import T212Client
 from trading212.execution import instruments, market_data, order_monitor, \
     order_router, reconciler, risk_gate
 from trading212.execution.shadow_ledger import LedgerFrozenError, ShadowLedger
-from trading212.strategy import get_strategy
+from trading212.execution.strategy_loader import load_strategy
 
 log = get_logger("t212.execution")
 
@@ -77,8 +77,8 @@ class _Cycle:
         self.calendar_cache = self.state_dir / "exchange_calendar.json"
         self.cycle_state_path = self.state_dir / f"{self.strategy_id}_cycle.json"
         self.params = self._load_params()
-        self.compute_targets = get_strategy(self.strategy_name,
-                                            self.strategy_version)
+        self.compute_targets = load_strategy(self.strategy_name,
+                                             self.strategy_version)
         self.client = T212Client(cfg["_env"], cfg=cfg,
                                  secret_name=(cfg.get("endpoints") or {})
                                  .get("secret_name", "trading212_api_key"))

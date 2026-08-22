@@ -1,6 +1,82 @@
 """Regression tests for the 2026-08-20 adversarial-review findings.
 
-Each test names the finding it pins down; discrimination design notes inline.
+Responsibility: hold one test per finding of that review so that none of them
+can be reintroduced unnoticed. Finding c0 covers mixed-exchange hourly grids
+that interleave thirty minutes apart: an order decided on the half-hour grid
+must not fill on the whole-hour bar half an interval later, because
+step-based eligibility would fill it early while time-based eligibility waits
+a full interval. Finding c13 covers the one-way nature of a stop trigger,
+which must persist through a volume-capped partial fill so the remainder fills
+as a market leg on the next bar even though that bar never touches the stop
+again. Findings c11 and c12 cover stop-limit matching under open, high, low
+and close: a marketable leg fills at the stop touch rather than at a price
+that never traded, and a non-marketable sell leg needs evidence printed after
+the trigger rather than a high printed before it. Finding c2 covers the
+US and LSE overlap window, which must follow both daylight-saving regimes
+rather than a fixed window in UTC. Findings c5, c15 and c21 cover the engine
+flooring order deltas to the venue's four-decimal grid, so an off-grid target
+trades its truncated size instead of being rejected on every bar forever. Item
+U14 of docs/backtest/validation/02_test_plan.md is completed here by the stale
+ticker, authentication outage and submission pacing switches. Item U16 is
+completed at file level: two identical runs must write byte-identical result
+files, compared by SHA-256.
+
+Out of scope: the first-pass broker and engine behaviors, covered by
+tests/backtest/test_broker.py and tests/backtest/test_engine.py; the
+2026-08-21 conservatism review, covered by
+tests/backtest/test_conservatism_and_metrics.py. This module imports three
+private helpers from tests/backtest/test_engine.py to build the two runs it
+compares byte for byte, rather than keeping a second copy of that wiring.
+
+Public functions:
+    test_mixed_grid_interleaved_timeline_no_lookahead(zero_spread)
+        An order decided on the half-hour grid waits a full hour, skipping the
+        bar half an interval later.
+    test_stop_trigger_persists_after_partial_fill(zero_spread)
+        The remainder of a triggered stop fills at the next bar's open without
+        needing a second trigger.
+    test_stop_limit_marketable_fills_at_stop_touch()
+        A marketable buy stop-limit fills at the stop price, not at the limit
+        price that never traded.
+    test_stop_limit_sell_needs_post_trigger_evidence()
+        A high printed before the drop through the stop does not justify a
+        fill; a close above the limit does.
+    test_stop_limit_sell_marketable_fills_at_stop()
+        A sell stop-limit whose limit sits below the stop fills at the stop.
+    test_us_overlap_tracks_dst(ts, expected)
+        Parametrized over six winter and summer instants, the overlap test
+        follows both venues' local sessions.
+    test_engine_floors_targets_to_venue_precision(zero_spread)
+        A target of one third of a share trades 0.3333 and produces no
+        precision rejection.
+    test_stale_ticker_toggle(zero_spread)
+        Under the F11 switch a stale ticker is rejected; with the switch off
+        the same order is admitted.
+    test_auth_outage_toggle(zero_spread)
+        Under the F14 switch a submission inside the outage window is
+        rejected; with the switch off it is admitted.
+    test_submit_pacing_on_one_minute_bars(zero_spread)
+        Under the F12 switch the first thirty submissions in a one-minute bar
+        are admitted and the thirty-first is rejected.
+    test_write_run_byte_identical(zero_spread, tmp_path)
+        Two identical runs write trades, equity and meta files with identical
+        SHA-256 digests.
+
+Public classes: None.
+
+Constants:
+    D
+        Alias of decimal.Decimal, used so the tests carry the same numeric
+        type as the production path.
+
+Inputs: None under data/. Bars, exchange rates and configurations are built in
+process.
+Outputs: Three result files for each of the two engine runs that
+test_write_run_byte_identical compares, written under pytest's tmp_path and
+reclaimed by pytest; nothing lands in the project directory.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

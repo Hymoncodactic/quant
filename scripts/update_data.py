@@ -1,27 +1,75 @@
 """Manual daily update: bring every dataset from its last stored point to current.
 
-Run this as often as wanted. It is safe to interrupt and safe to repeat: each
-dataset is examined for what it already holds and only the gap is fetched, and
-partitions are written atomically so a stopped run leaves no half-written file.
+Responsibility: refresh both data trees in one manually invoked pass and print a
+report. The run may be repeated as often as wanted and interrupted at any point:
+each dataset is examined for what it already holds and only the gap is fetched,
+partitions are written atomically so a stopped run leaves no half-written file,
+and any temporary partition left by a previous interruption is cleared before
+work starts.
 
-Two update strategies are used, chosen by what the source guarantees.
+Two update strategies are used, chosen by what the source guarantees. Equity
+refetches the available window in full for each interval, because adjusted
+prices are retroactive: a split rewrites every historical bar, so appending
+would leave the series inconsistent across the split date. A cheap probe first
+compares the latest stored daily bar against the market and skips a ticker with
+nothing new, so a run on a quiet day costs one request per ticker. Crypto
+fetches only the missing days or months, because the archive is immutable once
+published, so what is already stored never changes and refetching it would waste
+a link measured at 1.6 MB/s.
 
-    Equity   The available window is refetched in full for each interval.
-             Adjusted prices are retroactive: a split rewrites every historical
-             bar, so appending would leave the series inconsistent across the
-             split date. A cheap probe first compares the latest stored daily
-             bar against the market, and a ticker with nothing new is skipped
-             entirely, so a run on a quiet day costs one request per ticker.
+Monthly coverage stops at the last closed month, so the tail is filled from daily
+files until the monthly file is published. When that monthly file arrives, the
+daily partitions it supersedes are deleted, because leaving both would
+double-count on read.
 
-    Crypto   Only the missing days or months are fetched. The archive is
-             immutable once published, so what is already stored never changes
-             and refetching it would waste a link measured at 1.6 MB/s.
+bookTicker is not updated. Publication stopped on 2024-03-30 for USD-M and on
+2024-10-14 for COIN-M, so its window is fixed and complete; its loader is
+scripts/20260819_ingest_crypto_bookticker.py.
 
-bookTicker is not updated. Binance stopped publishing it on 2024-03-30 for USD-M
-and 2024-10-14 for COIN-M, so its window is fixed and complete.
+Out of scope: the equity fetch and write logic itself, which belongs to
+trading212/ingest/yahoo_bars.py and is the single implementation shared with the
+initial ingest; archive URL construction and download, which belong to
+crypto_trading/ingest/binance_archive.py; partition path construction, which
+belongs to common/paths.py; atomic writing and temporary-partition cleanup,
+which belong to common/store.py; the committed rebuild manifest, which belongs
+to scripts/build_data_manifest.py.
 
 Public functions:
-    main()   Update everything and print a report
+    main()   Update crypto and equity, then print the report.
+
+Constants:
+    CRYPTO_JOBS             list Tuples of (market, freq, dataset, period,
+                                 symbols) for the crypto datasets that are still
+                                 published.
+    VENUE                   str  Data-source slug written under data/,
+                                 "binance".
+    LAYER                   str  Storage layer written, "curated".
+    PUBLISH_LAG_DAYS        int  Days held back from the daily tail, 2. The
+                                 archive publishes a day at T+1 and the
+                                 watermark is not uniform across datasets, so a
+                                 couple of days at the tail are expected to be
+                                 absent rather than missing.
+    PUBLISH_LAG_MONTH_DAYS  int  Day of month up to which the previous month is
+                                 still re-requested, 10. A month's file lands on
+                                 the first Monday after it closes, so the
+                                 previous month is worth re-requesting only
+                                 during the first stretch of the current month.
+
+Inputs:
+    Binance public archive, through binance_archive.fetch_to_frame().
+    Yahoo bars, through trading212.ingest.yahoo_bars.
+    Existing partitions under data/binance/curated/ and data/t212/curated/, for
+        the stored-stamp and latest-timestamp probes.
+Outputs:
+    data/binance/curated/<market>/<dataset>/<symbol>/<leaf>/year=YYYY/<stamp>.parquet
+    data/t212/curated/<group>/<symbol>/1d/<symbol>_<year>.parquet
+    data/t212/curated/<group>/<symbol>/<interval>/<symbol>_<start>_<end>_<interval>.parquet
+    Daily crypto partitions superseded by a newly written monthly partition are
+        deleted.
+    stdout carries the per-dataset progress lines and the summary.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

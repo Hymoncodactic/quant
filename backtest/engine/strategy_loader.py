@@ -1,22 +1,47 @@
 """Load versioned strategy modules from <venue>/strategy/ for backtesting.
 
-Responsibility: turn (venue, name, version) into the strategy's pure
-compute_targets function, verifying the module honors the single-copy
-contract. The SAME module will later be imported by <venue>/execution/, so
-the backtest and live trading can never run different signal code
-(ARCHITECTURE.md section 2.0).
-Not responsible for: the strategy content itself, or parameter loading
-(<venue>/config/strategies/, read at the entry layer).
-
-Contract (full text: fixplans/framework/06_strategy_plugin.md):
+Responsibility: turn a (venue, name, version) triple into the strategy's pure
+compute_targets function, after verifying that the module honors the
+single-copy contract. The SAME module will later be imported by
+<venue>/execution/, so the backtest and live trading can never run different
+signal code (ARCHITECTURE.md section 2.0). The module's own STRATEGY_NAME and
+STRATEGY_VERSION must match the request: a mismatch means the file name lies
+about its identity, and a backtest result would then be attributed to the wrong
+logic version, so the load is refused rather than made compatible. The full
+contract text is docs/backtest/framework/06_strategy_plugin.md:
     file        <venue_dir>/strategy/<name>_v<M>_<m>_<p>.py
     constants   STRATEGY_NAME = "<name>", STRATEGY_VERSION = "<M>.<m>.<p>"
     function    compute_targets(view, portfolio, params) -> dict[str, Decimal]
                 pure: no network, no state writes, no order placement.
 
+Out of scope: the strategy content itself, which lives in <venue>/strategy/,
+and parameter loading, which reads <venue>/config/strategies/ at the entry
+layer.
+
 Public functions:
-    strategy_path(venue, name, version, strategy_dir=None)   Module file path
-    load_strategy(venue, name, version, strategy_dir=None)   The callable
+    strategy_path(venue, name, version, strategy_dir)   File path of one
+                                                        versioned strategy
+                                                        module.
+    load_strategy(venue, name, version, strategy_dir)   Import that module and
+                                                        return its
+                                                        compute_targets, or
+                                                        raise on a contract
+                                                        violation.
+
+Constants:
+    _ENTRY_POINT   str   "compute_targets", the single function name the
+                   contract requires a strategy module to expose.
+
+Inputs:
+    <venue_dir>/strategy/<name>_v<M>_<m>_<p>.py, imported by file location.
+    Version "0.1.2" maps to the file suffix "_v0_1_2.py", because file names
+    carry no dots (quant-code-standards section 4.5.1). The folder resolves
+    through common.paths.venue_dir unless strategy_dir is injected, which
+    exists for tests.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

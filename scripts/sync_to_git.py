@@ -1,33 +1,142 @@
 #!/usr/bin/env python3
-"""Daily manual git synchroniser: stage every change, scan for credentials, commit, push.
+"""Daily manual git synchronizer: stage every change, gate it, commit, push.
 
-Function index (start here when changing behaviour):
+Responsibility: bring the repository's committed state up to the working tree in
+one manually invoked pass, refusing to proceed whenever a gate is not satisfied.
+The run proceeds in this order:
 
-    Configuration constants   EXPECTED_REMOTE / SECRET_PATH_PATTERNS / ...
-    Command-line entry        main()
-    Argument parsing          build_arg_parser()
-    Repository location       find_repo_root() / ensure_repo_initialised() / verify_remote()
-    Commit identity check     verify_identity()
-    Staging                   stage_all()
-    Credential gate (core)    scan_staged_for_secrets() / iter_staged_files()
-                              / classify_path() / scan_blob_text() / looks_like_secret_value()
-    Size gate                 scan_staged_for_large_files()
-    Commit and push           make_commit() / push()
-    git call wrappers         git() / git_ok()
+    1. Locate the repository from this file's own position, not from the
+       current working directory (find_repo_root()).
+    2. Initialize the repository and attach origin when .git is absent
+       (ensure_repo_initialised()).
+    3. Verify that origin is exactly EXPECTED_REMOTE (verify_remote()), that a
+       commit identity is configured (verify_identity()), and that the
+       repository is not part-way through a merge, rebase or cherry-pick
+       (verify_clean_state()).
+    4. Stage every change, with .gitignore applying as usual (stage_all(),
+       whose --name-status -z output is parsed by _parse_name_status_z()).
+    5. Run the size gate over every staged blob
+       (scan_staged_for_large_files()).
+    6. Run the credential gate: refuse by path (classify_path()), then scan the
+       blob text for unambiguous vendor tokens and private-key blocks and for
+       the soft rule that requires both a credential-looking field name and a
+       credential-looking value (scan_staged_for_secrets(), scan_blob_text(),
+       looks_like_secret_value()).
+    7. Commit and push (make_commit(), push()).
 
-Design constraints (see CLAUDE.md):
-    3.1  This script only synchronises version control. It never touches a venue
-         API and never submits an order.
-    3.2  The credential gate is a hard gate: a hit aborts the run and nothing is
-         pushed. .gitignore is the first line of defence and this scan is the
-         second; both must pass before a push happens.
-    3.4  Nothing under data/ is modified. Only the git index is read.
+Three constraints from CLAUDE.md govern the design. Under §3.1 this script only
+synchronizes version control: it never touches a venue API and never submits an
+order. Under §3.2 the credential gate is a hard gate, a hit aborts the run and
+nothing is pushed; .gitignore is the first line of defense and this scan is the
+second, and both must pass before a push happens. Under §3.4 nothing under data/
+is modified, because only the git index is read.
 
-Exit codes:
-    0  Success, including the "no changes" case
-    1  Usage or environment error (git missing, identity unset, wrong remote,
-       push rejected)
-    2  Credential gate or size gate hit; aborted without committing or pushing
+Out of scope: deciding what belongs in version control, which is .gitignore's
+job; rebuilding the data manifest before a sync, which belongs to
+scripts/build_data_manifest.py and is invoked by the double-click entry
+sync_to_git.command; any credential storage, which belongs to secrets/ and
+common/secrets.py and must never reach this repository at all.
+
+Public functions:
+    main(argv=None)                            Command-line entry point;
+                                               returns the exit code.
+    scan_staged_for_secrets(repo, staged)      Run the credential gate over
+                                               everything staged; an empty list
+                                               means the gate passes.
+    scan_staged_for_large_files(repo, staged)  Run the per-file size gate.
+    looks_like_secret_value(value)             Report whether one value looks
+                                               like a real credential. A value
+                                               qualifies when it is a UUID, a
+                                               long hexadecimal string, or at
+                                               least 16 characters carrying at
+                                               least three character classes.
+                                               The character-class rule is what
+                                               keeps a reference name such as
+                                               "secret_name: trading212_api_key"
+                                               out of the results.
+
+Constants:
+    EXPECTED_REMOTE        str    The only permitted push target. An actual
+                                  origin that differs aborts the run, which is
+                                  what stops the project being pushed to the
+                                  wrong repository. Source: set in this file;
+                                  changing the target means editing it here.
+    DEFAULT_BRANCH         str    Branch pushed unless --branch overrides it,
+                                  "main".
+    MAX_BLOB_BYTES         int    Per-file size ceiling, 10 MiB. data/ is
+                                  already excluded by .gitignore, so this gate
+                                  only guards against a misconfiguration.
+    SECRET_PATH_PATTERNS   tuple  Path-level credential gate. These paths are
+                                  refused even if they slip past .gitignore.
+    HARD_CONTENT_PATTERNS  tuple  Content-level credential gate, unambiguous
+                                  hits: private-key blocks and known vendor
+                                  token prefixes, each paired with its label.
+    SECRET_FIELD_RE        Pattern Field names that look like a credential.
+                                  Neither end carries a word boundary on
+                                  purpose: the underscore in OKX_API_KEY is
+                                  itself a word character, so a boundary anchor
+                                  would miss PREFIX_API_KEY, the most common
+                                  naming of all. Confirmed by a negative test.
+    ASSIGN_VALUE_RE        Pattern Captures the right-hand side of
+                                  "field: value", "field = value" and
+                                  'field="value"'.
+    PLACEHOLDER_RE         Pattern Values that are plainly placeholders or
+                                  references rather than real secrets, let
+                                  straight through.
+    UUID_RE, HEX_RE        Pattern Value shapes that count as a credential on
+                                  their own.
+
+Inputs:
+    The git index and object store of the repository containing this file, read
+    through git rev-parse, git diff --cached and git show. Nothing under data/
+    is read or modified.
+    Command line: python scripts/sync_to_git.py [-m MESSAGE] [--branch BRANCH]
+        [--dry-run] [--overwrite-remote] [--yes]
+        [--i-have-verified-no-secrets]
+Outputs:
+    A commit on the local branch and a push to origin, unless a gate aborted the
+        run or --dry-run was given.
+    stdout and stderr carry the staged list, the gate results and the outcome.
+    Exit codes: 0 on success, including the "no changes" case; 1 on a usage or
+        environment error, that is git missing, identity unset, wrong remote, or
+        push rejected; 2 when the credential gate or the size gate hit, in which
+        case nothing was committed or pushed and the index is left staged.
+
+Known gaps in the soft rule, measured by adversarial testing on 2026-08-22 over
+340 constructed lines. Each of these carries a real credential and is let
+through by this gate as it stands, and was let through before this round too,
+so none of them is a regression. They are recorded rather than fixed because
+each fix widens the value predicate and buys back false positives:
+    headers = {"Authorization": "Bearer <jwt>"}   value sits behind a scheme word
+    passphrase = "four words with spaces"         the value predicate needs a
+                                                  space-free run
+    api_secret: str = field(default="...")        value behind a call
+    setattr(cfg, "api_key", "...")                value behind a call
+    api_key: &yaml_anchor ...                     YAML anchor between key and value
+The path gate and the hard vendor-token rules still cover the common shapes of
+all five. A credential in one of these forms in a file this gate scans would
+reach the public remote, so treat them as the reason not to hand-write
+credentials into source at all: they belong in secrets/, which is refused by
+path before content is ever read.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Adjacency approach reverted. The field and value sides are
+                matched independently again, as before this round, and the
+                false positives are cured on the value side instead by
+                _looks_like_code(). Adversarial testing over 340 constructed
+                lines showed the adjacency form missing 48 that the
+                independent form blocks.
+    2026-08-22  Separator between field and operator widened to admit subscript
+                assignment. The first narrowing had silently dropped
+                config["api_key"] = "..." and every bracketed form; adversarial
+                testing surfaced it before release.
+    2026-08-22  Soft credential rule narrowed: the field name must now sit
+                immediately left of the assignment it governs. The previous
+                form matched field name and value independently anywhere on
+                the line and fired on ordinary code, e.g. `submitted_ts=key`.
+    2026-08-22  Removed git_ok(): zero call sites, not in __all__, and
+                git(check=False) already covers the same need.
 """
 
 from __future__ import annotations
@@ -110,15 +219,36 @@ HARD_CONTENT_PATTERNS = (
 # Note: neither end carries \b. The underscore in `OKX_API_KEY` is itself a word
 # character, so a \b anchor would miss `PREFIX_API_KEY`, the most common naming
 # of all. Confirmed by a negative test.
-SECRET_FIELD_RE = re.compile(
-    r"(?i)("
+# Field names that denote a credential. Kept as a standalone alternation so the
+# combined rule below and any future check share one list.
+_SECRET_FIELD_ALT = (
     r"api[_-]?key|api[_-]?secret|secret[_-]?key|client[_-]?secret|"
     r"passphrase|password|passwd|"
     r"access[_-]?token|auth[_-]?token|refresh[_-]?token|bearer|"
     r"private[_-]?key|credential|secret|token|key"
-    r")"
 )
-# Captures the right-hand side of `field: value` / `field = value` / `field="value"`
+SECRET_FIELD_RE = re.compile(r"(?i)(" + _SECRET_FIELD_ALT + r")")
+
+# Captures the right-hand side of `field: value` / `field = value` /
+# `field="value"`. The field name and the value are matched INDEPENDENTLY, each
+# anywhere on the line, and both must be present for the gate to fire.
+#
+# Requiring the two to be adjacent was tried and reverted. Adjacency reads as
+# the tighter, more principled rule, but a credential and the word naming it are
+# routinely far apart on the same line:
+#     vault.put("api_secret", value="...")
+#     {"name": "okx_api_key", "value": "..."}
+#     p.add_argument("--api-key", default="...")
+#     env: [{name: OKX_API_SECRET, value: ...}]
+#     x = "..."  # api_key of record
+# Adversarial testing put 340 constructed lines through both forms: the
+# adjacency version let 48 of them through that this one blocks. Coverage on
+# this side of the gate is worth more than tidiness, because the repository is
+# public and the keys are attached to real money.
+#
+# What actually drove the false positives was never the field side. It was the
+# VALUE side accepting fragments of ordinary code, so that is where the fix
+# belongs: see _looks_like_code() below.
 ASSIGN_VALUE_RE = re.compile(r"""(?:[:=]\s*)(["']?)([^\s"'#,;)]{8,})\1""")
 
 # Values that are plainly placeholders or references rather than real secrets
@@ -152,15 +282,6 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
             f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
     return proc.stdout.strip()
-
-
-def git_ok(repo: Path, *args: str) -> bool:
-    """Run a git command and report only whether it succeeded."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True,
-    )
-    return proc.returncode == 0
 
 
 # --------------------------------------------------------------------------
@@ -284,17 +405,46 @@ def classify_path(path: str) -> str | None:
     return None
 
 
+def _looks_like_code(value: str) -> bool:
+    """Report whether a captured value is a fragment of code or prose.
+
+    A credential is an opaque literal. It never carries brackets, never carries
+    a backtick, never carries CJK text, and never carries an `=` anywhere but
+    the base64 padding at its tail. Anything that does is the scanner having
+    picked up a piece of the surrounding program or document, not a credential.
+
+    This predicate is the whole reason the field side of the rule can stay
+    permissive. The standing false positive that made the gate unusable was
+        order = Order(order_id=self._next_id, spec=spec, submitted_ts=key,
+    where the captured value was `Order(order_id=self._next_id`: three
+    character classes, sixteen-plus characters, and pure code. One bracket
+    check rejects it, and the rule keeps its coverage everywhere else.
+    """
+    core = value.strip("([{<>}])")          # trailing punctuation is the
+                                            # container's, not the value's
+    if any(ch in core for ch in "()[]{}`"):
+        return True
+    if any("\u4e00" <= ch <= "\u9fff" for ch in core):
+        return True
+    if "=" in core.rstrip("="):             # base64 pads at the tail only
+        return True
+    return False
+
+
 def looks_like_secret_value(value: str) -> bool:
     """Report whether a value looks like a real credential.
 
     A value qualifies when it is a UUID, a long hexadecimal string, or at least
     16 characters long with at least three character classes present (lower
-    case / upper case / digits / the +/=- symbols).
+    case / upper case / digits / the +/=- symbols), and when it is not a
+    fragment of code or prose (see _looks_like_code).
 
     The character-class rule is what keeps a reference name such as
     `secret_name: trading212_api_key` out of the results: it carries lower case
     and digits only, two classes, so it does not count as a credential.
     """
+    if _looks_like_code(value):
+        return False
     if PLACEHOLDER_RE.match(value):
         return False
     if UUID_RE.match(value) or HEX_RE.match(value):
@@ -320,9 +470,9 @@ def scan_blob_text(path: str, text: str) -> list[str]:
             if pattern.search(line):
                 hits.append(f"{path}:{lineno}  [{label}]")
         if SECRET_FIELD_RE.search(line):
-            for _, value in ASSIGN_VALUE_RE.findall(line):
+            for _quote, value in ASSIGN_VALUE_RE.findall(line):
                 if looks_like_secret_value(value):
-                    masked = value[:4] + "…" + value[-2:]
+                    masked = value[:4] + "..." + value[-2:]
                     hits.append(f"{path}:{lineno}  [suspected credential value {masked}]")
                     break
     return hits

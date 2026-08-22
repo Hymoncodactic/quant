@@ -18,28 +18,36 @@
 | `data/` | 全部落地数据 | gitignore，见 §3 |
 | `docs/data/<source>/` | 数据的**说明与重建凭据**：`DATA_SPEC.md`、`MANIFEST.jsonl`、`GAPS.csv` | 入库。见 §3 |
 | `research/` | `prereg/` 预注册、`decisions/` 裁定、`notes/` 笔记 | |
-| `fixplans/` | 回测框架建设计划（framework / t212_faults / validation 三类） | 代码实现以计划为准，先改计划再改代码 |
+| `fixplans/` | **交易代码规格**，只有 `t212/` 与 `crypto/` 两个顶层目录，其下按策略分目录 | 每份说明都指向具体交易代码文件；`trading212/` 与 `crypto_trading/` 读它来更新策略与执行 |
+| `docs/backtest/` | 回测框架建设计划（framework / validation） | 代码实现以计划为准，先改计划再改代码 |
 | `vendor/` | 第三方参考代码的浅克隆，只读参考 | gitignore（`/vendor/`），不入库 |
-| `reports/` `logs/` `scripts/` `tests/` `secrets/` | 见下 | |
+| `scripts/` | 一次性脚本与常驻工具，一次性件带日期前缀 | 见 `scripts/README.md` |
+| `tests/` | 引擎与适配层测试 | 见 `tests/README.md` |
+| `reports/` `logs/` `backtest/results/` | 运行时产物落地位置 | gitignore，允许为空，不放 `README.md`（`CLAUDE.md` §4.3） |
+| `secrets/` | 唯一的密钥落地位置 | gitignore，永不展示内容 |
+
+每个目录必须配 `README.md`，登记其中每个文件的作用与存在必要性，
+豁免范围见 `CLAUDE.md` §4.3。每个源文件必须有六节模块头，见 `CLAUDE.md` §4.4。
 
 ## 2. 代码分层
 
-依赖方向**单行**，禁止反向导入：
+依赖方向单行，禁止反向导入。允许的 import 关系：
 
-```
-backtest/  ─┐
-            ├─→ <venue>/strategy/ ─→ common/
-<venue>/execution/ ─┤
-                    └─→ <venue>/client.py ─→ common/
-<venue>/ingest/ ────────→ <venue>/client.py ─→ common/
-```
+| 模块 | 允许 import |
+|---|---|
+| `backtest/` | `<venue>/strategy/`、`common/` |
+| `<venue>/execution/` | `<venue>/strategy/`、`<venue>/client.py`、`common/` |
+| `<venue>/ingest/` | `<venue>/client.py`、`common/` |
+| `<venue>/strategy/` | `common/` |
+| `<venue>/client.py` | `common/` |
+| `common/` | 只依赖标准库与第三方库 |
 
 | 层 | 路径 | 允许 | 禁止 |
 |---|---|---|---|
 | 基础 | `common/` | 路径、配置、密钥、日志、网络与限频、存储、指标 | 任何场所特有的口径 |
 | 客户端 | `<venue>/client.py` | REST/WS 连接、鉴权、签名、限频；被 ingest 与 execution 共用 | 业务决策 |
 | 接入 | `<venue>/ingest/` | 下载落 `data/<venue>/raw/`、清洗到 `curated/` | 交易决策 |
-| 策略 | `<venue>/strategy/` | 信号计算，**纯函数**（快照+持仓 → 目标仓位） | 下单、读网络、写状态 |
+| 策略 | `<venue>/strategy/` | 信号计算，纯函数：输入快照与持仓，输出目标仓位 | 下单、读网络、写状态 |
 | 执行 | `<venue>/execution/` | 下单、撤单、订单状态机、对账 | 信号计算 |
 | 回测 | `backtest/` | 撮合模拟、成本建模、绩效统计 | **调用任何交易所接口** |
 | 配置 | `<venue>/config/` | yaml 配置、标的池 | **任何密钥** |
@@ -56,7 +64,7 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 ### 2.0 信号只有一份（硬性）
 
 `<venue>/strategy/` 是信号的**唯一副本**。`backtest/` 与 `<venue>/execution/`
-都 import 同一份，⛔ 不得各写一份「回测版」和「实盘版」——那是回测与实盘结果
+都 import 同一份，不得各写一份「回测版」与「实盘版」。各写一份是回测与实盘结果
 系统性背离的头号来源。为此 strategy 必须是纯函数：输入快照与持仓，输出目标仓位，
 不读网络、不写状态、不下单。
 
@@ -78,19 +86,21 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `engine/feed.py` | 多标的 bar 流对齐、质量闸、FX 序列、MarketView（cutoff 视图） |
 | `engine/matching.py` | 纯撮合规则：各订单类型的触发判定与原始成交价（O-H-L-C 序） |
 | `engine/ledger.py` | GBP 现金（Decimal）、持仓、占用资金序列、权益估值 |
-| `engine/engine.py` | 主循环：结算成交 → 估值 → 调策略 → 差分下单 |
-| `engine/metrics.py` | 业绩率与风险比率（口径见 `fixplans/framework/05_metrics_reporting.md`） |
+| `engine/engine.py` | 主循环，每根 bar 固定四步：结算成交、估值、调策略、差分下单 |
+| `engine/metrics.py` | 业绩率与风险比率（口径见 `docs/backtest/framework/05_metrics_reporting.md`） |
 | `engine/results.py` | trades / equity / meta 三件套落地 |
 | `engine/report.py` | 每轮图表（净值 mid/清算双线 + 在场底色 + 逐标的开仓区间横道） |
-| `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `fixplans/framework/06_strategy_plugin.md`） |
+| `engine/strategy_loader.py` | 按 (venue, name, version) 加载 `<venue>/strategy/` 模块并校验契约（契约见 `docs/backtest/framework/06_strategy_plugin.md`） |
 | `okx/data_source.py` | 读 Binance 归档 spot klines（`data/binance/curated/`，经 `common/paths`，可注入 data_root）；okx 撮合/成本适配器待建 |
 | `t212/data_source.py` | 读 `data/t212/curated/` parquet（经 `common/paths`，可注入 data_root） |
 | `t212/instruments.py` | 交易所时区映射、半点差表、印花税适用性、年化因子 252 |
 | `t212/costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数（依据均注明出处） |
-| `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212_faults/01_fault_catalog.md`） |
+| `t212/faults.py` | 平台故障注入（目录见 `fixplans/t212/platform/01_fault_catalog.md`） |
 | `t212/admission.py` | 订单准入检查（固定顺序）与最坏成本预估，供 broker_sim 调用 |
-| `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、成交定价、费用、延迟 |
-| `t212/runner.py` | 组装点：数据 → feed → broker → engine → metrics → 落地，一次调用 |
+| `t212/broker_sim.py` | T212 撮合模拟器：订单生命周期、撤单/过期/资格判定、提交 |
+| `t212/fills.py` | 成交记账：点差/滑点、成交量预算、费用栈、账本与冻结额 |
+| `t212/same_close.py` | same_close 成交时序：决策 bar 收盘成交的前置条件与执行 |
+| `t212/runner.py` | 组装点，一次调用串起六步：读数据、建 feed、建 broker、跑 engine、算 metrics、落地 |
 
 纪律见 `/backtest-discipline`。
 
@@ -121,7 +131,7 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 ### 2.1 `common/` 现有模块
 
 本表是**定位索引**：改功能时先查这里缩到文件，再看该文件 docstring 的功能索引缩到函数
-（`/quant-code-standards` §4.9）。⛔ 新增模块必须先在本表登记再写代码。
+（`/quant-code-standards` §4.9）。新增模块必须先在本表登记再写代码。
 
 | 模块 | 职责 |
 |---|---|
@@ -129,7 +139,7 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 | `config.py` | 加载 `<venue>/config/*.yaml`，按 `QUANT_ENV` 选 paper/live，默认 paper |
 | `secrets.py` | **唯一**的密钥读取入口（`secrets/` 或环境变量），带脱敏 |
 | `logging_setup.py` | 日志初始化，UTC 时间，落 `logs/<模块>_YYYYMMDD.log` |
-| `net.py` | HTTP 会话、指数退避、令牌桶限频 |
+| `net.py` | 指数退避、令牌桶限频、可重试与不可重试异常分类。不含 HTTP 会话对象，会话由各调用方自建 |
 | `store.py` | parquet 原子写入、临时件清理 |
 
 后续按需新增（先更新本表再写代码）：`metrics.py`（业绩率与风险比率）、
@@ -152,15 +162,12 @@ MAJOR=信号逻辑变、MINOR=参数变、PATCH=重构且须证明输出逐字�
 
 ### 3.2 字节与说明分离（硬性）
 
-```
-data/                       全部字节。gitignore 整棵树，预期迁往外置磁盘
-└── <source>/{raw,curated}/
-
-docs/data/<source>/         全部说明与凭据。入库，随代码一起版本化
-├── DATA_SPEC.md            字段、单位、时区、已知陷阱、已知不存在的数据
-├── MANIFEST.jsonl          每个分区一条：坐标、上游 URL、本地字节数与行数
-└── GAPS.csv                缺口登记：dataset, symbol, from, to, cause, state
-```
+| 路径 | 内容 | 入库 |
+|---|---|---|
+| `data/<source>/{raw,curated}/` | 全部字节 | 否。gitignore 整棵树，预期迁往外置磁盘 |
+| `docs/data/<source>/DATA_SPEC.md` | 字段、单位、时区、已知陷阱、已知不存在的数据 | 是 |
+| `docs/data/<source>/MANIFEST.jsonl` | 每个分区一条：坐标、上游 URL、本地字节数与行数 | 是 |
+| `docs/data/<source>/GAPS.csv` | 缺口登记：dataset, symbol, from, to, cause, state | 是 |
 
 说明件**不得**放在 `data/` 内。整棵 `data/` 不入库且预期迁往外置磁盘，
 放在字节旁边的说明会跟着磁盘走，仓库里将不剩任何关于这批数据的记录。
@@ -188,7 +195,7 @@ data/t212/curated/<group>/<symbol>/1d/<symbol>_<year>.parquet
 data/t212/curated/<group>/<symbol>/<interval>/<symbol>_<start>_<end>_<interval>.parquet
 ```
 
-路径构造一律经 `common/paths.py`，⛔ 不得在业务代码里自行拼接。
+路径构造一律经 `common/paths.py`，不得在业务代码里自行拼接。
 
 `data/reference/` 合约规格、费率、交易日历（须注明取自哪个接口、取回时间）。
 

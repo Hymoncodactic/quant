@@ -11,7 +11,7 @@
 | 取回时间 | 2026-08-19 |
 | 完整性 | 每个 zip 附 SHA-256 `.CHECKSUM` 旁文件，下载时逐个校验，不匹配即抛错不落盘 |
 
-⚠️ `api.binance.com` / `fapi.binance.com` / `dapi.binance.com` 从本机（英国）返回
+注意：`api.binance.com` / `fapi.binance.com` / `dapi.binance.com` 从本机（英国）返回
 **HTTP 451**，响应体明示 "restricted location"。归档端点 `data.binance.vision`、
 只读行情 `data-api.binance.vision`、行情 WS `data-stream.binance.vision` 三者不受限。
 
@@ -29,7 +29,7 @@
 | taker_buy_volume | float64 | 基础币 | 主动买入量 |
 | taker_buy_quote_volume | float64 | 计价币 | 主动买入额 |
 
-⚠️ **时间戳单位陷阱**：现货归档自 **2025-01-01** 起为**微秒**，此前为**毫秒**；
+注意，**时间戳单位陷阱**：现货归档自 **2025-01-01** 起为**微秒**，此前为**毫秒**；
 期货始终毫秒。已在 `schemas.timestamp_unit()` 处理。按错误单位解析会把数据放到
 公元 55000 年或 1970 年。
 
@@ -47,7 +47,7 @@
 `ts`、`percentage`、`depth`、`notional`。**这不是订单簿**，是距中间价固定
 百分比处的**累计挂单深度**。12 个档位：±0.2 / ±1 / ±2 / ±3 / ±4 / ±5 %。
 每日 2,880 张快照 × 12 档 = 34,560 行。
-⚠️ 定义档位的参考价（中间价 / 标记价 / 最新价）**Binance 未文档化**，属未证实。
+定义档位的参考价（中间价 / 标记价 / 最新价）**Binance 未文档化**，属未证实。
 
 ### um/fundingRate/<SYM>/  —— 8 小时
 

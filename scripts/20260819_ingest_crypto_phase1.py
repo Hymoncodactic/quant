@@ -1,17 +1,53 @@
-"""Phase 1 crypto ingest: the cheap, high-value backbone from the Binance archive.
+"""One-off phase 1 crypto ingest: the cheap, high-value backbone of the Binance archive.
 
-Downloads the datasets with the highest research value per byte, converts them to
-the tuned Parquet layout, and records a manifest. Everything here is either the
-whole available history or a deliberately bounded recent window; the heavy tick
-tapes are a later phase and a separate decision.
+Responsibility: discover the archive's coverage for each configured job, download
+every available file in parallel, convert it to the tuned parquet layout, and
+write it under the curated layer. Every job is either the whole available history
+or a deliberately bounded recent window; the heavy tick tapes are a later phase
+and a separate decision. Failures are listed at the end rather than swallowed,
+because a run that reports success while silently skipping days is worse than one
+that fails loudly.
 
 Instrument selection is by measured order-book depth within 10 basis points of
 mid, not by headline 24-hour volume. The two rankings diverge violently: several
 pairs in the volume top ten hold only single-digit thousands of dollars within
-10bp, which is roughly a six-hundredth of BTCUSDT's depth.
+10bp, roughly a six-hundredth of BTCUSDT's depth.
+
+Out of scope: incremental updates, which belong to scripts/update_data.py;
+archive URL construction and download, which belong to
+crypto_trading/ingest/binance_archive.py; atomic parquet writing, which belongs
+to common/store.py; the bookTicker tape, which has its own loader in
+scripts/20260819_ingest_crypto_bookticker.py.
 
 Public functions:
-    main()   Run the phase 1 ingest
+    main()   Discover coverage per dataset, then fetch everything in parallel.
+
+Constants:
+    VENUE       str   Data-source slug written under data/, "binance".
+    LAYER       str   Storage layer written, "curated".
+    WORKERS     int   Concurrent download workers, 8.
+    SPOT_PAIRS  list  Spot symbols: tiers 1 and 2 by measured 10bp depth, plus
+                      tier 3 diversifier candidates. PAXGUSDT is the only
+                      genuine cross-asset diversifier on the venue, and
+                      USDCUSDT is kept as a peg-stress signal rather than as a
+                      tradable instrument.
+    PERP_PAIRS  list  Perpetual-futures symbols, which are the ones carrying the
+                      derivatives datasets. Data only: UK retail is barred from
+                      trading crypto derivatives by the FCA ban in force since
+                      2021-01-06.
+    JOBS        list  Tuples of (market, freq, dataset, period, symbols, start).
+                      A start of None means the whole available history.
+
+Inputs:
+    Binance public archive, through binance_archive.available_dates() and
+    binance_archive.fetch_to_frame().
+Outputs:
+    data/binance/curated/<market>/<dataset>/<symbol>/<leaf>/year=YYYY/<stamp>.parquet
+    where <leaf> is the bar interval for the kline family and the dataset name
+    otherwise.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

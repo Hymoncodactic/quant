@@ -1,8 +1,66 @@
-"""Second-pass conservatism fixes and the expanded metrics/chart outputs.
+"""Second-pass conservatism fixes and the expanded metrics and chart outputs.
 
-Pins the 2026-08-21 conservatism review findings: strict-penetration limit
-fills, inter-order cooldown, the stale-position guard, liquidation-valued
-equity, holding-duration statistics and the run chart.
+Responsibility: pin the findings of the 2026-08-21 conservatism review so that
+a later change cannot silently undo them. Finding 2 is the limit rule: a bare
+touch of the limit price no longer fills and strict penetration does, with the
+equality case as the discriminator. Finding 3, which is also item 7 of the
+conservative hard list, is the cooldown between fills of different orders,
+together with the exemption that lets one order's partial fill roll into the
+next bar. Finding 5 is the stale-position guard, which aborts the run when a
+held symbol's feed stops. Finding 1 is liquidation-valued equity, where a held
+USD position marks below its mid value because exiting it would pay the FX fee
+and the sell-side fees. The remaining tests cover holding-duration statistics,
+where mean and median must be reported separately and an episode still open at
+the end of the window must be flagged, and the run chart, which must be
+written with both equity traces and the in-market lane.
+
+Out of scope: the first-pass broker behaviors, covered by
+tests/backtest/test_broker.py; the 2026-08-20 adversarial review, covered by
+tests/backtest/test_review_regressions.py; ledger arithmetic and the
+capital-occupancy definition, covered by tests/backtest/test_ledger_metrics.py.
+
+Public functions:
+    test_limit_touch_does_not_fill_penetration_does()
+        A buy limit fills only when the bar's low goes strictly through it; a
+        sell limit touched exactly at its price does not fill.
+    test_cooldown_spaces_fills_of_different_orders(zero_spread, cooldown,
+                                                   fill_day)
+        Parametrized over cooldown_bars 1 and 2: the second order's fill day
+        moves out by one bar and the total fill count stays at one.
+    test_cooldown_exempts_same_order_rollover(zero_spread)
+        A single order's volume-capped remainder keeps filling on consecutive
+        bars despite a cooldown of two bars.
+    test_stale_held_position_aborts(zero_spread)
+        A held symbol whose frame ends early raises RuntimeError rather than
+        marking a stale price forever.
+    test_liquidation_column_below_mid_for_usd_position(zero_spread)
+        On every bar with a position the liquidation equity column is below
+        the mid column, and the metrics carry the liquidation counterparts.
+    test_holding_duration_mean_vs_median()
+        On a skewed episode set of one, one and seven days the mean is 3.0 and
+        the median 1.0, so reporting one number for both cannot pass.
+    test_censored_episode_flagged()
+        An episode still open at the end of the window is flagged and measured
+        to the window end.
+    test_chart_written_with_traces(zero_spread, tmp_path)
+        The chart file is written and contains both equity traces, the symbol
+        and the chart element identifier.
+
+Public classes: None.
+
+Constants:
+    D
+        Alias of decimal.Decimal, used so quantities and prices in the tests
+        carry the same type as the production path.
+
+Inputs: None under data/. Frames, trades and equity curves are synthesized in
+process.
+Outputs: One chart HTML file per run of test_chart_written_with_traces,
+written under pytest's tmp_path and reclaimed by pytest; nothing lands in the
+project directory.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

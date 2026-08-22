@@ -1,20 +1,89 @@
 """Fault injection for the T212 broker simulator.
 
 Responsibility: reproduce the documented platform failure modes as togglable
-rules (catalog and per-fault evidence: fixplans/t212_faults/01_fault_catalog.md;
-latency regimes: fixplans/t212_faults/02_latency_model.md).
-Not responsible for: order bookkeeping or cost math (broker_sim.py, costs.py).
+rules -- latency regimes, outage and reduce-only windows, random rejects with
+the duplicate-on-retry trap, cancel races, order quantity precision, the
+buying-power buffer, sell reservation, stale tickers, submission pacing and
+partial fills. The catalog and the per-fault evidence are in
+fixplans/t212/platform/01_fault_catalog.md; the latency regimes are in
+fixplans/t212/platform/02_latency_model.md. All randomness flows through one
+seeded numpy Generator, and the uniforms are drawn whether or not a switch is
+on, so identical configuration reproduces identical results byte for byte and
+toggling one fault never reshuffles the draws of another. Every random
+parameter without a measured distribution is marked INFERRED in the catalog and
+must be treated as a sensitivity knob, not a fact.
 
-Every random parameter without a measured distribution is marked INFERRED in
-the catalog; treat those as sensitivity knobs. All randomness flows through
-one seeded numpy Generator so identical configuration reproduces identical
-results byte-for-byte.
+Out of scope: order bookkeeping and lifecycle, which belong to
+backtest/t212/broker_sim.py; cost arithmetic, which belongs to
+backtest/t212/costs.py; the admission check order, which belongs to
+backtest/t212/admission.py.
 
-Public classes and constants:
-    FaultConfig     All fault switches and parameters of one run
-    FaultEngine     Stateful evaluator consulted by the broker simulator
-    FAULT_SWITCH_DEFAULTS   Switch registry: fault id -> default on/off
-    BAR_SECONDS     Interval name -> seconds per bar
+Public classes:
+    FaultConfig
+        All fault switches and parameters of one run. The defaults are the
+        authoritative worst tier; FaultConfig.all_off() is the ideal-execution
+        comparison arm, and FaultConfig.on(fault_id) reads one switch.
+    FaultEngine
+        Stateful fault evaluator consulted by the broker simulator, one
+        instance per run. It observes bars for the volatility trigger and
+        answers the submission, latency, pacing and volume-cap questions.
+
+Parameters and constants:
+    FAULT_SWITCH_DEFAULTS
+        dict, the switch registry mapping fault id to its default on/off state;
+        15 entries, all True. Ids follow
+        fixplans/t212/platform/01_fault_catalog.md section 2. F10 and F15 are
+        real venue semantics kept togglable for sensitivity runs. F16
+        (market-closed queueing) is deliberately absent because it is
+        STRUCTURAL: a market order queues because matching requires a bar, and
+        no configuration can change that.
+    BAR_SECONDS
+        dict, interval name to seconds per bar. An alias of INTERVAL_SECONDS in
+        backtest/engine/types.py, which owns those engine-wide time facts; the
+        alias stays because the venue adapter reads them constantly.
+    _ROLLING_WINDOW
+        int, 20 bars of range and volume history feeding the F2 trigger.
+    FaultConfig field defaults, each with its evidence:
+        seed 20260820, the run's RNG seed.
+        reject_prob 0.02 and duplicate_prob 0.10 (F5/F6). Existence is
+            documented -- community 61788 posts 63/66/121 and 87988 post 80 --
+            but the rates are INFERRED.
+        cancel_race_prob 0.50 (F7). The spec states "Cancellation is not
+            guaranteed if the order is already in the process"; the probability
+            is INFERRED.
+        buying_power_factor Decimal 0.95 (F9). Community reports 2025-10 plus
+            the official 95% quantity/value conversion threshold (helpcentre
+            7897588388125).
+        qty_decimals 4 (F8). Community 87988 posts 125/151: "invalid quantity
+            precision 4".
+        volume_participation 0.10 (F13). The zipline volume_limit default,
+            vendor/zipline-reloaded slippage.py.
+        volatile_trigger_mult 3.0 (F2). Multiple of the rolling median bar
+            range or volume that marks a bar volatile. INFERRED.
+        latency_normal_sec (1.0, 20.0) and latency_volatile_sec (60.0, 1560.0),
+            in seconds. L0 rests on the official "usually within seconds" plus
+            a 20 s community report; L1 evidence spans roughly 1 to 26 minutes
+            (fixplans/t212/platform/02_latency_model.md section 2).
+        max_pending_per_ticker 50, the functional cap per ticker (official
+            docs). The per-endpoint submission limits folded into the pacing
+            caps are market 50 per 60 s and limit/stop/stop_limit 1 per 2 s
+            (docs.trading212.com/api.md).
+        outage_windows, auth_outage_windows, reduce_only_windows and
+            stale_tickers default EMPTY, so F3, F4, F11 and F14 are armed but
+            inert until configured. The runner stamps that fact into the run
+            metadata so no report can claim a stress that never fired.
+
+Inputs: None. Pure computation over the bars and timestamps passed in; no file
+    or network access.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec; the determinism note
+                and the INFERRED warning of the previous header are carried
+                over, and the inline parameter evidence is collected under
+                "Parameters and constants".
+    2026-08-22  latency_seconds() and bars_from_seconds() split out of
+                latency_extra_bars() so the close window can compare seconds.
 """
 
 from __future__ import annotations
@@ -35,7 +104,7 @@ from backtest.engine.types import INTERVAL_SECONDS, Bar, OrderType
 # [1] Registry and constants
 # ============================================================================
 
-# Fault ids follow fixplans/t212_faults/01_fault_catalog.md section 2.
+# Fault ids follow fixplans/t212/platform/01_fault_catalog.md section 2.
 # F10/F15 are real venue semantics kept togglable for sensitivity runs.
 # F16 (market-closed queueing) is STRUCTURAL, not a switch: a market order
 # queues because matching requires a bar, and no configuration can change
@@ -87,7 +156,7 @@ class FaultConfig:
     volume_participation: float = 0.10
     # F2 trigger: bar range or volume above k x rolling median. k INFERRED.
     volatile_trigger_mult: float = 3.0
-    # Latency seconds (fixplans/t212_faults/02_latency_model.md section 2):
+    # Latency seconds (fixplans/t212/platform/02_latency_model.md section 2):
     # L0 official "usually within seconds" + 20 s community report;
     # L1 evidence spans roughly 1-26 minutes.
     latency_normal_sec: tuple[float, float] = (1.0, 20.0)
@@ -213,38 +282,45 @@ class FaultEngine:
     # [2.3] Latency and pacing
     # ------------------------------------------------------------------
 
-    def latency_extra_bars(self, symbol: str, bar: Bar | None,
-                           order_type: OrderType) -> int:
-        """Bar intervals from submission until the order may match, minimum 1.
+    def latency_seconds(self, symbol: str, bar: Bar | None,
+                        order_type: OrderType) -> float:
+        """Execution latency draw in seconds for a market leg; 0.0 when the
+        order type is not market or both latency switches are off.
 
-        Baseline (no faults) is 1: the next full interval (no same-bar fills,
-        ever). Latency d seconds maps to max(1, ceil(d / bar_seconds)) per
-        fixplans/t212_faults/02_latency_model.md section 3; the caller
-        converts intervals to a TIME on the order (eligible_ts), never to a
-        merged-timeline step count.
-
-        Only the market leg carries the execution-delay evidence: a resting
-        limit or stop waits for its trigger anyway, and a triggered stop's
-        market leg draws its latency AT TRIGGER TIME (broker_sim), so this
-        function is called with MARKET there. Both uniforms are drawn on
-        every call, regardless of switches, so toggling F1/F2 in a
-        sensitivity arm never reshuffles the draws of other faults (same
-        discipline as reject_roll).
+        Both uniforms are drawn on every call regardless of switches so that
+        toggling F1/F2 in a sensitivity arm never reshuffles the draws of
+        other faults (same discipline as reject_roll). Regimes follow
+        fixplans/t212/platform/02_latency_model.md section 2.
         """
         u_norm = float(self._rng.uniform())
         u_vol = float(self._rng.uniform())
         if order_type is not OrderType.MARKET:
-            return 1
+            return 0.0
         if (self.cfg.on("F2_latency_volatile") and bar is not None
                 and self.is_volatile(symbol, bar)):
             lo, hi = self.cfg.latency_volatile_sec
-            d = float(np.exp(np.log(lo) + (np.log(hi) - np.log(lo)) * u_vol))
-        elif self.cfg.on("F1_latency_normal"):
+            return float(np.exp(np.log(lo) + (np.log(hi) - np.log(lo)) * u_vol))
+        if self.cfg.on("F1_latency_normal"):
             low, high = self.cfg.latency_normal_sec
-            d = low + (high - low) * u_norm
-        else:
+            return low + (high - low) * u_norm
+        return 0.0
+
+    def bars_from_seconds(self, delay_sec: float) -> int:
+        """Bar intervals an order waits before it may match, minimum 1.
+
+        Baseline (no latency) is 1: the next full interval, never the same
+        bar. d seconds map to max(1, ceil(d / bar_seconds)); the caller turns
+        intervals into a TIME on the order (eligible_ts), never a step count.
+        """
+        if delay_sec <= 0:
             return 1
-        return max(1, math.ceil(d / self.bar_seconds))
+        return max(1, math.ceil(delay_sec / self.bar_seconds))
+
+    def latency_extra_bars(self, symbol: str, bar: Bar | None,
+                           order_type: OrderType) -> int:
+        """Draw latency and convert to bar intervals (see latency_seconds)."""
+        return self.bars_from_seconds(self.latency_seconds(symbol, bar,
+                                                           order_type))
 
     def submit_caps_per_bar(self) -> tuple[int, int]:
         """F12: (market_cap, pending_type_cap) submissions per bar.

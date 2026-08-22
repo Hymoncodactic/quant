@@ -1,13 +1,40 @@
-"""Configuration loading. QUANT_ENV selects paper or live; paper is the default
-(CLAUDE.md section 3.3).
+"""Venue configuration loading and the paper/live boundary guard.
 
-Configuration lives at <venue_dir>/config/<venue>.<env>.yaml and never holds
-credentials.
+Responsibility: resolve the active environment from the QUANT_ENV environment
+variable, load <venue_dir>/config/<venue>.<env>.yaml for one venue, and refuse to
+treat a file as a live configuration unless it carries an explicit `live: true`
+flag (CLAUDE.md section 3.3). assert_live_allowed() is the last assertion the
+execution layer performs before an order-submitting request, and it requires two
+independent conditions to hold, so that neither a stray environment variable nor
+an edited configuration file is sufficient on its own.
+
+Out of scope: credential reading, which belongs to common/secrets.py, because a
+configuration file never holds a credential; the configuration directory layout,
+which belongs to common/paths.py; the order submission itself and its dry-run
+switch, which belong to <venue>/execution/.
 
 Public functions:
-    current_env()                 Active environment, "paper" unless QUANT_ENV says otherwise
-    load_config(venue, env=None)  Load venue configuration, validating the live flag
-    assert_live_allowed(cfg)      Final guard before submitting a real order
+    current_env()                 Return "paper" or "live"; an unset QUANT_ENV means paper.
+    load_config(venue, env=None)  Load one venue's configuration, validating the live flag.
+    assert_live_allowed(cfg)      Raise unless both live conditions hold.
+
+Constants:
+    ENV_VAR     str    Name of the environment variable, "QUANT_ENV".
+                       Source: CLAUDE.md section 3.3.
+    ENV_PAPER   str    Simulation slug, "paper". It is also the default, so an
+                       empty environment fails safe. Source: CLAUDE.md section 3.3.
+    ENV_LIVE    str    Real-money slug, "live". Source: CLAUDE.md section 3.3.
+    VALID_ENVS  tuple  The only two accepted values; anything else raises ValueError.
+
+Inputs:
+    Environment variable QUANT_ENV.
+    <venue_dir>/config/<venue>.<env>.yaml, located through common.paths.config_dir().
+Outputs:
+    None. Nothing is written. The resolved environment and the source path are
+    returned inside the configuration mapping under the _env and _path keys.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

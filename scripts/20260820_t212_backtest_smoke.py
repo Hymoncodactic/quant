@@ -1,27 +1,67 @@
 """Smoke run of the T212 backtest framework against real curated data.
 
-Window and universe are chosen for discrimination, not convenience:
-    - 2026-06-01 .. 2026-08-14 crosses the BST regime in which London daily
-      bars stamp 23:00 UTC of the previous day (the alignment trap of
-      fixplans/framework/02_data_layer.md section 3.1);
-    - 2026-07-03 is a US market holiday with the LSE open, so the calendar
-      asymmetry path executes;
-    - the universe mixes USD (AAPL, CSPX.L), GBP (VUSA.L) and GBp (SGLN.L)
-      quote currencies, so every conversion branch runs.
+Responsibility: drive a fixed-holdings strategy through the T212 backtest runner
+on real curated bars under both fee tiers, assert seven properties of the
+framework, print one PASS or FAIL line per property, and return exit code 0 only
+when every check passes.
 
-Checks performed (each fails loudly; a passing run prints PASS lines):
-    C1 every symbol traded in both tiers
-    C2 worst tier costs strictly exceed actual tier costs
-    C3 no AAPL fill on the 2026-07-03 US holiday
-    C4 London daily fills carry the 23:00-UTC BST stamp
-    C5 a USD fill's fx_mid equals the PREVIOUS trading day's GBPUSD close
-    C6 two identical worst-tier runs produce identical trades and equity
+Window and universe are chosen for discriminating power, not convenience. The
+window 2026-06-01 to 2026-08-14 crosses the BST regime in which London daily
+bars stamp 23:00 UTC of the previous day, the alignment trap recorded in
+docs/backtest/framework/02_data_layer.md section 3.1. The date 2026-07-03 is a US
+market holiday on which the LSE is open, so the calendar-asymmetry path
+executes. The universe mixes USD (AAPL, CSPX.L), GBP (VUSA.L) and GBp (SGLN.L)
+quote currencies, so every conversion branch runs.
 
-Usage:
-    python scripts/20260820_t212_backtest_smoke.py [--data-root PATH]
+The seven checks are: C1, every symbol traded in both tiers; C2, worst-tier
+costs strictly exceed actual-tier costs; C3, no AAPL fill on the US holiday;
+C4, London daily fills carry the 23:00 UTC BST stamp; C5, a USD fill's fx_mid
+equals the PREVIOUS trading day's GBPUSD close, reported together with whether
+that assertion is itself discriminating; C6, two identical worst-tier runs
+produce identical trades and equity; C7, under fill_timing "same_close" every
+fill is stamped at_close and lands on the decision day's exchange-local date.
 
-data-root defaults to the repository's own data/ tree; pass the main working
-copy's path when running from a git worktree.
+Out of scope: synthetic unit tests, which live under tests/; the engine, the
+cost model and the T212 runner themselves, which live under backtest/; loading
+bars and FX, which belongs to backtest/t212/data_source.py. Smoke checks that
+read real landed data are kept in scripts/ rather than tests/ by the ruling in
+docs/backtest/validation/02_test_plan.md section 2, restated in tests/README.md
+section 1.
+
+Public functions:
+    fixed_holdings(view, portfolio, params)  Strategy callable returning the
+                                             constant target quantities; the
+                                             engine buys once and re-tries any
+                                             rejected order on later bars.
+    main()                                   Run both tiers plus a same_close
+                                             arm, evaluate the seven checks,
+                                             print them, and return the exit
+                                             code.
+
+Constants:
+    SYMBOLS       list     Universe traded, chosen so that every quote currency
+                           and both exchange calendars are exercised.
+    START, END    str      Window bounds, "2026-06-01" and "2026-08-14".
+    US_HOLIDAY    str      US market holiday inside the window, "2026-07-03".
+    INITIAL_CASH  Decimal  Starting cash, 20000 GBP.
+    TARGETS       dict     Symbol mapped to the constant target quantity held.
+
+Inputs:
+    Command line: python scripts/20260820_t212_backtest_smoke.py [--data-root PATH]
+        --data-root defaults to the repository's own data/ tree; pass the main
+        working copy's path when running from a git worktree.
+    data/t212/curated/, through backtest.t212.data_source.load_bars() and
+        load_fx().
+Outputs:
+    backtest/results/<run>.trades.parquet, <run>.equity.parquet and
+        <run>.meta.json and <run>.chart.html, written by the runner for each
+        of the four runs.
+    stdout carries the check lines and the result paths. Exit code 0 when every
+        check passes, 1 otherwise.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  C7 same_close arm added; chart output listed.
 """
 
 from __future__ import annotations
@@ -37,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backtest.engine.types import EngineConfig               # noqa: E402
 from backtest.t212.data_source import load_fx                # noqa: E402
+from backtest.t212.instruments import exchange_tz             # noqa: E402
 from backtest.t212.runner import run_t212_backtest           # noqa: E402
 
 SYMBOLS = ["AAPL", "CSPX.L", "VUSA.L", "SGLN.L"]
@@ -53,11 +94,13 @@ def fixed_holdings(view, portfolio, params):
     return {s: q for s, q in TARGETS.items() if view.bar(s) is not None}
 
 
-def _run(tier: str, data_root: str | None, seed: int = 7):
+def _run(tier: str, data_root: str | None, seed: int = 7,
+         fill_timing: str = "next_open"):
     config = EngineConfig(symbols=SYMBOLS, interval="1d", start=START,
                           end=END, initial_cash_gbp=INITIAL_CASH,
                           arm="smoke", fee_tier=tier, seed=seed,
-                          strategy_name="smoke_fixed_holdings")
+                          strategy_name="smoke_fixed_holdings",
+                          fill_timing=fill_timing)
     return run_t212_backtest(config, fixed_holdings, data_root=data_root)
 
 
@@ -110,6 +153,19 @@ def main() -> int:
                    f"fx_mid={usd['fx_mid']} expected={expected_mid} "
                    f"same-day close={lookahead_mid} "
                    f"(check discriminative: {discriminative})"))
+
+    result_c, _, _ = _run("worst", args.data_root, fill_timing="same_close")
+    close_rows = result_c.trades
+    at_close = close_rows["at_close"].astype(bool)
+    # Compare on the EXCHANGE-LOCAL trading day: London daily bars stamp
+    # 23:00 UTC of the previous day during BST (the known alignment trap).
+    local_day = [pd.Timestamp(ts).tz_convert(exchange_tz(sym)).date()
+                 for ts, sym in zip(close_rows["ts"], close_rows["symbol"])]
+    same_day = pd.Series(local_day, index=close_rows.index) \
+        == pd.to_datetime(close_rows["submitted_ts"]).dt.date
+    checks.append(("C7 same_close fills on the decision day at close",
+                   bool(at_close.all()) and bool(same_day[at_close].all()),
+                   f"at_close={at_close.tolist()} same_day={same_day.tolist()}"))
 
     same_trades = result_w.trades.equals(result_w2.trades)
     same_equity = result_w.equity.equals(result_w2.equity)

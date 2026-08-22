@@ -1,6 +1,64 @@
-"""Engine loop tests: end-to-end synthetic run, determinism (U16), the
-same-bar-fill assertion, and the lookahead probe's discriminative power
-(fixplans/validation/01_no_lookahead.md section 2)."""
+"""Engine loop tests: end-to-end synthetic run, determinism, the same-bar-fill
+assertion, and the lookahead probe's discriminative power.
+
+Responsibility: pin the four-step order of the engine's main loop and the
+guards that sit around it. The end-to-end case checks that one signal produces
+one fill at the next bar's open and that equity is marked on every bar.
+Determinism, item U16 of docs/backtest/validation/02_test_plan.md, requires two
+runs of the same configuration to produce identical frames. The same-bar-fill
+case wraps the broker in a local subclass that reports every fill as if it had
+happened on the submission bar, which the engine must reject with a readable
+AssertionError rather than accept. The probe cases implement
+docs/backtest/validation/01_no_lookahead.md section 2: on a series constructed so
+that each bar opens exactly at the previous close, the only money available
+comes from knowing the coming bar's intra-bar direction, so the probe arm must
+profit, the blind momentum arm must lose, and with the probe switched off the
+view's next_bar must return None. The last case checks that rejected orders
+appear in the order audit with their reason. Three of this module's private
+helpers are imported by tests/backtest/test_review_regressions.py, so a change
+to their signatures reaches beyond this file.
+
+Out of scope: broker-level admission and fill rules, covered by
+tests/backtest/test_broker.py; cost arithmetic, covered by
+tests/backtest/test_costs.py; feed alignment, covered by
+tests/backtest/test_feed.py; the result files written to disk, covered by
+tests/backtest/test_review_regressions.py.
+
+Public functions:
+    test_buy_and_hold_end_to_end(zero_spread)
+        One buy filled at the next bar's open, the position held to the end,
+        equity marked on all 30 bars.
+    test_determinism(zero_spread)
+        Two runs of one configuration produce equal trades, equity and orders
+        frames.
+    test_same_bar_fill_is_fatal(zero_spread)
+        A broker that back-dates its fills to the submission bar trips the
+        engine's assertion.
+    test_lookahead_probe_discriminates(zero_spread)
+        The probe arm profits, the blind arm loses, and the probe arm wins by
+        more than nothing, which is what makes the probe itself meaningful.
+    test_probe_off_hides_next_bar(zero_spread)
+        With the probe off the strategy's view returns None for the next bar.
+    test_rejects_visible_in_order_audit(zero_spread)
+        An unaffordable target leaves rejected rows carrying the
+        insufficient-free-cash reason.
+
+Public classes: None. CheatingBroker is defined inside
+test_same_bar_fill_is_fatal because it exists only to violate the fill-timing
+contract for that one case.
+
+Constants:
+    D
+        Alias of decimal.Decimal, used so the tests carry the same numeric
+        type as the production path.
+
+Inputs: None. The bar series, the FX series and the strategy are all
+synthesized in process; no path under data/ is read.
+Outputs: None. No result file is written by this module.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+"""
 
 from __future__ import annotations
 

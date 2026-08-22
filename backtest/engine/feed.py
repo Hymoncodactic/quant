@@ -1,26 +1,62 @@
 """Bar feed: aligned multi-symbol bar stream with a hard data-quality gate.
 
 Responsibility: turn per-symbol DataFrames into a chronologically advancing
-stream of (step, key, {symbol: Bar}) and expose a cutoff-safe MarketView.
-Not responsible for: reading parquet (backtest/t212/data_source.py) or any
-venue cost logic.
+stream of (step, key, {symbol: Bar}), provide a lookahead-free GBPUSD rate
+lookup, and expose a cutoff-enforced view of history to the strategy.
+Alignment rules (docs/backtest/framework/02_data_layer.md sections 3 and 4, verified
+on real data 2026-08-20): intraday bars align on their UTC open timestamp;
+daily bars align on the exchange-local trading day, because during BST a London
+daily bar's raw UTC timestamp falls at 23:00 of the previous UTC day, so
+aligning daily data on raw UTC dates would shift London by one day; a symbol
+missing a bar on some key is normal, caused by holiday asymmetry or suspension,
+and never drops the timeline key.
 
-Alignment rules (fixplans/framework/02_data_layer.md sections 3-4, verified on
-real data 2026-08-20):
-    - Intraday bars align on their UTC open timestamp.
-    - Daily bars align on the exchange-local trading DAY. During BST a London
-      daily bar's raw UTC timestamp falls at 23:00 of the PREVIOUS UTC day, so
-      aligning daily data on raw UTC dates shifts London one day; the local
-      date is the only correct join key.
-    - A symbol missing a bar on some key is normal (holiday asymmetry,
-      suspension) and never drops the timeline key.
+Out of scope: reading parquet, which belongs to backtest/t212/data_source.py
+and backtest/okx/data_source.py; the exchange time-zone mapping, which the
+venue adapter owns and injects as tz_for_symbol so the engine stays
+venue-neutral; every venue cost rule, which belongs to backtest/t212/costs.py.
 
 Public functions and classes:
-    validate_frame(frame, symbol)          Data-quality gate, raises on violation
-    trading_key(ts, tz_name, daily)        Alignment key for one timestamp
-    BarFeed(frames, tz_for_symbol, daily)  The aligned stream
-    FxSeries(frame)                        rate_at(ts): last GBPUSD close <= ts
-    MarketView                             Cutoff-enforced view for strategies
+    validate_frame(frame, symbol, valid_ccys)   Data-quality gate; raises on
+                                                violation, because silently
+                                                skipping bad bars is
+                                                survivorship bias by another
+                                                name.
+    trading_key(ts, tz_name, daily)             Alignment key for one bar
+                                                timestamp.
+    BarFeed(frames, tz_for_symbol, daily)       The aligned stream; iterating
+                                                it yields (step, key, bars) and
+                                                grows self.history. Its peek()
+                                                method exists solely for the
+                                                lookahead probe arm, whose only
+                                                caller is engine.py.
+    FxSeries(frame, bar_duration_sec)           rate_at(ts) returns the latest
+                                                GBPUSD close already published
+                                                at ts, in USD per GBP, and
+                                                raises rather than
+                                                extrapolating.
+    MarketView(history, now_key, probe_bars)    What a strategy is allowed to
+                                                see at one step: bars with
+                                                ts at or before now.
+
+Constants:
+    VALID_QUOTE_CCYS   tuple[str, ...]   Quote currencies known to the engine
+                       across both venue lines: USD, GBP and GBp for t212
+                       equity data, USDT for the crypto line's Binance-sourced
+                       bars. This is only the default; a venue adapter may pass
+                       a tighter set to reject foreign frames.
+
+The OHLC ordering test inside validate_frame carries a relative tolerance of
+1e-9. Source: measurement of 2026-08-21 on adjusted equity data, where every
+violation was a 1-ULP artifact of the adjustment multiply, about 1e-16
+relative. Anything beyond the tolerance still stops the run.
+
+Inputs: None. Bar data arrives as already-constructed DataFrames from the venue
+    data source; this module opens no file and makes no network call.
+Outputs: None.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations
@@ -48,7 +84,7 @@ def validate_frame(frame: pd.DataFrame, symbol: str,
                    valid_ccys: tuple[str, ...] = VALID_QUOTE_CCYS) -> None:
     """Assert the data-quality gate on one symbol's bars; raise on violation.
 
-    Gate list is fixplans/framework/02_data_layer.md section 7. A violation
+    Gate list is docs/backtest/framework/02_data_layer.md section 7. A violation
     stops the run: silently skipping bad bars is survivorship bias by another
     name.
     """
@@ -57,8 +93,16 @@ def validate_frame(frame: pd.DataFrame, symbol: str,
     ts = frame["ts"]
     if not ts.is_monotonic_increasing or ts.duplicated().any():
         raise ValueError(f"{symbol}: ts not strictly increasing")
-    bad_hl = (frame["high"] < frame[["open", "close"]].max(axis=1)) | \
-             (frame["low"] > frame[["open", "close"]].min(axis=1))
+    # Relative tolerance for the ordering test: Yahoo's adjusted prices carry
+    # 1-ULP inconsistencies (measured 2026-08-21: equity violations are all
+    # ~1e-16 relative, e.g. close exceeding high by one float step after the
+    # adjustment multiply). Those are representation noise, not data errors;
+    # anything beyond the tolerance still stops the run.
+    tol = 1e-9
+    upper = frame[["open", "close"]].max(axis=1)
+    lower = frame[["open", "close"]].min(axis=1)
+    bad_hl = (frame["high"] < upper - tol * upper.abs()) | \
+             (frame["low"] > lower + tol * lower.abs())
     if bad_hl.any():
         raise ValueError(f"{symbol}: OHLC ordering violated on "
                          f"{int(bad_hl.sum())} bars, first at "
@@ -143,7 +187,7 @@ class BarFeed:
         """Next not-yet-delivered bar for one symbol, None at the end.
 
         Exists solely for the lookahead probe arm
-        (fixplans/validation/01_no_lookahead.md section 2); the probe is the
+        (docs/backtest/validation/01_no_lookahead.md section 2); the probe is the
         only legal caller.
         """
         cur = self._cursor[symbol]
@@ -159,14 +203,14 @@ class FxSeries:
     """GBPUSD rate lookup without lookahead.
 
     Rate semantics: USD per 1 GBP (Yahoo GBPUSD=X, verified in
-    fixplans/framework/02_data_layer.md section 5.4).
+    docs/backtest/framework/02_data_layer.md section 5.4).
 
     Availability rule: a bar's CLOSE only exists once the bar has closed, so
     the close of a bar stamped ts (its open time) becomes available at
     ts + bar_duration. rate_at(query) therefore returns the close of the last
     bar with ts + duration <= query. In daily mode this yields the previous
     trading day's close for a fill at today's open, which is exactly the
-    no-lookahead convention of fixplans/framework/02_data_layer.md section 5.3.
+    no-lookahead convention of docs/backtest/framework/02_data_layer.md section 5.3.
     Raises instead of extrapolating when nothing is available yet.
     """
 

@@ -1,33 +1,63 @@
-"""Phase 4: the discontinued bookTicker archive — the closest thing to free L2.
+"""One-off ingest of the discontinued Binance bookTicker archive over its fixed window.
 
-bookTicker is event-driven best bid and ask WITH quantities, roughly 300 updates
-per second. It is the only free tick-level top-of-book data that will ever exist
-for Binance: publication stopped on 2024-03-30 for USD-M and 2024-10-14 for
-COIN-M, with no official statement, so the window is fixed and will not grow.
+Responsibility: fetch every published USD-M bookTicker day for the configured
+symbols and store one parquet partition per symbol-day under the curated layer,
+resuming from whatever is already on disk. bookTicker is event-driven best bid
+and ask WITH quantities, roughly 300 updates per second, and it is the only free
+tick-level top-of-book data that will ever exist for this source: publication
+stopped on 2024-03-30 for USD-M and on 2024-10-14 for COIN-M, with no official
+statement, so the window is fixed and will not grow. Because the dataset is
+finite and already dead it is taken in full now; nothing about it improves by
+waiting, and five other datasets in this archive have gone dark the same way
+without notice.
 
-Because it is finite and already dead, it is worth taking in full now. Nothing
-about it improves by waiting, and five other datasets in this archive have gone
-dark the same way without notice.
-
-Daily files are used rather than monthly. A monthly file is 4-6 GB compressed and
-expands past 20 GB in memory; a daily file peaks around 1 GB, which matters on a
-machine with 8 GB of RAM.
+Daily files are used rather than monthly. A monthly file is 4 to 6 GB compressed
+and expands past 20 GB in memory, while a daily file peaks around 1 GB, which
+matters on a machine with 8 GB of RAM.
 
 The run is designed to be interrupted. At roughly 1.6 MB/s to this archive the
 full window takes about 17 hours, so it will be stopped and restarted at least
-once. Three mechanisms make that safe:
+once. Three mechanisms make that safe. First, partitions are written atomically
+by common/store.py, so an interrupted write leaves no file rather than a
+truncated one. Second, on start any temporary partitions are removed and every
+existing output has its footer read, so a partition damaged by power loss is
+deleted and re-fetched instead of passing an existence check forever and
+silently poisoning the dataset. Third, SIGINT and SIGTERM set a stop flag, so
+workers finish the file in flight and take no new work, and the process exits
+within one file rather than being killed mid-write.
 
-    1. Partitions are written atomically by common.store, so an interrupted write
-       leaves no file rather than a truncated one.
-    2. On start, any temporary partitions are removed and every existing output
-       has its footer read. Anything unreadable is deleted and re-fetched, so a
-       file damaged by power loss cannot be mistaken for completed work.
-    3. SIGINT and SIGTERM set a stop flag. Workers finish the file in flight and
-       take no new work, so the process exits within one file rather than being
-       killed mid-write.
+Out of scope: archive URL construction and download, which belong to
+crypto_trading/ingest/binance_archive.py; atomic parquet writing and stale
+temporary-partition cleanup, which belong to common/store.py; incremental
+updates of the still-published datasets, which belong to
+scripts/update_data.py. This dataset is never updated because publication has
+ceased.
 
 Public functions:
-    main()   Run the bookTicker ingest, resuming from whatever is already on disk
+    main()   Fetch every published bookTicker day, resuming from what is on disk.
+
+Constants:
+    VENUE, LAYER, MARKET, DATASET  str  Partition coordinates: "binance",
+                            "curated", "um", "bookTicker".
+    WORKERS           int   Concurrent download workers, 4. Each holds about
+                            1 GB while parsing and the job is bandwidth-bound
+                            anyway, so more workers buy memory pressure, not
+                            speed.
+    SYMBOLS           list  Symbols fetched, BTCUSDT and ETHUSDT.
+    FIRST_DAY         date  First published day, 2023-05-16. Source: listing of
+                            the archive directory.
+    LAST_DAY          date  Last published day, 2024-03-30, after which
+                            publication ceased. Source: the same listing.
+    _STOP             bool  Module-level stop flag set by the signal handler and
+                            read by the workers before they take new work.
+
+Inputs:
+    Binance public archive, through binance_archive.fetch_to_frame().
+Outputs:
+    data/binance/curated/um/bookTicker/<symbol>/bookTicker/year=YYYY/YYYYMMDD.parquet
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

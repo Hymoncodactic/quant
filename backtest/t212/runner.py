@@ -1,20 +1,67 @@
 """Wire a full T212 backtest run: data, feed, broker, engine, metrics, files.
 
-Responsibility: the one composition point. Scripts and tests call this
-instead of assembling components by hand, so every run gets the same wiring
-and the same metadata.
-Not responsible for: any trading or accounting logic.
+Responsibility: the one composition point. Scripts and tests call this instead
+of assembling components by hand, so every run gets the same wiring and the
+same metadata. The fee tier selects the defaults
+(docs/backtest/framework/04_cost_model.md section 6): "worst" means CostConfig()
+defaults with every fault switch on and is the authoritative tier, while
+"actual" means CostConfig.actual_tier() with every fault switch off and is the
+comparison tier. An explicit cost_cfg or fault_cfg overrides that mapping for
+experiments, and whichever configuration is used is serialized into the run
+metadata together with an honesty stamp naming the fault switches that are on
+but have nothing configured, so the report layer cannot claim a stress that
+never fired.
 
-Fee-tier mapping (fixplans/framework/04_cost_model.md section 6):
-    worst   CostConfig() defaults + every fault switch on  (authoritative)
-    actual  CostConfig.actual_tier() + every fault switch off (comparison)
-Explicit cost_cfg / fault_cfg arguments override the mapping for experiments;
-whatever is used is serialized into the run metadata.
+Out of scope: any trading or accounting logic. Matching, ledger, metrics and
+result persistence belong to backtest/engine/; cost arithmetic belongs to
+backtest/t212/costs.py; fault parameters belong to backtest/t212/faults.py; the
+strategy is supplied by the caller and lives in trading212/strategy/.
 
 Public functions:
-    run_t212_backtest(config, strategy, ...)   Returns (result, metrics, paths)
-    daily_data_gaps(frames)                    Same-exchange daily gap counts
-    liquidation_valuer(broker)                 Per-share exit-value closure
+    run_t212_backtest(config, strategy, cost_cfg=None, fault_cfg=None,
+                      data_root=None, out_dir=None, write=True)
+        Run one backtest end to end. Returns (RunResult, metrics dict, written
+        paths); the paths dict is empty when write is False. An unknown
+        config.fee_tier raises rather than defaulting.
+    daily_data_gaps(frames)
+        Missing exchange-local trading days per symbol on daily data. A day
+        counts as missing for a symbol when at least one OTHER symbol in the
+        same exchange time zone has a bar, the symbol is inside its own
+        first-to-last span, and it has none. Cross-exchange holiday asymmetry
+        is thereby excluded, while genuine suspensions and data holes are
+        counted rather than silently skipped (backtest-discipline section 2.8).
+    liquidation_valuer(broker)
+        The per-share exit-value closure injected into the engine. It values
+        one share at what a market SELL would fetch right now by pricing a
+        one-share sell through the real cost stack, so the exit mark can never
+        drift from the fill mechanics; the flat PTM levy has no per-share form
+        and is disclosed as unmodeled. The mid mark stays the diagnostic
+        column, and the authoritative tier reads equity_liq_gbp for drawdown
+        and final equity (backtest-discipline section 2.10: unrealizable marks
+        must not carry the headline).
+
+Constants: None. Run parameters arrive through EngineConfig, CostConfig and
+    FaultConfig, and the annualization factor is imported from
+    backtest/t212/instruments.py so the engine holds no venue default.
+
+Inputs:
+    data/t212/curated/<group>/<symbol>/<interval>/*.parquet, read through
+    backtest.t212.data_source.load_bars and load_fx. When the FX series is
+    absent at the requested interval the loader falls back to the 1d series and
+    the bar duration follows.
+Outputs (written only when write is True; out_dir defaults to
+backtest/results/ through common.paths.DIR_BACKTEST_RESULTS, and <stem> is
+built by backtest.engine.results.run_name from the config):
+    <stem>.trades.parquet   One row per fill.
+    <stem>.equity.parquet   Per-step cash, reserved, occupied and equity.
+    <stem>.meta.json        Config, metrics, fault switches, order audit.
+    <stem>.chart.html       Derived equity chart, outside the byte-identity
+                            guarantee that covers the other three files.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec; the fee-tier mapping
+                of the previous header is carried over into "Responsibility".
+    2026-08-22  fill_timing validated and passed to the broker.
 """
 
 from __future__ import annotations
@@ -112,6 +159,8 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
     """
     if config.fee_tier not in ("worst", "actual"):
         raise ValueError(f"unknown fee tier {config.fee_tier!r}")
+    if config.fill_timing not in ("next_open", "same_close"):
+        raise ValueError(f"unknown fill timing {config.fill_timing!r}")
     if cost_cfg is None:
         cost_cfg = CostConfig() if config.fee_tier == "worst" \
             else CostConfig.actual_tier()
@@ -131,7 +180,8 @@ def run_t212_backtest(config: EngineConfig, strategy: StrategyFn,
 
     feed = BarFeed(frames, exchange_tz, daily)
     fx = FxSeries(fx_frame, fx_duration)
-    broker = T212BrokerSim(cost_cfg, fault_cfg, config.interval, fx, daily)
+    broker = T212BrokerSim(cost_cfg, fault_cfg, config.interval, fx, daily,
+                           fill_timing=config.fill_timing)
     engine = BacktestEngine(config, feed, fx, broker, strategy, price_to_gbp,
                             to_liquidation=liquidation_valuer(broker))
     result: RunResult = engine.run()

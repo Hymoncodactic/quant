@@ -1,30 +1,93 @@
 #!/usr/bin/env python3
-"""Build the rebuild manifest for every stored data source.
+"""Build the committed rebuild manifest for every stored data source.
 
+Responsibility: walk each data source's curated tree, emit one JSONL record per
+stored partition holding its coordinates, the upstream URL that produced it, its
+local size and its row count, and write the result to the versioned manifest.
 The data tree is excluded from version control in full and is expected to move
-to an external disk. What keeps the tree accountable is this manifest: one
-record per stored partition, committed to the repository, holding the upstream
-URL that produced the partition and the local size and row count that identify
-an intact copy. With it, 64 GiB of parquet is a cache. Without it, the same
-bytes are an undocumented blob that no one can verify or reconstruct.
+to an external disk; the manifest is what keeps it accountable. With it, 64 GiB
+of parquet is a cache. Without it, the same bytes are an undocumented blob that
+nobody can verify or reconstruct.
 
 The manifest deliberately carries no generation timestamp. A run that finds
 nothing changed must produce a byte-identical file, otherwise every daily sync
 would commit a diff that says nothing.
 
-Cost control. Row counts come from the parquet footer, never from reading the
-data. Anything already recorded is reused when the file size is unchanged, so a
-second run over an unchanged tree does no per-file work beyond a stat call.
+Cost is controlled in three ways. Row counts come from the parquet footer and
+never from reading the data. A record whose file size is unchanged reuses the
+previous row count, so a second run over an unchanged tree does no per-file work
+beyond a stat call; size is treated as the change signal because these loaders
+write partitions whole from immutable upstream files, so a rewrite landing on an
+identical byte count with different contents is not a failure mode they have.
 Upstream checksums cost one request each and the archive is immutable, so they
-are fetched only on request, only for records that lack one, and never fetched
-twice.
+are fetched only on request, only for records that lack one, and never twice.
+
+A source with no dedicated scanner falls back to scan_generic(), which emits
+minimal records rather than skipping the tree silently. A partition whose footer
+cannot be read has its row count recorded as null and raises the process exit
+code, so damage is reported rather than recorded as an empty file.
+
+Out of scope: downloading or writing any data, which belongs to the ingest
+scripts and to crypto_trading/ingest/ and trading212/ingest/; path construction,
+which belongs to common/paths.py; describing fields, units and time zones, which
+belongs to docs/data/<source>/DATA_SPEC.md; the on-disk inventory read straight
+from the parquet statistics, which belongs to scripts/data_inventory.py and is
+the independent cross-check against this manifest.
 
 Public functions:
-    main()                            Command-line entry point
-    build_manifest(source, ...)       Scan one source and write its manifest
-    scan_binance()                    Records for the Binance archive tree
-    scan_t212()                       Records for the Yahoo-sourced equity tree
-    load_existing(path)               Previous records indexed by relative path
+    main(argv=None)                   Command-line entry point; returns the exit
+                                      code, 1 when any partition was unreadable.
+    build_manifest(source, fetch_checksums=0, with_local_hash=False)
+                                      Scan one source, write its manifest, and
+                                      return the summary counts.
+    scan_binance()                    Yield one record per stored Binance
+                                      partition, reconstructing the upstream URL
+                                      from the stored path so it cannot drift.
+    scan_t212()                       Yield one record per stored equity
+                                      partition. No upstream URL is recorded:
+                                      the equity source is a query API whose
+                                      adjusted prices are retroactive, so there
+                                      is no immutable object to point at and the
+                                      row count is the only integrity signal
+                                      available.
+    load_existing(path)               Return the previous manifest's records
+                                      indexed by relative path.
+
+Constants:
+    HASH_BLOCK_BYTES         int  Bytes per read when hashing a local file,
+                                  1 MiB. Files are read in blocks because the
+                                  largest partition is about 300 MB and this
+                                  host has 8 GB of memory shared with the ingest
+                                  workers.
+    CHECKSUM_BATCH_DEFAULT   int  Upstream sidecars fetched when
+                                  --fetch-checksums is given without a number,
+                                  200. The ceiling exists so an accidental full
+                                  run cannot issue thirteen thousand requests in
+                                  a burst against a free public service.
+    TIMEOUT_CHECKSUM_SEC     int  Timeout for one sidecar request, 30 seconds.
+    USER_AGENT               str  User-Agent sent with sidecar requests.
+    SCANNERS                 dict Data-source slug mapped to its scanner;
+                                  sources absent here fall back to
+                                  scan_generic().
+
+Inputs:
+    data/<source>/curated/**/*.parquet   Footers only, plus a stat call per file.
+    docs/data/<source>/MANIFEST.jsonl    The previous manifest, for reuse.
+    <upstream>.CHECKSUM                  Only when --fetch-checksums is given.
+                                         The sidecar holds the digest of the
+                                         upstream zip, not of the parquet
+                                         derived from it, so it proves the
+                                         source is unchanged rather than that
+                                         the local copy is intact; absence is
+                                         normal for older objects.
+Outputs:
+    docs/data/<source>/MANIFEST.jsonl    One _meta line followed by one record
+                                         per partition, sorted by relative path.
+    stdout carries one summary line per source. Exit code 1 when any partition
+        was unreadable, 0 otherwise.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

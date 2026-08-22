@@ -1,16 +1,37 @@
 """The single entry point for reading credentials (CLAUDE.md section 3.2).
 
-Rules:
-    - Credentials may only come from environment variables or the secrets/
-      directory, which is git-ignored.
-    - Business code always goes through this module. Reading credential files or
-      environment variables directly elsewhere is prohibited.
-    - Anything that could carry a credential into a log, an exception or a report
-      must be passed through mask() first.
+Responsibility: resolve a credential by name, taking it from an environment
+variable first and from the git-ignored secrets/ directory second, and reject a
+credential file whose mode allows group or other access. mask() produces the only
+form in which a credential value may appear in a log record, an exception
+message, a report or any other output.
+
+Out of scope: obtaining, creating, rotating or setting the permission bits of a
+credential at the venue, all of which are done by hand outside this project
+(CLAUDE.md section 3.2); signing a request with a credential, which belongs to
+<venue>/client.py; configuration that is not a credential, which belongs to
+common/config.py. Business code must not read a credential file or a credential
+environment variable directly; it goes through this module.
 
 Public functions:
-    get_secret(name, required=True)  Read a credential by name
-    mask(value)                      Redact a value, keeping first and last four
+    get_secret(name, required=True)  Read one credential by name.
+    mask(value)                      Redact a value, keeping the first and last four.
+
+Constants:
+    _MIN_MASK_LEN  int  Length threshold for partial masking, 12 characters. Below
+                        it mask() obscures the value in full, because keeping eight
+                        of ten characters would not redact anything meaningful. The
+                        rationale is stated in mask(); the exact figure has no
+                        external source, needs verification.
+
+Inputs:
+    Environment variable QUANT_SECRET_<NAME in upper case>.
+    secrets/<name>.txt, first line, stripped. The directory is common.paths.DIR_SECRETS.
+Outputs:
+    None. Nothing is written, and no credential value is logged.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

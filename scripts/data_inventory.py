@@ -1,10 +1,39 @@
 """Report what the data lake actually contains: instrument, frequency, span, location.
 
-Reads the Parquet partitions themselves rather than any manifest, so the report
-reflects what is on disk rather than what an ingest run believed it wrote.
+Responsibility: walk every parquet file under the data root, aggregate file
+count, row count, byte size and time span per (data source, group, dataset,
+symbol, frequency), and print one row per group followed by a total. The report
+reads the partitions themselves rather than any manifest, so it reflects what is
+on disk rather than what an ingest run believed it wrote, which makes it the
+independent cross-check on docs/data/<source>/MANIFEST.jsonl.
+
+Two choices keep the scan cheap and the numbers honest. Row counts and column
+statistics come from the parquet metadata, which is written per row group, so no
+data is scanned. The time span is read from the timestamp column's own
+statistics rather than from the file name, because equity partitions are named
+by symbol while crypto partitions are named by date, and only the data itself is
+authoritative for either.
+
+Out of scope: downloading or writing any data, which belongs to the ingest
+scripts and to scripts/update_data.py; the committed rebuild manifest, which
+belongs to scripts/build_data_manifest.py; field, unit and time-zone
+definitions, which belong to docs/data/<source>/DATA_SPEC.md.
 
 Public functions:
-    main()   Print the inventory
+    main()   Walk the lake and print one row per (source, group, dataset,
+             symbol, frequency), then the total.
+
+Constants:
+    None. The data root is DIR_DATA, imported from common/paths.py.
+
+Inputs:
+    data/**/*.parquet   Metadata only: row counts, column statistics and a stat
+                        call per file.
+Outputs:
+    stdout only. No file is written.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
 """
 
 from __future__ import annotations

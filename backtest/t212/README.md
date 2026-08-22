@@ -1,7 +1,7 @@
 # 股票线（Trading 212）回测思路
 
 接入方式见 `backtest/README.md`；本文件只讲这个市场的特有口径。
-每个数值的出处见 `fixplans/framework/03/04` 与
+每个数值的出处见 `docs/backtest/framework/03/04` 与
 `data/reference/t212_research_20260820/`（官方 OpenAPI 规范 + 逐条取证 JSON）。
 
 ## 1. 市场结构决定的口径
@@ -18,6 +18,8 @@
 ## 2. 成交模型（订单四类，官方契约对齐）
 
 - 市价：下一可成交 bar 开盘 ± 半点差 ± 滑点；闭市排队至下一开盘。
+  `fill_timing="same_close"` 时改为决策 bar 收盘价 ± 半点差 ± 滑点 ± 收盘临近
+  滑点（实测 P75 11bp / 中位 5bp），延迟超 60 秒或当根无 bar 则落到下一开盘。
 - 限价：开盘穿限价按开盘成交；bar 内须**严格穿透**（触及不成交）；成交价不劣于限价。
 - 止损：LTP 触发（触及即触发，跳空按更差的开盘价成交），触发后按市价腿执行，
   执行延迟在**触发时**抽取；触发单向持久化，部分成交余量不复验 stop。
@@ -25,7 +27,7 @@
   证据（买看 low 严格穿透，卖只认 close）。
 - DAY 于交易所本地午夜过期；GTC 常驻；每 ticker 挂单上限 50。
 
-## 3. 成本表（全部带官方出处，见 fixplans/framework/04）
+## 3. 成本表（全部带官方出处，见 docs/backtest/framework/04）
 
 | 项 | 取值 |
 |---|---|
@@ -40,7 +42,7 @@
 
 ## 4. 平台故障模拟（16 类，来源均为公开实例）
 
-`FaultConfig` 开关全集见 `fixplans/t212_faults/01_fault_catalog.md`。要点：
+`FaultConfig` 开关全集见 `fixplans/t212/platform/01_fault_catalog.md`。要点：
 随机拒单后订单**实际已受理**（重试即重复持仓，官方非幂等警告）、撤单与成交
 竞态、4 位下单精度 vs 8 位持仓（卖不净留尘）、可用购买力 ≈95%×现金、
 挂单占用可卖数量、延迟档位（正常秒级~20s / 拥堵 1–26 分钟折算 bar）、
@@ -62,3 +64,24 @@
 
 年化因子 252（本适配层注入，引擎无默认值）；交易日历不外接库，直接由
 落地数据的 bar 存在性表达（假日/半日自动正确）。
+
+## 7. 文件清单
+
+| 文件 | 作用 | 存在必要性 | 谁在用 |
+|---|---|---|---|
+| `__init__.py` | 把 `backtest.t212` 声明为常规包 | 包边界；删除后本层全部模块无法导入 | `runner.py` 的全部调用方 |
+| `data_source.py` | 读 `data/t212/curated/` 下 parquet（经 `common/paths`，可注入 `data_root`），转引擎 bar schema | 股票线唯一数据入口；删除后本线无法起跑 | `runner.py`、`tests/backtest/test_feed.py` |
+| `instruments.py` | 交易所时区映射、半点差表、印花税适用性、年化因子 252 | 场所常量的唯一来源，引擎本身零默认值；删除后时区与年化因子无处取 | `broker_sim.py`、`costs.py`、`runner.py` |
+| `costs.py` | FX 费、SDRT、PTM、FINRA、SEC 费与折算函数，取值均注明官方出处 | 成本口径的唯一实现；删除后成交价不含真实成本，回测结论系统性偏乐观 | `broker_sim.py`、`admission.py`、`tests/backtest/test_costs.py` |
+| `faults.py` | 平台故障注入，16 类，来源均为公开实例 | 故障模型的唯一实现；删除后回测默认「平台永不出错」，属乐观偏差 | `broker_sim.py`、`tests/backtest/test_broker.py` |
+| `admission.py` | 订单准入检查（固定顺序）与最坏成本预估 | 下单前的资金与合规闸；删除后会提交资金不足或不合规的订单 | `broker_sim.py` |
+| `broker_sim.py` | T212 撮合模拟器：订单生命周期、撤单/过期/资格判定、提交与 same_close 尝试 | 实现 `backtest/engine/broker.py` 的 BrokerSim 协议，是本线接入引擎的核心件 | `runner.py`、`tests/backtest/test_broker.py`、`test_same_close.py` |
+| `fills.py` | 成交记账：点差/滑点、按标的×bar 的成交量预算、费用栈、资金闸、账本与冻结额、订单终态 | 成交的唯一落账路径（next_open 与 same_close 共用）；删除后无法成交。从 broker_sim 拆出以守 400 行上限 | `broker_sim.py`、`same_close.py` |
+| `same_close.py` | `fill_timing=same_close` 的收盘成交：市价单、延迟在 60 秒窗内、当根有 bar、冷却清零四条前置，满足即按收盘价 + 收盘临近滑点成交 | 收盘价策略口径的唯一实现（用户裁定 2026-08-22）；删除后只剩 next_open | `broker_sim.py`、`tests/backtest/test_same_close.py` |
+| `runner.py` | 组装点，一次调用串起读数据、建 feed、建 broker、跑 engine、算 metrics、落地六步 | 本线唯一对外入口；删除后调用方须自行组装六个部件 | `scripts/20260820_t212_backtest_smoke.py`、`scripts/20260821_a0_framework_backtest.py` |
+| `README.md` | 本文件。本市场的口径、成交模型、成本表、故障目录与已知乐观偏差 | 记录本线全部场所特有口径的出处 | 改动本层任何文件前的必读件 |
+
+## 8. 变更记录
+
+2026-08-22 按 `CLAUDE.md` §4.3 补 §7 文件清单与本节。原有 §1 至 §6 未改动。
+2026-08-22 新增 `fills.py`、`same_close.py`（成交时序可选）；`broker_sim.py` 作用表述同步。§2 成交模型补 same_close 行。

@@ -1,23 +1,68 @@
-"""Backtest main loop: settle fills, mark to market, call the strategy,
-submit the diff as orders.
+"""Backtest main loop: settle fills, guard the timeline, call the strategy,
+submit the position diff as orders, then mark to market.
 
-Responsibility: sequencing and the online no-lookahead assertions
-(fixplans/validation/01_no_lookahead.md). The fixed per-step order is:
-    1. broker.process_bar()  -- settle orders submitted at earlier steps
-    2. strategy(view, ...)   -- sees history up to and including now
-    3. diff -> submit        -- earliest fill one full interval later
-    4. ledger.mark()         -- valuation and occupancy sampling AFTER the
-       submissions, so cash frozen this step enters the capital peak
-Not responsible for: matching, costs, faults, metrics (their own modules).
+Responsibility: sequencing and the online no-lookahead assertions of
+docs/backtest/validation/01_no_lookahead.md. The per-step order is fixed at four
+steps and the order itself is a ruling, not an implementation detail:
+    1. broker.process_bar() settles orders submitted at earlier steps.
+    2. strategy(view, portfolio, params) sees history up to and including now.
+    3. The diff between targets and held plus pending becomes market orders,
+       whose earliest fill is one full interval later.
+    4. ledger.mark() samples valuation and occupancy AFTER the submissions, so
+       cash frozen at this step enters the capital peak; marking earlier would
+       let a reservation that resolves next bar escape the denominator
+       (docs/backtest/framework/05_metrics_reporting.md section 1.1).
+Two assertions run always: a fill in the same step as its submission is a
+lookahead bug, and on intraday data a fill bar must not open before the
+submission bar's close exists. A held symbol whose feed stops producing bars
+for longer than the configured wall-time threshold aborts the run, because a
+position marked forever at its last pre-suspension price is survivorship bias
+in valuation form. The strategy is a pure function per ARCHITECTURE.md
+section 2.0: strategy(view, portfolio, params) returns target shares per
+symbol.
 
-The strategy is a pure function (ARCHITECTURE.md section 2.0):
-    strategy(view: MarketView, portfolio: PortfolioView, params) ->
-        dict[symbol, Decimal target shares]
+Out of scope: matching rules (matching.py), costs, taxes and fault injection
+(backtest/t212/), cash and position accounting (ledger.py), performance
+statistics (metrics.py), persistence (results.py). Currency conversion and
+liquidation valuation are injected by the venue runner as to_base_ccy and
+to_liquidation, so the engine holds no venue currency rules.
 
 Public classes and functions:
-    PortfolioView          Read-only account state handed to the strategy
-    RunResult              Frames + metadata of one finished run
-    BacktestEngine         run() drives the whole loop
+    PortfolioView      Read-only account state handed to the strategy: never
+                       the ledger object itself.
+    RunResult          Trades, equity and orders frames plus run metadata of
+                       one finished run.
+    BacktestEngine     run() drives the whole loop; construct one per run, it
+                       is not reusable. last_bars exposes the latest bar per
+                       symbol so the venue runner can value end-of-run
+                       positions.
+    BaseCcyConverter   Type alias, not in __all__: (price, quote_ccy, fx_mid)
+                       returns the price in the account currency.
+    LiquidationValuer  Type alias, not in __all__: (symbol, bar, key) returns
+                       the per-share exit value in the account currency, on
+                       the bid side and after conversion fee and sell taxes.
+                       Optional and venue-supplied.
+    StrategyFn         Type alias, not in __all__: the strategy signature;
+                       imported by strategy_loader.py.
+
+Constants:
+    ZERO         Decimal   Decimal("0"), the module's single zero literal for
+                 quantity comparisons.
+    _QTY_STEP    Decimal   Decimal("0.00000001"), that is eight decimal
+                 places. Fallback order-quantity step used only when the
+                 broker exposes no order_quantity_step(); when it does, the
+                 venue value wins, for example four decimal places under the
+                 T212 precision fault. Source unknown, needs verification.
+
+Inputs: None. Bars arrive through the injected BarFeed and FX rates through
+    the injected FxSeries; this module opens no file and makes no network call.
+Outputs: None. Frames are returned in memory as RunResult.
+
+Change log:
+    2026-08-22  Header expanded to the six-section spec.
+    2026-08-22  Drain submit-time fills (same_close mode) after the submission
+                loop; timing guard admits at_close fills only in that mode;
+                trades frame carries an at_close column.
 """
 
 from __future__ import annotations
@@ -99,10 +144,17 @@ class BacktestEngine:
             targets = self.strategy(view, self._portfolio_view(), self.config.params)
             for spec in self._diff_to_specs(targets):
                 self.broker.submit(spec, key, step, self.ledger)
+            # Same-close mode: fills executed at submission time against this
+            # bar's close are drained here and pass the same timing guard.
+            drain = getattr(self.broker, "drain_submit_fills", None)
+            if drain is not None:
+                close_fills = drain()
+                self._assert_fill_timing(close_fills)
+                self.fills.extend(close_fills)
             # Mark AFTER submissions so cash frozen for orders placed this
             # step enters the occupancy series; marking before would let a
             # reservation that resolves next bar escape the capital peak
-            # (fixplans/framework/05_metrics_reporting.md section 1.1).
+            # (docs/backtest/framework/05_metrics_reporting.md section 1.1).
             self.ledger.mark(step, key, self._valuation_prices(key),
                              self._liquidation_prices(key))
         return self._collect()
@@ -118,11 +170,13 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _assert_fill_timing(self, fills: list[Fill]) -> None:
-        """Online lookahead guards, always on (fixplans/validation/
+        """Online lookahead guards, always on (docs/backtest/validation/
         01_no_lookahead.md section 1.2).
 
         Step guard: a fill in the same step its order was submitted is a
-        lookahead bug, full stop (backtest-discipline section 2.1).
+        lookahead bug, full stop (backtest-discipline section 2.1) -- except
+        a fill stamped at_close under the declared same_close mode, which is
+        the last-minute-before-close convention (EngineConfig.fill_timing).
         Time guard (intraday): the decision at the submission key used that
         bar's close, which only exists one full interval later; a fill bar
         must not OPEN before that instant. Steps alone cannot express this on
@@ -131,8 +185,18 @@ class BacktestEngine:
         """
         interval = pd.Timedelta(seconds=INTERVAL_SECONDS[self.config.interval])
         daily = self.config.interval == "1d"
+        same_close = self.config.fill_timing == "same_close"
         for fill in fills:
             order = self.broker.orders[fill.order_id]
+            if fill.at_close:
+                # Declared same-close execution: the fill may share the
+                # decision bar, never precede it, and only in that mode.
+                if not same_close or fill.step != order.submitted_step:
+                    raise AssertionError(
+                        f"at-close fill outside same_close mode: order "
+                        f"{order.order_id} step {fill.step} vs submitted "
+                        f"{order.submitted_step}")
+                continue
             if fill.step <= order.submitted_step:
                 raise AssertionError(
                     f"same-bar fill: order {order.order_id} submitted at step "
@@ -230,13 +294,14 @@ class BacktestEngine:
     # ------------------------------------------------------------------
 
     def _collect(self) -> RunResult:
-        # Each trade row is self-describing (fixplans/framework/
+        # Each trade row is self-describing (docs/backtest/framework/
         # 05_metrics_reporting.md section 4.2): submission time, side and the
         # order's terminal state ride along with the fill.
         trades = pd.DataFrame([{
             "order_id": f.order_id, "symbol": f.symbol, "ts": f.ts,
             "step": f.step, "quantity": float(f.quantity),
             "side": "BUY" if f.quantity > ZERO else "SELL",
+            "at_close": f.at_close,
             "submitted_ts": self.broker.orders[f.order_id].submitted_ts,
             "order_status": self.broker.orders[f.order_id].status.value,
             "order_reason": self.broker.orders[f.order_id].reason,
