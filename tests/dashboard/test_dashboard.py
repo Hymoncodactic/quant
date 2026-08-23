@@ -254,6 +254,65 @@ def test_pages_carry_this_run_token_and_not_the_placeholder(live_server):
     assert "__DASH_TOKEN__" not in body
 
 
+def test_a_second_launch_is_answered_not_crashed(tmp_path, monkeypatch):
+    """Double-clicking the launcher twice must not produce a stack trace.
+
+    The lock has to be taken before the socket: taking it afterwards means
+    the second launch dies on the bind and never reaches the message the
+    lock exists to give.
+    """
+    from trading212.dashboard.server import acquire_instance_lock
+    first = acquire_instance_lock(tmp_path, 8787)
+    assert first is not None
+    second = acquire_instance_lock(tmp_path, 9999)
+    assert second is None, "a second dashboard must not get the lock"
+    first.close()
+    third = acquire_instance_lock(tmp_path, 8787)
+    assert third is not None, "the lock must free when the holder exits"
+    third.close()
+
+
+def test_a_second_launch_is_sent_to_the_port_actually_serving(tmp_path):
+    """The lock covers the state directory, not a port. A launch asking for
+    a different port must be sent where the dashboard actually is."""
+    from trading212.dashboard.server import (acquire_instance_lock,
+                                             running_dashboard_port)
+    held = acquire_instance_lock(tmp_path, 8787)
+    assert running_dashboard_port(tmp_path) == 8787
+    assert acquire_instance_lock(tmp_path, 9999) is None
+    assert running_dashboard_port(tmp_path) == 8787, \
+        "the failed launch must not overwrite the holder's port"
+    held.close()
+
+
+def test_main_opens_the_running_dashboard_instead_of_failing(tmp_path,
+                                                             monkeypatch):
+    from trading212.dashboard import server as srv
+
+    class _Ctx:
+        state_dir = tmp_path
+
+        def __init__(self, env=None):
+            pass
+
+        def close(self):
+            pass
+
+    held = srv.acquire_instance_lock(tmp_path, 8787)
+    opened = []
+    monkeypatch.setattr(srv, "AppContext", _Ctx)
+    monkeypatch.setattr(srv.webbrowser, "open", lambda url: opened.append(url))
+
+    def _must_not_bind(*a, **k):
+        raise AssertionError("a second launch must not reach the socket")
+
+    monkeypatch.setattr(srv, "build_server", _must_not_bind)
+    # Asks for 9999, must be sent to the 8787 the holder is really on.
+    assert srv.main(["--port", "9999"]) == 0
+    assert opened and opened[0].endswith(":8787/"), opened
+    held.close()
+
+
 def test_write_routes_reject_a_wrong_token(live_server):
     status, body = _post(live_server, "/api/settings", GOOD, "not-the-token")
     assert status == 403 and body["problem"] == "bad_token"

@@ -21,9 +21,10 @@ Out of scope: what the routes do, which belongs to api.py; sampling, which
 belongs to collector.py; page markup, which belongs to assets/.
 
 Public functions:
-    build_server(env, port)          Construct the server and its sampler.
-    acquire_instance_lock(state_dir)  Refuse a second dashboard.
-    main(argv=None)                  Command-line entry point.
+    build_server(env, port, ctx)      Construct the server and its sampler.
+    acquire_instance_lock(state_dir, port)   Take the single-instance lock.
+    running_dashboard_port(state_dir) Port the lock holder is serving on.
+    main(argv=None)                   Command-line entry point.
 
 Constants:
     DEFAULT_PORT   int  8787. A fixed high port so the bookmark keeps
@@ -47,12 +48,17 @@ Change log:
     2026-08-23  Single-instance lock: the venue meters requests per
                 account, so a second dashboard pushes both past the
                 budget and each reports the broker as unreachable.
+    2026-08-24  The instance lock moved ahead of the socket bind. Taking
+                it afterwards meant a second launch died on the bind with
+                a stack trace and never reached the message the lock was
+                added to give. A second launch now opens the running
+                dashboard, and a port held by something else says so.
 """
 
 from __future__ import annotations
 
-__all__ = ["build_server", "acquire_instance_lock", "main", "DEFAULT_PORT",
-           "HOST", "DASH_HEADER"]
+__all__ = ["build_server", "acquire_instance_lock", "running_dashboard_port",
+           "main", "DEFAULT_PORT", "HOST", "DASH_HEADER"]
 
 import argparse
 import fcntl
@@ -255,32 +261,64 @@ class _Server(ThreadingHTTPServer):
         self.shutdown()
 
 
-def acquire_instance_lock(state_dir):
+def acquire_instance_lock(state_dir, port: int | None = None):
     """Take an exclusive lock so only one dashboard polls the venue.
 
     The venue meters requests per ACCOUNT, not per process, so a second
     dashboard does not merely duplicate work: the two together exceed the
     account's budget and both start seeing rate-limit errors, which the
-    interface then reports as the broker being unreachable. Launching twice
-    is easy to do by accident, so it is refused rather than tolerated. The
-    lock is released by the OS on exit, so a crash leaves nothing stale.
+    interface then reports as the broker being unreachable.
+
+    Returns the open handle when the lock was taken, or None when another
+    dashboard holds it. Returning rather than raising lets the caller do the
+    useful thing -- point the reader at the dashboard that is already
+    running -- instead of printing an error about a window they meant to
+    open anyway. The OS releases the lock on exit, so a crash leaves nothing
+    stale behind.
+
+    The holder writes its own port into the file. The lock covers the state
+    directory, not a port, so a later launch asking for a different port
+    must be sent to where the dashboard actually IS, not to the port it
+    happened to ask for.
     """
     state_dir.mkdir(parents=True, exist_ok=True)
-    handle = open(state_dir / "dashboard.lock", "w", encoding="utf-8")
+    path = state_dir / "dashboard.lock"
+    handle = open(path, "r+" if path.exists() else "w+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        raise SystemExit(
-            "another dashboard is already running; open its window instead "
-            "of starting a second one")
-    handle.write(f"pid={os.getpid()}\n")
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()}\nport={port if port is not None else ''}\n")
     handle.flush()
     return handle
 
 
-def build_server(env: str | None = None, port: int = DEFAULT_PORT):
-    """Construct the context, sampler and server without starting them."""
-    ctx = AppContext(env)
+def running_dashboard_port(state_dir) -> int | None:
+    """Port the dashboard holding the lock is listening on, if it said."""
+    path = Path(state_dir) / "dashboard.lock"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("port="):
+                value = line.split("=", 1)[1].strip()
+                return int(value) if value else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def build_server(env: str | None = None, port: int = DEFAULT_PORT,
+                 ctx: AppContext | None = None):
+    """Construct the context, sampler and server without starting them.
+
+    An already-built context can be passed in so the caller may take the
+    instance lock BEFORE this binds a socket: binding first means a second
+    launch dies on the bind with a stack trace and never reaches the message
+    the lock exists to give.
+    """
+    ctx = ctx or AppContext(env)
     collector = Collector(ctx)
     return _Server((HOST, port), _Handler, ctx, collector)
 
@@ -297,9 +335,36 @@ def main(argv: list[str] | None = None) -> int:
                         help="serve without starting the sampler")
     args = parser.parse_args(argv)
 
-    server = build_server(args.env, args.port)
-    lock = acquire_instance_lock(server.ctx.state_dir)  # noqa: F841 held until exit
+    # The context is built first because the lock lives beside its state, and
+    # the lock is taken before any socket so a second launch is answered
+    # rather than crashed.
+    ctx = AppContext(args.env)
+    lock = acquire_instance_lock(ctx.state_dir, args.port)  # noqa: F841
+    if lock is None:
+        # Another dashboard holds the lock. Send the reader to the port that
+        # one is on, which need not be the port this launch asked for.
+        running = running_dashboard_port(ctx.state_dir)
+        ctx.close()
+        target = running if running is not None else args.port
+        url = f"http://{HOST}:{target}/"
+        print("a dashboard is already running; opening that one instead of "
+              "starting a second")
+        print(f"dashboard: {url}")
+        if not args.no_open:
+            webbrowser.open(url)
+        return 0
     url = f"http://{HOST}:{args.port}/"
+
+    try:
+        server = build_server(args.env, args.port, ctx=ctx)
+    except OSError as exc:
+        # The lock was free, so this is not a second dashboard: something
+        # else on this machine holds the port.
+        ctx.close()
+        print(f"cannot listen on {HOST}:{args.port}: {exc}")
+        print(f"something else is using that port; rerun with --port "
+              f"<other number>")
+        return 1
     if not args.no_sampling:
         server.collector.start()
 
