@@ -1,0 +1,6 @@
+# Everything in here is account data: positions, fills, cash, order history
+# and the account id. This repository is public, so nothing below is ever
+# committed. Only this file and the directory's README are.
+*
+!.gitignore
+!README.md

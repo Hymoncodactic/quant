@@ -23,6 +23,7 @@
 | `vendor/` | 第三方参考代码的浅克隆，只读参考 | gitignore（`/vendor/`），不入库 |
 | `scripts/` | 一次性脚本与常驻工具，一次性件带日期前缀 | 见 `scripts/README.md` |
 | `dashboard.command` | 双击启动本地看板（`trading212/dashboard/`） | 只启动看板，不碰策略进程 |
+| `trading212/records/` | 账户记账归档（成交、流水、分红、快照、信号、资产曲线） | **不入库**，带自身 `.gitignore`；仓库公开，内含持仓与账户号 |
 | `tests/` | 引擎与适配层测试 | 见 `tests/README.md` |
 | `reports/` `logs/` `backtest/results/` | 运行时产物落地位置 | gitignore，允许为空，不放 `README.md`（`CLAUDE.md` §4.3） |
 | `secrets/` | 唯一的密钥落地位置 | gitignore，永不展示内容 |
@@ -114,7 +115,8 @@ T212 无行情接口也无推送通道，故「主循环」体现为**每个交�
 
 | 模块 | 职责 |
 |---|---|
-| `client.py` | REST 传输：legacy 单钥鉴权、逐端点令牌桶限频、GET 重试；下单 POST 永不重试（venue 无幂等键），200 但不可解析同样抛 `OrderSubmitAmbiguousError` |
+| `client.py` | REST 传输：legacy 单钥鉴权、逐端点令牌桶限频、GET 重试；下单 POST 永不重试（venue 无幂等键），200 但不可解析同样抛 `OrderSubmitAmbiguousError`。`follow_page` 修补 transactions 端点只回查询串的分页缺陷 |
+| `archive.py` | 记账归档：把券商的历史订单/流水/分红原样落 `trading212/records/`，按 venue 自身 id 去重，增量走到已知记录即停 |
 | `execution/instruments.py` | 标的映射（`META→FB_US_EQ`，S4 已验证）与场次日历：`Session` 记录、半日市判定、15:30 决策键（US 表无 `CLOSE` 事件，常规收盘由 `AFTER_HOURS_OPEN` 标记） |
 | `execution/market_data.py` | 1h/1d 刷新与读取、日内截止视图（`LiveMarketView`，与引擎 `MarketView` 同鸭型）、日内新鲜度闸（含 FX 必须落在决策键前 90 分钟） |
 | `execution/strategy_loader.py` | 执行侧按路径加载策略模块并校验身份；支持日内壳的 `make_strategy()` 工厂注入日线历史 |
@@ -143,7 +145,7 @@ T212 无行情接口也无推送通道，故「主循环」体现为**每个交�
 |---|---|
 | `context.py` | 进程内共享：配置、券商客户端（快速失败档：6 秒超时、不重试）、账本读取、关注标的 |
 | `collector.py` | 秒更采集：账户与行情各自独立轮询，采样线程只读缓存，故数据源变慢不影响刷新节奏 |
-| `snapshots.py` | 最新快照原子替换 + 逐日采样追加；读取时降采样，且始终保留停机断点标记 |
+| `snapshots.py` | 最新快照原子替换 + 逐日采样追加 + **按日汇总**（长跨度曲线的来源）；读取时降采样，且始终保留停机断点标记 |
 | `quotes.py` | 延迟行情（与策略同一数据源，1 分钟粒度），逐标的报告新鲜度 |
 | `settings.py` | 上交易前配置的读、校验、写回；只产出问题码，措辞留给界面 |
 | `manual_orders.py` | 手动下单：三重条件缺一不可（配置 live、界面确认、非演练），独立留痕、不进策略账本 |

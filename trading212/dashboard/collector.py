@@ -37,6 +37,12 @@ Constants:
     DEFAULT_QUOTE_SEC     float  30.0. Quote polling period. The vendor's
                                  finest bar is one minute, so polling faster
                                  buys nothing.
+    DEFAULT_ARCHIVE_SEC   float  300.0. How often the account's own history
+                                 is harvested into the archive. The history
+                                 endpoints are metered at six requests a
+                                 minute, and the records they return change
+                                 only when something trades, so five minutes
+                                 is frequent enough to lose nothing.
 
 Inputs:
     GET /api/v0/equity/account/summary, /equity/positions   (through client)
@@ -53,7 +59,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["Collector", "DEFAULT_TICK_SEC", "DEFAULT_ACCOUNT_SEC",
-           "DEFAULT_QUOTE_SEC"]
+           "DEFAULT_QUOTE_SEC", "DEFAULT_ARCHIVE_SEC"]
 
 import threading
 import time
@@ -62,6 +68,7 @@ from decimal import Decimal
 from typing import Any
 
 from common.logging_setup import get_logger
+from trading212 import archive
 from trading212.dashboard import snapshots
 from trading212.dashboard.quotes import fetch_quotes
 
@@ -70,6 +77,7 @@ log = get_logger("t212.dashboard")
 DEFAULT_TICK_SEC = 5.0
 DEFAULT_ACCOUNT_SEC = 10.0
 DEFAULT_QUOTE_SEC = 30.0
+DEFAULT_ARCHIVE_SEC = 300.0
 
 _VENUE = "t212"
 
@@ -79,11 +87,14 @@ class Collector:
 
     def __init__(self, context, tick_sec: float = DEFAULT_TICK_SEC,
                  account_sec: float = DEFAULT_ACCOUNT_SEC,
-                 quote_sec: float = DEFAULT_QUOTE_SEC) -> None:
+                 quote_sec: float = DEFAULT_QUOTE_SEC,
+                 archive_sec: float = DEFAULT_ARCHIVE_SEC) -> None:
         self._ctx = context
         self._tick = tick_sec
         self._account_every = account_sec
         self._quote_every = quote_sec
+        self._archive_every = archive_sec
+        self._archive_result: dict[str, Any] = {}
         self._thread: threading.Thread | None = None
         self._workers: list[threading.Thread] = []
         self._stop = threading.Event()
@@ -118,6 +129,10 @@ class Collector:
                              args=("quotes", self._quote_every,
                                    self._refresh_quotes),
                              name="dash-quotes", daemon=True),
+            threading.Thread(target=self._poll_loop,
+                             args=("archive", self._archive_every,
+                                   self._refresh_archive),
+                             name="dash-archive", daemon=True),
         ]
         for worker in self._workers:
             worker.start()
@@ -147,7 +162,9 @@ class Collector:
                     "ticks": self._ticks, "last_error": self._last_error,
                     "tick_sec": self._tick,
                     "account_sec": self._account_every,
-                    "quote_sec": self._quote_every}
+                    "quote_sec": self._quote_every,
+                    "archive_sec": self._archive_every,
+                    "archive": dict(self._archive_result)}
 
     # ------------------------------------------------------------------
     # [2] Sampling
@@ -187,11 +204,22 @@ class Collector:
     def _refresh_quotes(self) -> None:
         self._quotes = fetch_quotes(self._ctx.watch_symbols())
 
+    def _refresh_archive(self) -> None:
+        """Harvest the account's own history into the archive.
+
+        Kept on the collector because the archive should fill while anyone is
+        watching, and stop when they stop watching, exactly like the rest of
+        the polling. The strategy's own runs harvest independently.
+        """
+        self._archive_result = archive.harvest_all(self._ctx.client())
+
     def _tick_once(self) -> None:
         book = self._ctx.book_state()
         sample = self._build_sample(book)
+        thin = _thin(sample)
         snapshots.write_snapshot(_VENUE, sample)
-        snapshots.append_sample(_VENUE, _thin(sample))
+        snapshots.append_sample(_VENUE, thin)
+        snapshots.update_rollup(_VENUE, thin)
         with self._lock:
             self._ticks += 1
             self._last_error = None

@@ -3,15 +3,27 @@
 #
 # Safe to run repeatedly and safe to interrupt: only the gap between what is
 # stored and what is available gets fetched, and partitions are written
-# atomically so a stopped run leaves nothing half-written. caffeinate holds off
-# idle sleep while it runs.
+# atomically so a stopped run leaves nothing half-written.
 #
-# Three passes run in order: crypto archives, the core equity universe at all
-# five intervals, and the 502-name B0 pairs-trading universe at the daily
-# interval only. The B0 pass is the long one on a first run and is skipped
-# entirely on a quiet day, since each name is probed against what is already
-# stored. Pass --no-b0 to skip it.
+# A lock prevents a second copy from starting. Two copies share one link and each
+# halves the other's throughput; on an earlier run that contention was what turned
+# a clean download into thirteen timeouts.
 cd "$(dirname "$0")" || exit 1
+
+LOCK="/tmp/quant_update_data.lock"
+exec 9>"$LOCK"
+if ! flock -n 9 2>/dev/null; then
+    # macOS ships no flock; fall back to a pid file.
+    if [ -f "$LOCK.pid" ] && kill -0 "$(cat "$LOCK.pid" 2>/dev/null)" 2>/dev/null; then
+        echo "An update is already running (PID $(cat "$LOCK.pid"))."
+        echo "Wait for it to finish, or stop it first. Press any key to close."
+        read -n 1 -s
+        exit 1
+    fi
+fi
+echo $$ > "$LOCK.pid"
+trap 'rm -f "$LOCK.pid"' EXIT
+
 caffeinate -i ./.venv/bin/python -u scripts/update_data.py
 status=$?
 echo

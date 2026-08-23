@@ -84,3 +84,16 @@ td { font-variant-numeric: tabular-nums; }
   border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12.5px;
   color: var(--muted);
 }
+
+/* Range selector: one row of small buttons, the chosen one highlighted.
+   Borrowed from the vocabulary a stock app already taught the reader. */
+.rangebar { display: flex; gap: 4px; flex-wrap: wrap; }
+.rangebar button {
+  padding: 3px 9px; font-size: 12.5px; border-radius: 6px;
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+}
+.rangebar button:hover { border-color: var(--line); color: var(--text); }
+.rangebar button.on {
+  background: rgba(76,141,255,.16); color: var(--accent);
+  border-color: rgba(76,141,255,.35);
+}

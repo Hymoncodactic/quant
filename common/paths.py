@@ -39,6 +39,7 @@ Public functions:
     equity_interval_dir(group, symbol, interval, data_root=None)  One symbol-interval directory.
     execution_state_dir(venue)                      Live execution ledger and cycle state.
     dashboard_state_dir(venue)                      Dashboard snapshots and samples.
+    records_dir(venue)                              Bookkeeping archive of one venue.
     month_bounds(period_start, latest)              Calendar-anchored start and end labels.
     stamp_freq(stamp)                               Classify a stamp as daily or monthly.
     docs_data_dir(source)                           Documentation directory of one source.
@@ -84,7 +85,7 @@ __all__ = [
     "binance_partition_path", "binance_partition_dir",
     "equity_daily_path", "equity_intraday_path",
     "equity_curated_root", "equity_interval_dir", "execution_state_dir",
-    "dashboard_state_dir",
+    "dashboard_state_dir", "records_dir",
     "month_bounds", "stamp_freq",
     "docs_data_dir", "data_spec_path", "manifest_path", "gaps_path",
     "ROOT", "DIR_DATA", "DIR_DOCS", "DIR_DOCS_DATA", "DIR_REFERENCE",
@@ -224,6 +225,20 @@ def dashboard_state_dir(venue: str) -> Path:
     """
     _check_venue(venue)
     return DIR_DATA / venue / "dashboard"
+
+
+def records_dir(venue: str) -> Path:
+    """Return the venue's bookkeeping archive directory.
+
+    Deliberately inside the venue's source directory rather than under
+    data/: the account owner asked for every accounting record to live
+    beside the venue's code, where it is easy to find without knowing the
+    data-lake layout. The directory carries its own .gitignore, because the
+    repository is public and these files hold positions, fills, cash and the
+    account id.
+    """
+    _check_venue(venue)
+    return venue_dir(venue) / "records"
 
 
 def bar_path(venue: str, layer: str, instrument: str, period: str, date_str: str) -> Path:

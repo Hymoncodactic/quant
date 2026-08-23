@@ -136,6 +136,11 @@ PUBLISH_LAG_DAYS = 2
 # is worth re-requesting only during the first stretch of the current month.
 PUBLISH_LAG_MONTH_DAYS = 10
 
+# How much later a fetched history may start before it is judged truncated rather
+# than merely different. A few days absorbs a genuine first-listing correction;
+# anything beyond that is a partial response and the stored copy is kept.
+TRUNCATION_TOLERANCE = pd.Timedelta(days=7)
+
 
 def _crypto_out(market: str, dataset: str, symbol: str, period: str | None,
                 date_str: str) -> Path:
@@ -276,96 +281,99 @@ def _update_crypto() -> dict:
 
 
 def _update_equity() -> dict:
-    """Refresh every equity interval whose ticker has moved."""
-    stats = {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
-             "failed": []}
+    """Refresh every stored equity symbol, maintaining only the intervals it has."""
+    stats = {"updated": 0, "skipped": 0, "readjusted": 0, "files": 0, "rows": 0,
+             "bytes": 0, "failed": [], "truncated": []}
     print("\n" + "=" * 96)
-    print("EQUITY  Yahoo, full-window refresh of tickers that moved")
+    print("EQUITY  Yahoo, symbols discovered from disk")
     print("=" * 96, flush=True)
-    for group, members in yb.UNIVERSE.items():
-        print(f"\n[{group}]", flush=True)
-        for ticker, name in members.items():
-            stored = yb.latest_stored(group, ticker, "1d")
-            probe = yb.fetch_interval(ticker, "1d", 5, None)
+
+    for group in yb.UNIVERSE:
+        symbols = yb.discover_symbols(group)
+        configured = len(yb.UNIVERSE[group])
+        print(f"\n[{group}] {len(symbols)} symbols "
+              f"({configured} configured, {len(symbols) - configured} found on disk)",
+              flush=True)
+
+        for index, ticker in enumerate(symbols, 1):
+            intervals = yb.stored_intervals(group, ticker)
+
+            # The daily fetch doubles as the probe: it is needed anyway when the
+            # symbol has moved, so probing separately would double the requests
+            # across fifteen hundred symbols for no gain.
+            frame = yb.fetch_interval(ticker, "1d", None, None)
             time.sleep(yb.PACE_SEC)
-            if probe.empty:
-                stats["failed"].append(f"{ticker}/probe")
-                print(f"  {ticker:<10} probe failed", flush=True)
+            if frame.empty:
+                stats["failed"].append(f"{ticker}/1d")
                 continue
-            if stored is not None and probe["ts"].max() <= stored:
+
+            stored_max = yb.latest_stored(group, ticker, "1d")
+            if (stored_max is not None and frame["ts"].max() <= stored_max
+                    and intervals == ["1d"]):
                 stats["skipped"] += 1
-                print(f"  {ticker:<10} {name[:24]:<25} up to date "
-                      f"({str(stored)[:10]})", flush=True)
+                if index % 100 == 0:
+                    print(f"  ...{index}/{len(symbols)}  updated {stats['updated']}  "
+                          f"skipped {stats['skipped']}  failed {len(stats['failed'])}",
+                          flush=True)
                 continue
 
-            parts = []
-            for interval, lookback, chunk in yb.INTERVALS:
-                frame = yb.fetch_interval(ticker, interval, lookback, chunk)
-                time.sleep(yb.PACE_SEC)
-                if frame.empty:
-                    stats["failed"].append(f"{ticker}/{interval}")
-                    parts.append(f"{interval}:-")
+            # A retroactive adjustment rewrites history all the way back, so the
+            # oldest close is the cheapest tell. Unchanged means only the current
+            # year can differ.
+            #
+            # The date is checked before the close. A response that starts years
+            # later than what is stored is a truncated fetch, not an adjustment,
+            # and rewriting on that basis would leave the older files on the old
+            # basis and the newer ones on a new one. In that case the stored
+            # history is the better copy: only the current year is refreshed and
+            # the symbol is reported, so a shrinking history is visible rather
+            # than silently absorbed.
+            stored_first = yb.earliest_bar(group, ticker)
+            fetched_first_ts = frame["ts"].min()
+            fetched_first_close = float(frame["close"].iloc[0])
+
+            truncated = (stored_first is not None
+                         and fetched_first_ts > stored_first[0] + TRUNCATION_TOLERANCE)
+            if truncated:
+                stats["truncated"].append(
+                    f"{ticker}: stored from {str(stored_first[0])[:10]}, "
+                    f"fetch from {str(fetched_first_ts)[:10]}")
+                readjusted = False
+            else:
+                readjusted = stored_first is None or abs(
+                    fetched_first_close - stored_first[1]) > max(
+                        1e-6, abs(stored_first[1]) * 1e-6)
+            years = None if readjusted else {int(frame["ts"].max().year)}
+            if readjusted and stored_first is not None:
+                stats["readjusted"] += 1
+
+            files, size = yb.write_daily(group, ticker, frame, years=years)
+            stats["files"] += files
+            stats["rows"] += len(frame)
+            stats["bytes"] += size
+
+            for interval in intervals:
+                if interval == "1d":
                     continue
-                files, size = (yb.write_daily(group, ticker, frame) if interval == "1d"
-                               else yb.write_intraday(group, ticker, interval, frame))
+                spec = next(((lb, ch) for iv, lb, ch in yb.INTERVALS if iv == interval),
+                            None)
+                if spec is None:
+                    continue
+                part = yb.fetch_interval(ticker, interval, spec[0], spec[1])
+                time.sleep(yb.PACE_SEC)
+                if part.empty:
+                    stats["failed"].append(f"{ticker}/{interval}")
+                    continue
+                files, size = yb.write_intraday(group, ticker, interval, part)
                 stats["files"] += files
-                stats["rows"] += len(frame)
+                stats["rows"] += len(part)
                 stats["bytes"] += size
-                parts.append(f"{interval}:{len(frame):,}")
-            stats["tickers"] += 1
-            print(f"  {ticker:<10} {name[:24]:<25} updated -> "
-                  f"{'  '.join(parts)}", flush=True)
-    return stats
 
-
-def _update_b0_universe() -> dict:
-    """Refresh DAILY bars for the B0 pairs-trading universe.
-
-    Separate from _update_equity because the two have different shapes. The
-    core universe carries five intervals per ticker and is small; the B0
-    universe is 502 names and needs the daily interval only, so fetching all
-    five would multiply the request count by five for no research value. Names
-    already covered by yb.UNIVERSE are skipped here, since that pass fetches a
-    superset for them.
-
-    The universe itself is frozen in data/reference/b0_universe_1500_20260823.json
-    and is NOT redefined here; the initial load is
-    scripts/20260823_ingest_b0_universe.py, which shares this same fetch path.
-    """
-    stats = {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
-             "failed": []}
-    if not B0_UNIVERSE_JSON.is_file():
-        print("\n[b0] universe file absent, skipped", flush=True)
-        return stats
-    payload = json.loads(B0_UNIVERSE_JSON.read_text())
-    core = set(yb.UNIVERSE.get("us_equity", {}))
-    names = sorted({m["ticker"] for m in payload["members"]} - core)
-
-    print("\n" + "=" * 96)
-    print(f"B0 UNIVERSE  Yahoo, daily only, {len(names)} names "
-          f"(pairs-trading study)")
-    print("=" * 96, flush=True)
-    cutoff = pd.Timestamp(date.today() - timedelta(days=B0_STALE_DAYS), tz="UTC")
-    for i, ticker in enumerate(names, 1):
-        stored = yb.latest_stored("us_equity", ticker, "1d")
-        if stored is not None and stored >= cutoff:
-            stats["skipped"] += 1
-            continue
-        frame = yb.fetch_interval(ticker, "1d", None, None)
-        time.sleep(yb.PACE_SEC)
-        if frame.empty:
-            stats["failed"].append(ticker)
-            continue
-        files, size = yb.write_daily("us_equity", ticker, frame)
-        stats["tickers"] += 1
-        stats["files"] += files
-        stats["rows"] += len(frame)
-        stats["bytes"] += size
-        if stats["tickers"] % 25 == 0:
-            print(f"  {i}/{len(names)}  updated {stats['tickers']}  "
-                  f"{stats['bytes']/1e6:,.1f} MB", flush=True)
-    print(f"  done: {stats['tickers']} updated, {stats['skipped']} already current, "
-          f"{len(stats['failed'])} failed", flush=True)
+            stats["updated"] += 1
+            if index % 100 == 0 or len(symbols) < 50:
+                print(f"  ...{index}/{len(symbols)}  updated {stats['updated']}  "
+                      f"skipped {stats['skipped']}  failed {len(stats['failed'])}",
+                      flush=True)
     return stats
 
 
@@ -389,10 +397,21 @@ def main() -> None:
           f"{crypto['bytes']/1e6:,.1f} MB  "
           f"absent {crypto['absent']}  errors {crypto['errors']}  "
           f"superseded dailies removed {crypto['superseded']}")
-    print(f"  equity  {equity['tickers']} tickers updated, {equity['skipped']} already current  "
-          f"{equity['files']} files  {equity['rows']:,} rows  {equity['bytes']/1e6:,.1f} MB")
+    print(f"  equity  {equity['updated']} updated, {equity['skipped']} already current, "
+          f"{equity['readjusted']} had a retroactive adjustment (full rewrite)")
+    print(f"          {equity['files']} files  {equity['rows']:,} rows  "
+          f"{equity['bytes']/1e6:,.1f} MB")
+    if equity["truncated"]:
+        print(f"  equity truncated fetches ({len(equity['truncated'])}) -- stored history "
+              f"kept, only the current year refreshed:")
+        for line in equity["truncated"][:10]:
+            print(f"    {line}")
+        if len(equity["truncated"]) > 10:
+            print(f"    ... and {len(equity['truncated'])-10} more")
     if equity["failed"]:
-        print(f"  equity failures ({len(equity['failed'])}): {equity['failed']}")
+        shown = equity["failed"][:20]
+        print(f"  equity failures ({len(equity['failed'])}): {shown}"
+              + (" ..." if len(equity["failed"]) > 20 else ""))
         print("  Re-run to retry: these are usually Yahoo throttling, not missing data.")
     print(f"  b0      {b0['tickers']} tickers updated, {b0['skipped']} already current  "
           f"{b0['files']} files  {b0['rows']:,} rows  {b0['bytes']/1e6:,.1f} MB")

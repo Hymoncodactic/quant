@@ -175,7 +175,26 @@
     "tz_local_wrap": [
       "（",
       "）"
-    ]
+    ],
+    "range_label": "时间跨度",
+    "source_ticks": "逐笔采样",
+    "source_daily": "按日汇总",
+    "available_from": "现有数据始于",
+    "points": "个点",
+    "range_names": {
+      "1D": "1日",
+      "1W": "1周",
+      "1M": "1月",
+      "3M": "3月",
+      "6M": "6月",
+      "YTD": "今年",
+      "1Y": "1年",
+      "2Y": "2年",
+      "5Y": "5年",
+      "10Y": "10年",
+      "ALL": "全部"
+    },
+    "meta_separator": "  ·  "
   },
   "table": {
     "heading": "当前持仓",
@@ -236,5 +255,22 @@
   "errors": {
     "fetch": "读取失败，稍后会自动重试。",
     "broker_hint": "连不上券商时，账户数字会显示为「不知道」，但策略账本和曲线照常显示。"
+  },
+  "records": {
+    "heading": "记账数据",
+    "note": "所有能从券商取到的记录都存在这里，字段一个不删。文件在：",
+    "privacy": "这些文件含持仓、成交、现金和账户号，已设为不入库，不会被推到 GitHub。",
+    "stream": "数据",
+    "rows": "条数",
+    "size": "大小",
+    "last": "最后写入",
+    "names": {
+      "orders": "成交明细（含逐笔税费）",
+      "transactions": "资金流水",
+      "dividends": "分红",
+      "positions": "持仓快照",
+      "account_summary": "账户快照",
+      "signals": "下单信号"
+    }
   }
 }

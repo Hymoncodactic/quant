@@ -21,6 +21,8 @@ Public functions:
     read_snapshot(venue)                    Read it, or None when absent.
     append_sample(venue, sample)            Append one tick to today's file.
     read_samples(venue, days, max_points)   Downsampled tick history.
+    update_rollup(venue, sample)            Fold a tick into today's daily row.
+    read_rollup(venue)                      Every daily row, oldest first.
     mark_gap(venue, reason)                 Record a sampling discontinuity.
     sample_files(venue)                     Existing per-day sample files.
 
@@ -34,19 +36,24 @@ Constants:
                         set for the live data.
 
 Inputs:
-    data/t212/dashboard/live_snapshot.json
-    data/t212/dashboard/samples/YYYY-MM-DD.jsonl
+    trading212/records/equity/live_snapshot.json
+    trading212/records/equity/samples/YYYY-MM-DD.jsonl
+    trading212/records/equity/daily.jsonl
 Outputs:
-    the same two paths
+    the same three paths
 
 Change log:
     2026-08-22  Created.
+    2026-08-23  Moved under trading212/records/ at the account owner's
+                request, and gained the daily rollup that makes a
+                multi-year range readable without touching the ticks.
 """
 
 from __future__ import annotations
 
 __all__ = ["write_snapshot", "read_snapshot", "append_sample", "read_samples",
-           "mark_gap", "sample_files", "SNAPSHOT_NAME", "GAP_SECONDS"]
+           "update_rollup", "read_rollup", "mark_gap", "sample_files",
+           "SNAPSHOT_NAME", "GAP_SECONDS"]
 
 import json
 import os
@@ -54,14 +61,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from common.paths import dashboard_state_dir
+from common.paths import records_dir
 
 SNAPSHOT_NAME = "live_snapshot.json"
 GAP_SECONDS = 90
 
 
 def _root(venue: str) -> Path:
-    path = dashboard_state_dir(venue)
+    path = records_dir(venue) / "equity"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -105,6 +112,73 @@ def append_sample(venue: str, sample: dict[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
+def _rollup_path(venue: str) -> Path:
+    return _root(venue) / "daily.jsonl"
+
+
+def update_rollup(venue: str, sample: dict[str, Any]) -> None:
+    """Fold one tick into today's daily row.
+
+    A per-tick series answers "what happened this afternoon" and is hopeless
+    at "what happened over ten years": at one sample every few seconds a
+    decade is tens of millions of points, which no browser will draw and no
+    reader wants. The daily row is the same series at the resolution a long
+    range is actually read at, so a long range costs one small file instead
+    of a decade of ticks.
+
+    The file is rewritten in place because only its last row changes; it
+    holds one row per day, so even a decade of it is a few hundred
+    kilobytes.
+    """
+    equity = sample.get("equity_gbp")
+    if equity is None:
+        return                               # nothing priced yet; no row
+    day = str(sample.get("ts", ""))[:10]
+    if not day:
+        return
+    path = _rollup_path(venue)
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    row = rows[-1] if rows and rows[-1].get("day") == day else None
+    if row is None:
+        row = {"day": day, "open": equity, "high": equity, "low": equity,
+               "close": equity, "ticks": 0}
+        rows.append(row)
+    row["high"] = max(row["high"], equity)
+    row["low"] = min(row["low"], equity)
+    row["close"] = equity
+    row["ticks"] = row.get("ticks", 0) + 1
+    for field in ("cash_gbp", "holdings_gbp", "account_total"):
+        if sample.get(field) is not None:
+            row[field] = sample[field]
+    row["last_ts"] = sample.get("ts")
+    tmp = path.with_suffix(".writing")
+    tmp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+                   + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_rollup(venue: str) -> list[dict[str, Any]]:
+    """Every daily row, oldest first."""
+    path = _rollup_path(venue)
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
 def mark_gap(venue: str, reason: str) -> None:
     """Record that sampling stopped or resumed, so charts can show a break."""
     append_sample(venue, {"ts": datetime.now(timezone.utc).isoformat(),
@@ -142,7 +216,8 @@ def read_samples(venue: str, days: int = 7,
         return rows
     gaps = [r for r in rows if r.get("gap")]
     normal = [r for r in rows if not r.get("gap")]
-    stride = max(1, len(normal) // max(1, max_points - len(gaps)))
+    budget = max(1, max_points - len(gaps))
+    stride = max(1, -(-len(normal) // budget))     # ceiling; see api._downsample
     kept = normal[::stride]
     if normal and kept[-1] is not normal[-1]:
         kept.append(normal[-1])

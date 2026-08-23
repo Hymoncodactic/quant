@@ -91,7 +91,7 @@ def test_apply_refuses_to_write_an_invalid_configuration(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def sample_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr("trading212.dashboard.snapshots.dashboard_state_dir",
+    monkeypatch.setattr("trading212.dashboard.snapshots.records_dir",
                         lambda venue: tmp_path / venue)
     return tmp_path
 
@@ -488,3 +488,91 @@ def test_reset_refused_while_an_order_is_open(tmp_path):
                                      {"confirm": True})
     assert status == 409
     assert any(b["check"] == "no_open_orders" for b in body["blockers"])
+
+
+# ----------------------------------------------------------------------
+# Daily rollup and range selection
+# ----------------------------------------------------------------------
+
+def test_rollup_folds_ticks_into_one_row_per_day(sample_dir):
+    for i, eq in enumerate([1000.0, 1010.0, 990.0, 1005.0]):
+        snapshots.update_rollup("t212", {"ts": f"2026-08-23T0{i}:00:00Z",
+                                         "equity_gbp": eq, "cash_gbp": 500.0})
+    snapshots.update_rollup("t212", {"ts": "2026-08-24T00:00:00Z",
+                                     "equity_gbp": 1100.0})
+    rows = snapshots.read_rollup("t212")
+    assert [r["day"] for r in rows] == ["2026-08-23", "2026-08-24"]
+    first = rows[0]
+    assert first["open"] == 1000.0 and first["close"] == 1005.0
+    assert first["high"] == 1010.0 and first["low"] == 990.0
+    assert first["ticks"] == 4
+
+
+def test_rollup_ignores_a_tick_with_no_priced_equity(sample_dir):
+    """An unpriced tick is not a data point; recording it as one would put a
+    hole in the daily series that looks like a real move."""
+    snapshots.update_rollup("t212", {"ts": "2026-08-23T00:00:00Z",
+                                     "equity_gbp": None})
+    assert snapshots.read_rollup("t212") == []
+
+
+def test_long_ranges_read_the_rollup_not_the_ticks(sample_dir, monkeypatch):
+    """A decade of ticks is tens of millions of points; the whole reason the
+    rollup exists is that the long ranges must never touch them."""
+    from trading212.dashboard import api
+    monkeypatch.setattr(api.snapshots, "read_rollup",
+                        lambda venue: [{"day": "2020-01-02", "close": 900.0}])
+
+    def _boom(*a, **k):
+        raise AssertionError("a long range must not read the tick files")
+
+    monkeypatch.setattr(api.snapshots, "read_samples", _boom)
+    status, body = api.get_history(None, "10Y")
+    assert status == 200 and body["source"] == "daily"
+
+
+def test_short_ranges_read_the_ticks(sample_dir, monkeypatch):
+    from trading212.dashboard import api
+    monkeypatch.setattr(api.snapshots, "read_samples",
+                        lambda venue, days, max_points: [
+                            {"ts": "2099-01-01T00:00:00+00:00",
+                             "equity_gbp": 1.0}])
+    status, body = api.get_history(None, "1D")
+    assert status == 200 and body["source"] == "ticks"
+
+
+def test_an_unknown_range_falls_back_to_one_day(sample_dir, monkeypatch):
+    from trading212.dashboard import api
+    monkeypatch.setattr(api.snapshots, "read_samples",
+                        lambda venue, days, max_points: [])
+    monkeypatch.setattr(api.snapshots, "read_rollup", lambda venue: [])
+    status, body = api.get_history(None, "wobble")
+    assert status == 200 and body["range"] == "1D"
+
+
+def test_downsampling_caps_the_points_and_keeps_gaps():
+    from trading212.dashboard.api import _downsample
+    rows = [{"ts": f"2026-08-23T{i:04d}"} for i in range(5000)]
+    rows.insert(2500, {"ts": "2026-08-23T2500", "gap": True})
+    out = _downsample(rows, 700)
+    assert len(out) <= 760
+    assert sum(1 for r in out if r.get("gap")) == 1
+    assert out == sorted(out, key=lambda r: r["ts"])
+
+
+def test_downsampling_respects_the_cap_just_above_it():
+    """Flooring the stride left counts between the target and twice it
+    completely un-thinned, which is exactly where the cap first matters."""
+    from trading212.dashboard.api import _downsample
+    for n in (701, 895, 1399, 1400, 1401):
+        rows = [{"ts": f"2026-08-23T{i:05d}"} for i in range(n)]
+        out = _downsample(rows, 700)
+        assert len(out) <= 701, f"{n} rows thinned to {len(out)}"
+
+
+def test_downsampling_keeps_the_last_point():
+    """The newest reading is the one a reader looks at first."""
+    from trading212.dashboard.api import _downsample
+    rows = [{"ts": f"2026-08-23T{i:05d}"} for i in range(3000)]
+    out = _downsample(rows, 700)
+    assert out[-1]["ts"] == rows[-1]["ts"]

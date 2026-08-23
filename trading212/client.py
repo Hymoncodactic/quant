@@ -230,6 +230,58 @@ class T212Client:
         return self._get_retrying("history_orders", "/api/v0/equity/history/orders",
                                   params=params)
 
+    def history_transactions(self, cursor: str | None = None,
+                             limit: int = 50) -> dict[str, Any]:
+        """One page of cash movements: deposits, withdrawals, fees, interest.
+
+        The transactions cursor is a STRING while the orders and dividends
+        cursors are integers (spec, pagination section), so the two cursor
+        types must not share a code path.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        return self._get_retrying("history_orders",
+                                  "/api/v0/equity/history/transactions",
+                                  params=params)
+
+    def history_dividends(self, cursor: int | None = None,
+                          ticker: str | None = None,
+                          limit: int = 50) -> dict[str, Any]:
+        """One page of dividend payments."""
+        params: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            params["cursor"] = cursor
+        if ticker is not None:
+            params["ticker"] = ticker
+        return self._get_retrying("history_orders",
+                                  "/api/v0/equity/history/dividends",
+                                  params=params)
+
+    def follow_page(self, bucket: str, next_path: str,
+                    base_path: str | None = None) -> dict[str, Any]:
+        """Fetch a nextPagePath, repairing the one endpoint that omits its path.
+
+        The documentation says to use the string verbatim, and for dividends
+        and orders that works: they return a full path such as
+        "/api/v0/equity/history/dividends?limit=1&cursor=160534735".
+        TRANSACTIONS returns only the query string --
+        "limit=2&cursor=<uuid>&time=<iso>" -- with no path and no leading
+        question mark, so using it verbatim requests a path that does not
+        exist and the venue answers 403 with an HTML page. Measured against
+        the live account 2026-08-23; not in the OpenAPI mirror.
+
+        base_path supplies the endpoint to graft such a fragment onto.
+        """
+        if next_path.startswith("/"):
+            return self._get_retrying(bucket, next_path)
+        if base_path is None:
+            raise ValueError(
+                f"nextPagePath {next_path!r} carries no path and no base_path "
+                f"was given to graft it onto")
+        joiner = "&" if "?" in base_path else "?"
+        return self._get_retrying(bucket, f"{base_path}{joiner}{next_path}")
+
     def iter_history_orders(self, ticker: str | None = None,
                             max_pages: int = 40) -> Iterator[dict[str, Any]]:
         """Yield historical order items newest-first, following nextPagePath.

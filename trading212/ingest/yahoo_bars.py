@@ -17,6 +17,9 @@ Public functions:
     write_daily(group, ticker, frame)                  Store daily bars, one file per year
     write_intraday(group, ticker, interval, frame)     Store intraday bars, one file per month
     latest_stored(group, ticker, interval)             Newest timestamp already on disk
+    discover_symbols(group)                            Configured symbols plus whatever is on disk
+    stored_intervals(group, ticker)                    Which intervals already exist on disk
+    earliest_bar(group, ticker)                        Oldest stored daily (date, close), for adjustment checks
     quote_currency(ticker)                             Exchange quote currency, cached
 
 Constants:
@@ -80,6 +83,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["fetch_interval", "write_daily", "write_intraday", "latest_stored",
+           "discover_symbols", "stored_intervals", "earliest_bar",
            "quote_currency", "INTERVALS", "UNIVERSE",
            "RETRY_BASE_SEC", "RETRY_ATTEMPTS", "PACE_SEC"]
 
@@ -257,14 +261,25 @@ def fetch_interval(ticker: str, interval: str, lookback: int | None,
 # [2] Storing
 # ============================================================================
 
-def write_daily(group: str, ticker: str, frame: pd.DataFrame) -> tuple[int, int]:
+def write_daily(group: str, ticker: str, frame: pd.DataFrame,
+                years: set[int] | None = None) -> tuple[int, int]:
     """Store daily bars as one file per calendar year.
+
+    Args:
+        years: Restrict the write to these calendar years. Adjusted prices are
+            retroactive, so a split rewrites the whole history and every year has
+            to be written; but on the ordinary day when nothing was adjusted,
+            only the current year can differ. Rewriting 28 year files per symbol
+            across 1,500 symbols on every run is pointless churn, so the caller
+            passes the narrow set once it has established that history is intact.
 
     Returns:
         (files written, bytes written).
     """
     files = written = 0
     for year, part in frame.groupby(frame["ts"].dt.year):
+        if years is not None and int(year) not in years:
+            continue
         path = equity_daily_path(group, ticker, int(year))
         write_table(pa.Table.from_pandas(part, preserve_index=False), path, sort_by="ts")
         files += 1
@@ -326,3 +341,72 @@ def latest_stored(group: str, ticker: str, interval: str) -> pd.Timestamp | None
             if newest is None or value > newest:
                 newest = value
     return newest
+
+
+# ============================================================================
+# [3] Discovery
+# ============================================================================
+
+def _group_dir(group: str):
+    return DIR_DATA / "t212" / "curated" / group
+
+
+def discover_symbols(group: str) -> list[str]:
+    """Return every symbol to maintain: those configured plus those already on disk.
+
+    The configured universe is a starting point, not the whole truth. Symbols get
+    added to the lake by hand and by other tooling, and a symbol that exists on
+    disk but not in the configuration would otherwise never be refreshed again --
+    it would sit there quietly going stale while the report claimed everything was
+    current. Reading the directory makes the lake self-describing.
+    """
+    configured = set(UNIVERSE.get(group, {}))
+    folder = _group_dir(group)
+    on_disk = {p.name for p in folder.iterdir() if p.is_dir()} if folder.is_dir() else set()
+    return sorted(configured | on_disk)
+
+
+def stored_intervals(group: str, ticker: str) -> list[str]:
+    """Return the intervals already stored for one symbol, in INTERVALS order.
+
+    An update maintains what exists rather than expanding it. Most of the lake
+    holds daily bars only; fetching five intervals for every symbol would turn a
+    30-minute refresh into a multi-hour one and would be throttled long before it
+    finished. A symbol with no data at all falls back to the full set, which is
+    what a newly configured symbol needs.
+    """
+    folder = _group_dir(group) / ticker
+    present = {p.name for p in folder.iterdir() if p.is_dir()} if folder.is_dir() else set()
+    ordered = [iv for iv, _lb, _ch in INTERVALS if iv in present]
+    return ordered if ordered else [iv for iv, _lb, _ch in INTERVALS]
+
+
+def earliest_bar(group: str, ticker: str) -> tuple[pd.Timestamp, float] | None:
+    """Return the oldest stored daily bar as (timestamp, close), or None if empty.
+
+    Used to detect a retroactive adjustment. Adjusted prices are rewritten all
+    the way back whenever a dividend or split lands, so if the oldest close no
+    longer matches what was fetched, every year file is stale on that basis and
+    must be rewritten. When it does match, only the current year can have changed.
+
+    The timestamp is returned alongside because the close alone cannot
+    distinguish an adjustment from a truncated response. A partial fetch that
+    starts years later also has a different first close, and treating that as an
+    adjustment would rewrite the recent years on a new basis while leaving the
+    older files on the old one -- a silent split-brain in the series. The caller
+    compares dates first and only then compares closes.
+    """
+    folder = _group_dir(group) / ticker / "1d"
+    if not folder.is_dir():
+        return None
+    files = sorted(folder.glob("*.parquet"))
+    if not files:
+        return None
+    try:
+        frame = pq.read_table(files[0], columns=["ts", "close"]).to_pandas()
+    except Exception:
+        return None
+    if not len(frame):
+        return None
+    frame = frame.sort_values("ts")
+    return pd.Timestamp(frame["ts"].iloc[0]), float(frame["close"].iloc[0])

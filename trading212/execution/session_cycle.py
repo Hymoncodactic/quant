@@ -56,6 +56,7 @@ Inputs:
     trading212/config/strategies/<strategy_id>.yaml
     data/t212/curated/... through trading212/execution/market_data.py
 Outputs:
+    trading212/records/signals.jsonl        one row per decision
     data/t212/execution_state/<strategy_id>_cycle.json
     data/t212/execution_state/exchange_calendar.json
     the shadow ledger journal and snapshot, through shadow_ledger.py
@@ -72,6 +73,9 @@ Change log:
                 swaps the caliber. The risk gate's submission window is
                 now read from the clock instead of passed as a constant,
                 and settle verifies where each fill landed.
+    2026-08-23  Every decision is now recorded to the archive, including
+                the ones that placed no order: a session with no trade is
+                itself a fact about the strategy, and nothing else keeps it.
 """
 
 from __future__ import annotations
@@ -90,6 +94,7 @@ import yaml
 
 from common.logging_setup import get_logger
 from common.paths import config_dir, execution_state_dir
+from trading212 import archive
 from trading212.client import T212Client
 from trading212.execution import (instruments, market_data, order_monitor,
                                   order_router, reconciler, risk_gate)
@@ -276,6 +281,35 @@ def decide(cfg: dict[str, Any], armed: bool,
     report = order_router.submit_intents(gate.approved, ledger, cycle.client,
                                          pd.Timestamp(session.date_ny),
                                          dry_run=cycle.dry_run, armed=armed)
+
+    archive.record_signals(None, {
+        "strategy_id": cycle.strategy_id,
+        "session": session_id,
+        "decision_key_utc": str(key),
+        "close_utc": str(session.close_utc),
+        "targets": {sym: str(qty) for sym, qty in targets.items()},
+        "intents": [{"symbol": i.symbol, "ticker": i.ticker,
+                     "quantity": str(i.quantity),
+                     "ref_price_usd": str(i.ref_price_usd),
+                     "fx_usd_per_gbp": str(i.fx_usd_per_gbp),
+                     "ref_notional_gbp": str(i.ref_notional_gbp)}
+                    for i in intents],
+        "gate": {"approved": [i.symbol for i in gate.approved],
+                 "rejected": [{"symbol": i.symbol, "reason": r}
+                              for i, r in gate.rejected],
+                 "closed": gate.closed},
+        "submit": {"submitted": [{"symbol": i.symbol, "order_id": oid}
+                                 for i, oid in report.submitted],
+                   "dry_run": [i.symbol for i in report.dry_run],
+                   "rejected": [{"symbol": i.symbol, "reason": r}
+                                for i, r in report.rejected],
+                   "ambiguous": report.ambiguous.symbol
+                   if report.ambiguous else None},
+        "book_before": {"cash_gbp": str(portfolio.cash_gbp),
+                        "positions": {s: str(q)
+                                      for s, q in portfolio.positions.items()}},
+        "dry_run": cycle.dry_run or not armed,
+    })
 
     state["last_decide_session"] = session_id
     state.setdefault("orders_by_session", {})[session_id] = \

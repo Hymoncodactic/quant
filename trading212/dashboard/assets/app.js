@@ -17,6 +17,9 @@
     { id: "newyork", zone: "America/New_York" }
   ];
   var TZ_ID = localStorage.getItem("dash.tz") || "local";
+  var RANGE_IDS = ["1D", "1W", "1M", "3M", "6M", "YTD",
+                   "1Y", "2Y", "5Y", "10Y", "ALL"];
+  var RANGE_ID = localStorage.getItem("dash.range") || "1D";
 
   function tzChoice() {
     for (var i = 0; i < TZ_CHOICES.length; i++) {
@@ -120,6 +123,10 @@
     text("tz-label", L.charts.tz_label);
     text("reset-btn", L.setup.reset_btn);
     text("reset-hint", L.setup.reset_hint);
+    text("range-label", L.charts.range_label);
+    text("records-heading", L.records.heading);
+    text("records-privacy", L.records.privacy);
+    buildRangeBar();
     var sel = $("tz-select");
     sel.innerHTML = "";
     TZ_CHOICES.forEach(function (c) {
@@ -309,6 +316,30 @@
     if (f.over_account) el.textContent = L.setup.over_account;
   }
 
+  function paintRecords(stats, directory) {
+    text("records-note", L.records.note + " " + directory);
+    var wrap = $("records-wrap");
+    var names = L.records.names || {};
+    var head = "<tr><th>" + L.records.stream + "</th><th>" + L.records.rows +
+      "</th><th>" + L.records.size + "</th><th>" + L.records.last + "</th></tr>";
+    var body = Object.keys(stats).map(function (k) {
+      var r = stats[k];
+      var kb = r.bytes > 1024 ? (r.bytes / 1024).toFixed(1) + " KB"
+                              : r.bytes + " B";
+      return "<tr><td>" + (names[k] || k) + "</td><td>" + r.rows +
+        "</td><td>" + kb + "</td><td>" +
+        (r.last_write_utc ? localTime(r.last_write_utc) : L.app.never) +
+        "</td></tr>";
+    }).join("");
+    wrap.innerHTML = "<table>" + head + body + "</table>";
+  }
+
+  function refreshRecords() {
+    return getJSON("/api/records").then(function (r) {
+      paintRecords(r.streams || {}, r.directory || "");
+    }).catch(function () { });
+  }
+
   function paintTable() {
     var book = (STATE.snapshot && STATE.snapshot.book) || STATE.book || {};
     var wrap = $("table-wrap");
@@ -432,6 +463,36 @@
     }).catch(function () { /* transient; the next poll retries */ });
   }
 
+  function buildRangeBar() {
+    var bar = $("range-bar");
+    bar.innerHTML = "";
+    RANGE_IDS.forEach(function (id) {
+      var btn = document.createElement("button");
+      btn.textContent = (L.charts.range_names || {})[id] || id;
+      btn.dataset.range = id;
+      if (id === RANGE_ID) btn.className = "on";
+      btn.onclick = function () {
+        RANGE_ID = id;
+        localStorage.setItem("dash.range", id);
+        [].forEach.call(bar.children, function (b) {
+          b.className = b.dataset.range === id ? "on" : "";
+        });
+        refreshHistory(true);
+      };
+      bar.appendChild(btn);
+    });
+  }
+
+  function paintRangeMeta(payload) {
+    var src = payload.source === "daily"
+      ? L.charts.source_daily : L.charts.source_ticks;
+    var parts = [src, payload.points + L.charts.points];
+    if (payload.available_from) {
+      parts.push(L.charts.available_from + " " + inZone(payload.available_from));
+    }
+    text("range-meta", parts.join(L.charts.meta_separator));
+  }
+
   function refreshHistory(force) {
     var now = Date.now();
     if (!force && now - lastHistoryAt < HISTORY_MS) return Promise.resolve();
@@ -439,9 +500,10 @@
     return getJSON("/api/sessions").then(function (s) {
       SESSIONS = s.sessions || [];
     }).catch(function () { SESSIONS = []; }).then(function () {
-      return getJSON("/api/history?days=3&max=1500");
+      return getJSON("/api/history?range=" + encodeURIComponent(RANGE_ID));
     }).then(function (h) {
       drawEquity(h.rows || []);
+      paintRangeMeta(h);
       chartsBuilt = true;
     }).catch(function () { });
   }
@@ -451,7 +513,10 @@
        hours it was actually produced in. Without them the axis is just wall
        clock in whatever zone the reader happens to sit in, and a flat
        overnight stretch looks the same as a flat trading day. */
+    // Past a couple of weeks the bands are thinner than the line itself and
+    // turn the plot into a solid wash, so they are dropped rather than drawn.
     if (!rows.length || !SESSIONS.length) return [];
+    if (["1D", "1W"].indexOf(RANGE_ID) === -1) return [];
     var first = new Date(rows[0].ts).getTime();
     var last = new Date(rows[rows.length - 1].ts).getTime();
     return SESSIONS.filter(function (s) {
@@ -568,7 +633,9 @@
     L = labels;
     paintStatic();
     wire();
-    refreshState().then(function () { return refreshHistory(true); });
+    refreshState().then(function () { return refreshHistory(true); })
+      .then(refreshRecords);
     setInterval(function () { refreshState(); refreshHistory(false); }, STATE_MS);
+    setInterval(refreshRecords, 30000);
   });
 })();

@@ -153,8 +153,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.get_state(ctx, collector))
             if route == "/api/history":
                 return self._json(*api.get_history(
-                    ctx, int(_first(query, "days", 3)),
-                    int(_first(query, "max", 1500))))
+                    ctx, str(_first(query, "range", "1D")),
+                    int(_first(query, "max", api.TARGET_POINTS))))
+            if route == "/api/records":
+                return self._json(*api.get_records(
+                    ctx, _first(query, "name", None),
+                    int(_first(query, "limit", 100))))
             if route == "/api/settings":
                 return self._json(*api.get_settings(ctx))
             if route == "/api/instruments":

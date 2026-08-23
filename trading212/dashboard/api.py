@@ -14,7 +14,8 @@ manual_orders.py.
 
 Public functions:
     get_state(ctx, collector)          Snapshot, sampler state, readiness.
-    get_history(ctx, days, max_points) Downsampled sample history.
+    get_history(ctx, range_id, max_points)  Chart series for one range.
+    get_records(ctx, name, limit)      Archive stream contents and sizes.
     get_settings(ctx)                  Settable fields and what is missing.
     post_settings(ctx, body)           Validate and write settings.
     post_collector(ctx, collector, body)  Start or stop sampling.
@@ -51,8 +52,9 @@ __all__ = ["get_state", "get_history", "get_settings", "post_settings",
            "post_collector", "post_ledger_init", "post_allocation",
            "post_ledger_reset",
            "post_halt", "get_sessions", "get_instruments", "get_manual",
-           "post_manual", "MAX_HISTORY_DAYS", "MAX_HISTORY_POINTS",
-           "SESSION_WINDOW_DAYS"]
+           "post_manual", "get_records", "MAX_HISTORY_DAYS",
+           "MAX_HISTORY_POINTS", "SESSION_WINDOW_DAYS", "RANGES",
+           "TICK_SOURCE_MAX_DAYS", "TARGET_POINTS"]
 
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -60,6 +62,8 @@ from typing import Any
 from common.logging_setup import get_logger
 import pandas as pd
 
+from common.paths import records_dir
+from trading212 import archive
 from trading212.dashboard import manual_orders, settings, snapshots
 from trading212.execution import instruments as venue_instruments
 from trading212.execution import reconciler, session_cycle
@@ -74,6 +78,26 @@ MAX_HISTORY_POINTS = 4000
 # weeks of forward calendar, and the chart never looks back further than the
 # sample history, so a fortnight either side is ample.
 SESSION_WINDOW_DAYS = 14
+
+# Selectable ranges, in the order the interface shows them, with the span
+# each covers in days. None means everything on record. Modelled on the
+# ranges a stock app offers, because that is the vocabulary a reader already
+# has for "how far back am I looking".
+RANGES: tuple[tuple[str, float | None], ...] = (
+    ("1D", 1), ("1W", 7), ("1M", 31), ("3M", 92), ("6M", 183),
+    ("YTD", None), ("1Y", 366), ("2Y", 731), ("5Y", 1827),
+    ("10Y", 3653), ("ALL", None),
+)
+
+# Above this span the per-tick files are abandoned for the daily rollup. A
+# fortnight of ticks is already tens of thousands of points; a decade would
+# be tens of millions, which is why the rollup exists at all.
+TICK_SOURCE_MAX_DAYS = 14
+
+# Points handed to the browser for any range. A line chart a thousand pixels
+# wide cannot show more than about one point per pixel, so sending more only
+# costs transfer and drawing time without changing a single visible mark.
+TARGET_POINTS = 700
 
 _VENUE = "t212"
 
@@ -117,12 +141,102 @@ def _funding(book: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str,
             "over_account": float(allocated) > float(free)}
 
 
-def get_history(ctx, days: int, max_points: int) -> tuple[int, dict[str, Any]]:
-    """Downsampled sample history for the charts."""
-    days = max(1, min(int(days or 3), MAX_HISTORY_DAYS))
-    max_points = max(50, min(int(max_points or 1500), MAX_HISTORY_POINTS))
-    rows = snapshots.read_samples(_VENUE, days=days, max_points=max_points)
-    return 200, {"days": days, "points": len(rows), "rows": rows}
+def _range_start(range_id: str, now: "pd.Timestamp"):
+    """First instant a range covers, or None for everything on record."""
+    span = dict(RANGES).get(range_id)
+    if range_id == "YTD":
+        return pd.Timestamp(year=now.year, month=1, day=1, tz="UTC")
+    if span is None:
+        return None
+    return now - pd.Timedelta(days=span)
+
+
+def _downsample(rows: list[dict[str, Any]],
+                target: int) -> list[dict[str, Any]]:
+    """Thin rows to about target points, never dropping a gap marker.
+
+    A gap is the only thing that stops the chart drawing a straight line
+    across hours nobody observed, so it survives thinning even when the
+    ordinary points around it do not.
+    """
+    if len(rows) <= target:
+        return rows
+    gaps = [r for r in rows if r.get("gap")]
+    normal = [r for r in rows if not r.get("gap")]
+    budget = max(1, target - len(gaps))
+    # Ceiling division. Flooring leaves stride 1 for any count between the
+    # target and twice it, so the cap silently does nothing exactly where a
+    # reader would first notice the chart getting heavy.
+    stride = max(1, -(-len(normal) // budget))
+    kept = normal[::stride]
+    if normal and kept and kept[-1] is not normal[-1]:
+        kept.append(normal[-1])
+    merged = kept + gaps
+    merged.sort(key=lambda r: r.get("ts", ""))
+    return merged
+
+
+def get_history(ctx, range_id: str = "1D",
+                max_points: int = TARGET_POINTS) -> tuple[int, dict[str, Any]]:
+    """The chart series for one range, at a resolution worth drawing.
+
+    Short ranges read the per-tick files, because that is where the detail
+    is. Longer ones read the daily rollup instead: past a fortnight the tick
+    files answer the same question with a hundred times the data, and the
+    chart cannot show the difference.
+    """
+    known = dict(RANGES)
+    if range_id not in known:
+        range_id = "1D"
+    target = max(50, min(int(max_points or TARGET_POINTS), MAX_HISTORY_POINTS))
+    now = pd.Timestamp.now(tz="UTC")
+    start = _range_start(range_id, now)
+    span_days = (now - start).total_seconds() / 86400 if start is not None \
+        else None
+
+    use_ticks = span_days is not None and span_days <= TICK_SOURCE_MAX_DAYS
+    if use_ticks:
+        rows = snapshots.read_samples(_VENUE, days=int(span_days) + 2,
+                                      max_points=MAX_HISTORY_POINTS)
+        rows = [r for r in rows
+                if r.get("gap") or str(r.get("ts", "")) >= start.isoformat()]
+        source = "ticks"
+    else:
+        rows = [{"ts": r["day"] + "T00:00:00+00:00",
+                 "equity_gbp": r.get("close"),
+                 "cash_gbp": r.get("cash_gbp"),
+                 "holdings_gbp": r.get("holdings_gbp"),
+                 "account_total": r.get("account_total")}
+                for r in snapshots.read_rollup(_VENUE)]
+        if start is not None:
+            cut = start.strftime("%Y-%m-%d")
+            rows = [r for r in rows if r["ts"][:10] >= cut]
+        source = "daily"
+        if not rows:
+            # Nothing has been rolled up yet, which is normal on the first
+            # day. Fall back to the ticks so the chart is not blank.
+            rows = snapshots.read_samples(_VENUE, days=MAX_HISTORY_DAYS,
+                                          max_points=MAX_HISTORY_POINTS)
+            source = "ticks"
+
+    thinned = _downsample(rows, target)
+    covered = thinned[0]["ts"] if thinned else None
+    return 200, {"range": range_id, "source": source, "points": len(thinned),
+                 "available_from": covered, "rows": thinned}
+
+
+def get_records(ctx, name: str | None = None,
+                limit: int = 100) -> tuple[int, dict[str, Any]]:
+    """Archive stream sizes, and one stream's recent rows when asked."""
+    out: dict[str, Any] = {"streams": archive.stream_stats(),
+                           "directory": str(records_dir(_VENUE))}
+    if name:
+        known = [n for n, _key in archive.STREAMS]
+        if name not in known:
+            return 400, {"problem": "unknown_stream", "known": known}
+        out["name"] = name
+        out["rows"] = archive.read_stream(None, name, limit=int(limit or 100))
+    return 200, out
 
 
 def get_settings(ctx) -> tuple[int, dict[str, Any]]:
