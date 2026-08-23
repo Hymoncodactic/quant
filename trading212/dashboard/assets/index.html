@@ -28,7 +28,7 @@
     <p class="note" id="setup-intro"></p>
     <div class="grid2">
       <div>
-        <div class="field" id="money-field">
+        <div class="field hidden" id="money-field">
           <label id="money-label"></label>
           <div class="hint" id="money-hint"></div>
           <div class="row">
@@ -46,6 +46,11 @@
             <span id="adjust-current"></span>
           </div>
           <div class="err hidden" id="adjust-err"></div>
+          <div class="hint" id="reset-hint" style="margin-top:10px"></div>
+          <div class="row">
+            <button id="reset-btn" class="danger"></button>
+            <span id="reset-state"></span>
+          </div>
         </div>
       </div>
       <div id="settings-fields"></div>
@@ -79,7 +84,11 @@
 
   <section class="panel">
     <h2 id="equity-heading"></h2>
-    <p class="note" id="tz-note"></p>
+    <p class="note" id="book-vs-account"></p>
+    <div class="row" style="margin-bottom:8px">
+      <span class="note" id="tz-label"></span>
+      <select id="tz-select" style="width:auto;padding:4px 8px"></select>
+    </div>
     <p class="note" id="gap-note"></p>
     <div class="chart" id="equity-chart"></div>
     <p class="note hidden" id="equity-empty"></p>

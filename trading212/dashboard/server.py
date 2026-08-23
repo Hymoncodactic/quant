@@ -21,8 +21,9 @@ Out of scope: what the routes do, which belongs to api.py; sampling, which
 belongs to collector.py; page markup, which belongs to assets/.
 
 Public functions:
-    build_server(env, port)   Construct the server and its sampler.
-    main(argv=None)           Command-line entry point.
+    build_server(env, port)          Construct the server and its sampler.
+    acquire_instance_lock(state_dir)  Refuse a second dashboard.
+    main(argv=None)                  Command-line entry point.
 
 Constants:
     DEFAULT_PORT   int  8787. A fixed high port so the bookmark keeps
@@ -43,14 +44,20 @@ Outputs:
 
 Change log:
     2026-08-22  Created.
+    2026-08-23  Single-instance lock: the venue meters requests per
+                account, so a second dashboard pushes both past the
+                budget and each reports the broker as unreachable.
 """
 
 from __future__ import annotations
 
-__all__ = ["build_server", "main", "DEFAULT_PORT", "HOST", "DASH_HEADER"]
+__all__ = ["build_server", "acquire_instance_lock", "main", "DEFAULT_PORT",
+           "HOST", "DASH_HEADER"]
 
 import argparse
+import fcntl
 import json
+import os
 import secrets
 import signal
 import sys
@@ -177,6 +184,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.post_ledger_init(ctx, body))
             if route == "/api/ledger/allocation":
                 return self._json(*api.post_allocation(ctx, body))
+            if route == "/api/ledger/reset":
+                return self._json(*api.post_ledger_reset(ctx, body))
             if route == "/api/halt":
                 return self._json(*api.post_halt(ctx, body))
             if route == "/api/manual":
@@ -242,6 +251,29 @@ class _Server(ThreadingHTTPServer):
         self.shutdown()
 
 
+def acquire_instance_lock(state_dir):
+    """Take an exclusive lock so only one dashboard polls the venue.
+
+    The venue meters requests per ACCOUNT, not per process, so a second
+    dashboard does not merely duplicate work: the two together exceed the
+    account's budget and both start seeing rate-limit errors, which the
+    interface then reports as the broker being unreachable. Launching twice
+    is easy to do by accident, so it is refused rather than tolerated. The
+    lock is released by the OS on exit, so a crash leaves nothing stale.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(state_dir / "dashboard.lock", "w", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(
+            "another dashboard is already running; open its window instead "
+            "of starting a second one")
+    handle.write(f"pid={os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
 def build_server(env: str | None = None, port: int = DEFAULT_PORT):
     """Construct the context, sampler and server without starting them."""
     ctx = AppContext(env)
@@ -262,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     server = build_server(args.env, args.port)
+    lock = acquire_instance_lock(server.ctx.state_dir)  # noqa: F841 held until exit
     url = f"http://{HOST}:{args.port}/"
     if not args.no_sampling:
         server.collector.start()

@@ -9,7 +9,44 @@
   var STATE = null;
   var lastHistoryAt = 0;
   var SESSIONS = [];
-  var TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  var LAST_ROWS = [];
+  var LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  var TZ_CHOICES = [
+    { id: "local", zone: LOCAL_TZ },
+    { id: "london", zone: "Europe/London" },
+    { id: "newyork", zone: "America/New_York" }
+  ];
+  var TZ_ID = localStorage.getItem("dash.tz") || "local";
+
+  function tzChoice() {
+    for (var i = 0; i < TZ_CHOICES.length; i++) {
+      if (TZ_CHOICES[i].id === TZ_ID) return TZ_CHOICES[i];
+    }
+    return TZ_CHOICES[0];
+  }
+
+  var TZ_FORMATTER = null;
+  var TZ_FORMATTER_ZONE = null;
+
+  function inZone(iso) {
+    /* Plotly has no time-zone support, so a timestamp is converted to the
+       chosen zone's wall clock and handed over as a naive string. The axis
+       then reads as that zone, which is the whole point: the same curve is
+       being watched from China, settled in London and traded in New York. */
+    if (iso === null || iso === undefined) return iso;
+    var zone = tzChoice().zone;
+    if (TZ_FORMATTER_ZONE !== zone) {
+      TZ_FORMATTER = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+      });
+      TZ_FORMATTER_ZONE = zone;
+    }
+    var d = new Date(iso);
+    if (isNaN(d)) return iso;
+    // sv-SE already formats as YYYY-MM-DD HH:MM:SS, which Plotly parses.
+    return TZ_FORMATTER.format(d).replace(",", "");
+  }
   var chartsBuilt = false;
   var STATE_MS = 5000;
   var HISTORY_MS = 30000;
@@ -79,6 +116,26 @@
     text("shutdown-btn", L.controls.shutdown);
     text("shutdown-note", L.controls.shutdown_note);
     text("equity-heading", L.charts.equity_title);
+    text("book-vs-account", L.charts.book_vs_account);
+    text("tz-label", L.charts.tz_label);
+    text("reset-btn", L.setup.reset_btn);
+    text("reset-hint", L.setup.reset_hint);
+    var sel = $("tz-select");
+    sel.innerHTML = "";
+    TZ_CHOICES.forEach(function (c) {
+      var opt = document.createElement("option");
+      opt.value = c.id;
+      var wrap = L.charts.tz_local_wrap;
+      opt.textContent = L.charts["tz_" + c.id] +
+        (c.id === "local" ? wrap[0] + c.zone + wrap[1] : "");
+      sel.appendChild(opt);
+    });
+    sel.value = TZ_ID;
+    sel.onchange = function () {
+      TZ_ID = sel.value;
+      localStorage.setItem("dash.tz", TZ_ID);
+      if (LAST_ROWS.length) drawEquity(LAST_ROWS);
+    };
     text("gap-note", L.charts.gap_note);
     text("equity-empty", L.charts.empty);
     text("positions-heading", L.charts.positions_title);
@@ -298,13 +355,15 @@
        the line rather than a straight segment through unobserved hours. */
     var x = [], y = [];
     rows.forEach(function (r) {
-      if (r.gap) { x.push(r.ts); y.push(null); return; }
-      x.push(r.ts); y.push(r[field] === undefined ? null : r[field]);
+      if (r.gap) { x.push(inZone(r.ts)); y.push(null); return; }
+      x.push(inZone(r.ts));
+      y.push(r[field] === undefined ? null : r[field]);
     });
     return { x: x, y: y };
   }
 
   function drawEquity(rows) {
+    LAST_ROWS = rows;
     var empty = !rows.length;
     $("equity-empty").classList.toggle("hidden", !empty);
     $("equity-chart").classList.toggle("hidden", empty);
@@ -312,6 +371,7 @@
     var eq = splitOnGaps(rows, "equity_gbp");
     var ca = splitOnGaps(rows, "cash_gbp");
     var ho = splitOnGaps(rows, "holdings_gbp");
+    var ac = splitOnGaps(rows, "account_total");
     var traces = [
       { x: eq.x, y: eq.y, name: L.charts.equity_series, type: "scatter",
         mode: "lines", line: { color: "#4c8dff", width: 2 },
@@ -321,13 +381,15 @@
         hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.cash_series + "</extra>" },
       { x: ho.x, y: ho.y, name: L.charts.holdings_series, type: "scatter",
         mode: "lines", line: { color: "#d99a2b", width: 1.4 },
-        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.holdings_series + "</extra>" }
+        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.holdings_series + "</extra>" },
+      { x: ac.x, y: ac.y, name: L.charts.account_series, type: "scatter",
+        mode: "lines", line: { color: "#98a1b3", width: 1.2, dash: "dot" },
+        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.account_series + "</extra>" }
     ];
     var layout = JSON.parse(JSON.stringify(LAYOUT_BASE));
     layout.yaxis.title = { text: L.charts.equity_y, font: { size: 11 } };
     layout.shapes = sessionBands(rows);
     Plotly.react("equity-chart", traces, layout, CONFIG);
-    text("tz-note", L.charts.tz_note + " " + TZ + " " + L.charts.tz_suffix);
   }
 
   function drawPositions() {
@@ -357,9 +419,9 @@
       if ($("settings-fields").dataset.dirty !== "1") {
         text("ready-flag", s.readiness.ready ? L.setup.ready : L.setup.not_ready);
       }
-      $("money-btn").disabled = !!s.readiness.ledger_ready;
-      if (s.readiness.ledger_ready) text("money-btn", L.setup.money_done);
-      $("adjust-field").classList.toggle("hidden", !s.readiness.ledger_ready);
+      var hasBook = !!s.readiness.ledger_ready;
+      $("money-field").classList.toggle("hidden", hasBook);
+      $("adjust-field").classList.toggle("hidden", !hasBook);
       var book = s.book || {};
       if (book.cash_gbp !== null && book.cash_gbp !== undefined) {
         text("adjust-current", L.setup.money_current + " " + money(book.cash_gbp));
@@ -398,7 +460,7 @@
              new Date(s.open_utc).getTime() <= last;
     }).map(function (s) {
       return { type: "rect", xref: "x", yref: "paper",
-               x0: s.open_utc, x1: s.close_utc, y0: 0, y1: 1,
+               x0: inZone(s.open_utc), x1: inZone(s.close_utc), y0: 0, y1: 1,
                fillcolor: "rgba(76,141,255,0.10)", line: { width: 0 },
                layer: "below" };
     });
@@ -449,6 +511,24 @@
           err.textContent = L.setup.problems[r.body.problem] || r.body.problem;
           err.classList.remove("hidden");
         }
+      });
+    };
+    $("reset-btn").onclick = function () {
+      if (!window.confirm(L.setup.reset_confirm)) return;
+      postJSON("/api/ledger/reset", { confirm: true }).then(function (r) {
+        if (r.status === 200) {
+          text("reset-state", L.setup.reset_done);
+          refreshState();
+          return;
+        }
+        var items = (r.body.blockers || []).map(function (b) {
+          return (L.setup.reset_checks[b.check] || b.check) +
+                 (b.detail ? L.controls.halt_check_separator + b.detail : "");
+        });
+        openModal(L.setup.reset_blocked_title, L.setup.reset_blocked_intro,
+                  items.length
+                    ? items
+                    : [L.setup.problems[r.body.problem] || r.body.problem]);
       });
     };
     $("halt-raise-btn").onclick = function () {

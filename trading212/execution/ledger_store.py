@@ -27,12 +27,30 @@ Public functions:
     read_snapshot(state_dir, strategy_id, schema_version)
     append_event(state_dir, strategy_id, record)
     write_snapshot(state_dir, strategy_id, snap)
+    retire_ledger(state_dir, strategy_id, stamp)   Move a book aside so a new
+                                                   one can be started.
+
+Constants:
+    None.
+
+Inputs:
+    data/t212/execution_state/<strategy_id>_journal.jsonl
+    data/t212/execution_state/<strategy_id>_snapshot.json
+Outputs:
+    the same two paths, plus <name>.retired-<stamp> when a book is retired
+
+Change log:
+    2026-08-22  Extracted from shadow_ledger.py so the rules about writing to
+                disk sit beside the rules about trusting what is on it.
+    2026-08-23  Added retire_ledger(): the allocation is fixed at creation, so
+                starting over needs a way to put the old book aside without
+                destroying what it recorded.
 """
 
 from __future__ import annotations
 
 __all__ = ["LedgerFrozenError", "journal_path", "snapshot_path",
-           "read_snapshot", "append_event", "write_snapshot"]
+           "read_snapshot", "append_event", "write_snapshot", "retire_ledger"]
 
 import json
 import os
@@ -105,6 +123,28 @@ def write_snapshot(state_dir: Path, strategy_id: str,
     tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=1),
                    encoding="utf-8")
     tmp.replace(target)
+
+
+def retire_ledger(state_dir: Path, strategy_id: str, stamp: str) -> list[str]:
+    """Move one book's files aside, leaving the directory free for a new one.
+
+    Renamed rather than deleted. A book is the only record of which account
+    positions belonged to this strategy, and that record stays worth having
+    after the book itself is finished: a later question about what the
+    strategy did in some past week has no other source. Whether retiring is
+    allowed at all is the caller's decision; this function only moves files.
+
+    Returns the names written, so the caller can tell the reader where the
+    old book went.
+    """
+    moved: list[str] = []
+    for path in (journal_path(state_dir, strategy_id),
+                 snapshot_path(state_dir, strategy_id)):
+        if path.exists():
+            target = path.with_name(f"{path.name}.retired-{stamp}")
+            path.rename(target)
+            moved.append(target.name)
+    return moved
 
 
 def _assert_journal_not_ahead(journal: Path, snap: dict[str, Any]) -> None:

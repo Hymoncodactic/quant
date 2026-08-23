@@ -28,7 +28,8 @@ Change log:
 
 from __future__ import annotations
 
-__all__ = ["zscore", "positions", "run_pair", "ENTRY_Z", "EXIT_Z", "STOP_Z",
+__all__ = ["zscore", "positions", "run_pair", "leg_cost_bps",
+           "ENTRY_Z", "EXIT_Z", "STOP_Z",
            "COST_BPS_ACTUAL", "COST_BPS_WORST"]
 
 import numpy as np
@@ -106,9 +107,26 @@ def positions(z: pd.Series, variant: str, entry: float = ENTRY_Z,
     return pd.DataFrame({"wa": wa, "wb": wb}, index=z.index)
 
 
+def leg_cost_bps(name: str, half_spread: dict | None,
+                 fx_fee_bps: float = 15.0, slippage_bps: float = 0.0,
+                 default_half_spread_bps: float = 1.0) -> float:
+    """One-way cost of trading one unit of weight in one name, in bps.
+
+    half_spread maps ticker to its estimated half spread. A name absent from
+    the map falls back to the project's calibrated US large-cap value
+    (backtest/t212/instruments.py::DEFAULT_HALF_SPREAD_BPS_US). The FX fee is
+    Trading 212's 0.15% on each conversion, so 15bp per leg per direction.
+    """
+    hs = default_half_spread_bps if half_spread is None \
+        else float(half_spread.get(name, default_half_spread_bps))
+    return hs + fx_fee_bps + slippage_bps
+
+
 def run_pair(prices: pd.DataFrame, a: str, b: str, params: dict,
              variant: str, method: str, cost_bps: float,
-             entry: float = ENTRY_Z) -> pd.Series:
+             entry: float = ENTRY_Z,
+             half_spread: dict | None = None,
+             slippage_bps: float = 0.0) -> pd.Series:
     """Daily return of one pair over the trading window, costs included.
 
     prices must already be sliced to the trading window. The spread is rebuilt
@@ -129,6 +147,14 @@ def run_pair(prices: pd.DataFrame, a: str, b: str, params: dict,
     # Position decided on day t earns day t+1's return.
     held = weights.shift(1).fillna(0.0)
     gross = held["wa"] * returns[a] + held["wb"] * returns[b]
-    turnover = (weights - weights.shift(1).fillna(0.0)).abs().sum(axis=1)
-    cost = turnover.shift(1).fillna(0.0) * (cost_bps / 2.0) / 1e4
+    delta = (weights - weights.shift(1).fillna(0.0)).abs()
+    if half_spread is None:
+        # Flat model: cost_bps is a round trip, so half of it is one way.
+        turnover = delta.sum(axis=1)
+        cost = turnover.shift(1).fillna(0.0) * (cost_bps / 2.0) / 1e4
+    else:
+        # Per-name model: each leg pays its own spread plus the FX fee.
+        ca = leg_cost_bps(a, half_spread, slippage_bps=slippage_bps) / 1e4
+        cb = leg_cost_bps(b, half_spread, slippage_bps=slippage_bps) / 1e4
+        cost = (delta["wa"] * ca + delta["wb"] * cb).shift(1).fillna(0.0)
     return (gross - cost).rename(f"{a}/{b}")

@@ -88,7 +88,16 @@ def _a0() -> pd.Series | None:
 
 
 def main() -> int:
-    path = RESULTS / "daily_returns.csv"
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--returns", default="daily_returns.csv",
+                        help="file under results/ holding the daily series")
+    parser.add_argument("--max-drawdown", type=float, default=0.15,
+                        help="C7 drawdown ceiling")
+    parser.add_argument("--max-vol", type=float, default=0.12,
+                        help="C7 annualized volatility ceiling")
+    args = parser.parse_args()
+    path = RESULTS / args.returns
     if not path.is_file():
         print("daily_returns.csv absent; run run_study.py first")
         return 1
@@ -123,12 +132,26 @@ def main() -> int:
                   f"{'通过' if abs(rho) < 0.30 else '不通过'}")
 
     print("\n=== D5 分年收益（actual 档）===")
-    cols = [c for c in series.columns if c.endswith("|actual")]
+    cols = [c for c in series.columns
+            if c.endswith("|actual") or c.endswith("|spread")]
     frame = series[cols].copy()
     frame["year"] = [d.year for d in frame.index]
     annual = frame.groupby("year").apply(
         lambda g: (1 + g[cols]).prod() - 1, include_groups=False)
     print(annual.to_string(float_format=lambda v: f"{v:+.2%}"))
+
+    print("\n=== C7 低风险配置门槛（回撤 < "
+          f"{args.max_drawdown:.0%}，年化波动 < {args.max_vol:.0%}）===")
+    for col in series.columns:
+        s_ = series[col].dropna()
+        if len(s_) < 60:
+            continue
+        curve = (1 + s_).cumprod()
+        mdd = float(-(curve / curve.cummax() - 1).min())
+        vol = float(s_.std(ddof=1) * np.sqrt(252))
+        ok = (mdd < args.max_drawdown) and (vol < args.max_vol)
+        print(f"  {col:26s} 回撤 {mdd:6.2%}  波动 {vol:6.2%}  "
+              f"{'通过' if ok else '不通过'}")
 
     print("\n=== C3 分半样本稳定性（actual 档）===")
     for col in cols:

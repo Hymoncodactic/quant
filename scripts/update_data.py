@@ -38,7 +38,7 @@ The B0 pairs-trading universe is refreshed in its own pass at the daily
 interval only. It is 502 names against the core universe's 52, and pairs
 trading needs no intraday bar, so fetching the five-interval set for it would
 multiply the request count for no research value. Its membership is frozen in
-data/reference/b0_universe_20260823.json and is never redefined here; the
+data/reference/b0_universe_1500_20260823.json and is never redefined here; the
 initial load is scripts/20260823_ingest_b0_universe.py, which shares this
 module's fetch path. Pass --no-b0 to skip that pass.
 
@@ -105,7 +105,7 @@ from trading212.ingest import yahoo_bars as yb
 
 # B0 pairs-trading universe: 502 names, daily bars only. Frozen definition and
 # provenance live in the JSON itself; this module never redefines the list.
-B0_UNIVERSE_JSON = DIR_DATA / "reference" / "b0_universe_20260823.json"
+B0_UNIVERSE_JSON = DIR_DATA / "reference" / "b0_universe_1500_20260823.json"
 B0_STALE_DAYS = 4
 
 # Crypto datasets that are still published. Each entry is
@@ -328,7 +328,7 @@ def _update_b0_universe() -> dict:
     already covered by yb.UNIVERSE are skipped here, since that pass fetches a
     superset for them.
 
-    The universe itself is frozen in data/reference/b0_universe_20260823.json
+    The universe itself is frozen in data/reference/b0_universe_1500_20260823.json
     and is NOT redefined here; the initial load is
     scripts/20260823_ingest_b0_universe.py, which shares this same fetch path.
     """

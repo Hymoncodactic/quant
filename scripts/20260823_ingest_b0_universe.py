@@ -10,7 +10,7 @@ Out of scope: the fetch and write logic itself, which belongs to
 trading212/ingest/yahoo_bars.py and is the single shared implementation (this
 script imports it and adds no second copy); partition paths, which belong to
 common/paths.py; the universe definition, which is frozen in
-data/reference/b0_universe_20260823.json and in
+data/reference/b0_universe_1500_20260823.json and in
 research/prereg/20260823_b0_statarb_prereg.md section 2.
 
 Public functions:
@@ -25,7 +25,7 @@ Constants:
                          calendar days is treated as current and skipped.
 
 Inputs:
-    data/reference/b0_universe_20260823.json
+    data/reference/b0_universe_1500_20260823.json
     Yahoo through trading212/ingest/yahoo_bars.py
 Outputs:
     data/t212/curated/us_equity/<ticker>/1d/<ticker>_<year>.parquet
@@ -52,7 +52,7 @@ sys.path.insert(0, str(ROOT))
 
 from trading212.ingest import yahoo_bars as yb                    # noqa: E402
 
-UNIVERSE_JSON = ROOT / "data" / "reference" / "b0_universe_20260823.json"
+UNIVERSE_JSON = ROOT / "data" / "reference" / "b0_universe_1500_20260823.json"
 GROUP = "us_equity"
 STALE_DAYS = 4
 

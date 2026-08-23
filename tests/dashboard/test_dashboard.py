@@ -410,3 +410,81 @@ def test_sessions_route_answers_even_without_a_calendar_cache(live_server):
                                 timeout=15) as r:
         body = json.loads(r.read())
     assert "sessions" in body and body["tz"] == "America/New_York"
+
+
+# ----------------------------------------------------------------------
+# Retiring a book
+# ----------------------------------------------------------------------
+
+class _ResetCtx:
+    def __init__(self, state_dir, ledger, strategy_id="a0_v0_0_1"):
+        self.state_dir = state_dir
+        self.strategy_id = strategy_id
+        self._ledger = ledger
+
+    def ledger(self):
+        return self._ledger
+
+
+def test_reset_needs_confirmation(tmp_path):
+    from trading212.dashboard.api import post_ledger_reset
+    status, body = post_ledger_reset(_ResetCtx(tmp_path, None), {})
+    assert status == 400 and body["problem"] == "not_confirmed"
+
+
+def test_reset_renames_rather_than_deletes(tmp_path):
+    """A book is the only record of which holdings were the strategy's, so
+    finishing with it is not a reason to destroy what it recorded."""
+    from decimal import Decimal
+    from trading212.dashboard.api import post_ledger_reset
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    status, body = post_ledger_reset(_ResetCtx(tmp_path, led),
+                                     {"confirm": True})
+    assert status == 200 and len(body["retired_as"]) == 2
+    assert not (tmp_path / "a0_v0_0_1_snapshot.json").exists()
+    assert list(tmp_path.glob("*.retired-*"))
+
+
+def test_a_new_book_can_be_created_after_a_reset(tmp_path):
+    from decimal import Decimal
+    from trading212.dashboard.api import post_ledger_reset
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    post_ledger_reset(_ResetCtx(tmp_path, led), {"confirm": True})
+    fresh = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("2500"))
+    assert fresh.cash_gbp == Decimal("2500")
+
+
+def test_reset_refused_while_the_book_holds_a_position(tmp_path):
+    from decimal import Decimal
+    from trading212.dashboard.api import post_ledger_reset
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_intent("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), Decimal("100"),
+                      Decimal("1.25"), dry_run=False)
+    led.record_submitted("i1", 111, "NVDA", "NVDA_US_EQ", Decimal("1"),
+                         Decimal("80"), "NEW")
+    led.record_fill(111, 9001, Decimal("1"), Decimal("100"), Decimal("-80"),
+                    [], "t")
+    led.record_order_terminal(111, "FILLED", Decimal("1"))
+    status, body = post_ledger_reset(_ResetCtx(tmp_path, led),
+                                     {"confirm": True})
+    assert status == 409 and body["problem"] == "not_empty"
+    assert any(b["check"] == "no_positions" for b in body["blockers"])
+    assert (tmp_path / "a0_v0_0_1_snapshot.json").exists()
+
+
+def test_reset_refused_while_an_order_is_open(tmp_path):
+    from decimal import Decimal
+    from trading212.dashboard.api import post_ledger_reset
+    from trading212.execution.shadow_ledger import ShadowLedger
+    led = ShadowLedger.init_fresh(tmp_path, "a0_v0_0_1", Decimal("1000"))
+    led.record_intent("i1", "NVDA", "NVDA_US_EQ", Decimal("1"), Decimal("100"),
+                      Decimal("1.25"), dry_run=False)
+    led.record_submitted("i1", 111, "NVDA", "NVDA_US_EQ", Decimal("1"),
+                         Decimal("80"), "NEW")
+    status, body = post_ledger_reset(_ResetCtx(tmp_path, led),
+                                     {"confirm": True})
+    assert status == 409
+    assert any(b["check"] == "no_open_orders" for b in body["blockers"])

@@ -20,6 +20,7 @@ Public functions:
     post_collector(ctx, collector, body)  Start or stop sampling.
     post_ledger_init(ctx, body)        Create the strategy book once.
     post_allocation(ctx, body)         Add to or take from the allocation.
+    post_ledger_reset(ctx, body)       Retire the book so a new one can start.
     post_halt(ctx, body)               Raise the halt flag, or clear it when
                                        the system is provably clean.
     get_sessions(ctx, days)            Recent and upcoming session spans.
@@ -48,6 +49,7 @@ from __future__ import annotations
 
 __all__ = ["get_state", "get_history", "get_settings", "post_settings",
            "post_collector", "post_ledger_init", "post_allocation",
+           "post_ledger_reset",
            "post_halt", "get_sessions", "get_instruments", "get_manual",
            "post_manual", "MAX_HISTORY_DAYS", "MAX_HISTORY_POINTS",
            "SESSION_WINDOW_DAYS"]
@@ -61,7 +63,7 @@ import pandas as pd
 from trading212.dashboard import manual_orders, settings, snapshots
 from trading212.execution import instruments as venue_instruments
 from trading212.execution import reconciler, session_cycle
-from trading212.execution.ledger_store import LedgerFrozenError
+from trading212.execution.ledger_store import LedgerFrozenError, retire_ledger
 
 log = get_logger("t212.dashboard")
 
@@ -236,6 +238,44 @@ def post_allocation(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             else "would_go_negative"
         return 400, {"ok": False, "problem": problem, "detail": str(exc)[:200]}
     return 200, {"ok": True, "cash_gbp": str(ledger.cash_gbp)}
+
+
+def post_ledger_reset(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Retire the current book so a fresh one can be created.
+
+    The allocation is fixed at creation, so changing the strategy's whole
+    footing means starting a new book. That is only safe when the old one
+    owns nothing: a book with positions is the only record of which account
+    holdings belong to this strategy, and discarding it would leave those
+    holdings unattributed and the next reconciliation meaningless.
+
+    The old files are renamed, not deleted, so the record survives.
+    """
+    if not bool((body or {}).get("confirm")):
+        return 400, {"ok": False, "problem": "not_confirmed"}
+    try:
+        ledger = ctx.ledger()
+    except LedgerFrozenError as exc:
+        return 409, {"ok": False, "problem": "ledger_frozen",
+                     "detail": repr(exc)[:200]}
+    if ledger is None:
+        return 409, {"ok": False, "problem": "no_ledger"}
+    blockers = []
+    held = {sym: str(qty) for sym, qty in ledger.positions.items() if qty}
+    if held:
+        blockers.append({"check": "no_positions", "detail": str(held)})
+    if ledger.open_orders:
+        blockers.append({"check": "no_open_orders",
+                         "detail": str(sorted(ledger.open_orders))})
+    if ledger.is_frozen:
+        blockers.append({"check": "no_ambiguity",
+                         "detail": str(sorted(ledger.ambiguous_intents))})
+    if blockers:
+        return 409, {"ok": False, "problem": "not_empty", "blockers": blockers}
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    moved = retire_ledger(ctx.state_dir, ctx.strategy_id, stamp)
+    log.warning("[ledger] retired %s to %s", ctx.strategy_id, moved)
+    return 200, {"ok": True, "retired_as": moved}
 
 
 def post_halt(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
