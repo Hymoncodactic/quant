@@ -65,8 +65,14 @@ MANIFEST_NOTE=""
 hold_window() {
     echo
     echo "----------------------------------------------------------------"
-    read -n 1 -s -r -p "Press any key to close this window. "
-    echo
+    # Only wait for a key when a person is actually there to press one. Finder
+    # gives this script a terminal, so the pause happens on a double-click; a
+    # pipe, a cron job or another script does not, and waiting there blocks
+    # forever on input that will never arrive.
+    if [ -t 0 ]; then
+        read -n 1 -s -r -p "Press any key to close this window. "
+        echo
+    fi
     exit "${1}"
 }
 
