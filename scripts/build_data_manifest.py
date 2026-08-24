@@ -126,6 +126,16 @@ TIMEOUT_CHECKSUM_SEC = 30
 
 USER_AGENT = "quant-research/1.0"
 
+# The one field a compacted record always keeps; see _compact().
+ROWS_KEY = "rows"
+
+# scripts/sync_to_git.py refuses to stage any file above this, so a manifest
+# that reaches it stops the daily sync outright. Warn well before that, because
+# the equity manifest grew twelvefold in four days as intraday intervals landed
+# and the ceiling is a real horizon rather than a theoretical one.
+SYNC_BLOB_CEILING_BYTES = 10 * 1024 * 1024
+SIZE_WARN_FRACTION = 0.7
+
 
 # ============================================================================
 # [2] Scanners, one per source layout
@@ -301,8 +311,26 @@ def _write_manifest(path: Path, source: str, records: list[dict],
                       "bytes": summary["bytes"], "rows": summary["rows"]}}
     lines = [json.dumps(meta, sort_keys=True, ensure_ascii=False)]
     for record in sorted(records, key=lambda r: r["rel"]):
-        lines.append(json.dumps(record, sort_keys=True, ensure_ascii=False))
+        lines.append(json.dumps(_compact(record), sort_keys=True,
+                                ensure_ascii=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _compact(record: dict) -> dict:
+    """Drop keys that carry no information, so the file stays small.
+
+    The equity source has no immutable upstream object, so every one of its
+    records would otherwise spell out `"url": null, "sha256_upstream": null`:
+    thirty-nine bytes of nothing on each of tens of thousands of lines. A
+    missing key and an explicit null are read identically here, because every
+    consumer reaches for these through dict.get().
+
+    ROWS_KEY is never dropped. A null row count is the signal that a partition
+    could not be read, and silence would turn a damaged file into an absent
+    field.
+    """
+    return {k: v for k, v in record.items()
+            if v is not None or k == ROWS_KEY}
 
 
 def _fill_upstream_checksums(records: list[dict], limit: int) -> int:
@@ -431,7 +459,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{source:<10} {summary['files']:>7,} files  "
               f"{summary['bytes'] / 1024 ** 3:>7.1f} GiB  "
               f"{summary['rows']:>15,} rows  ({', '.join(notes)})")
-        print(f"{'':<10} -> {manifest_path(source).relative_to(ROOT)}")
+
+        written = manifest_path(source)
+        size = written.stat().st_size
+        print(f"{'':<10} -> {written.relative_to(ROOT)}  "
+              f"({size / 1024 ** 2:.2f} MiB)")
+        if size > SYNC_BLOB_CEILING_BYTES * SIZE_WARN_FRACTION:
+            print(f"{'':<10}    WARNING: past {SIZE_WARN_FRACTION:.0%} of the "
+                  f"{SYNC_BLOB_CEILING_BYTES // 1024 ** 2} MiB ceiling that "
+                  f"sync_to_git.py enforces.")
+            print(f"{'':<10}    At the ceiling the daily sync stops. Shard this "
+                  f"manifest before then.")
 
     if exit_code:
         print("\nSome partitions could not be read. Their manifest records carry "

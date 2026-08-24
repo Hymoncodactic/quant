@@ -34,19 +34,26 @@ belongs to common/paths.py; atomic writing and temporary-partition cleanup,
 which belong to common/store.py; the committed rebuild manifest, which belongs
 to scripts/build_data_manifest.py.
 
-The B0 pairs-trading universe is refreshed in its own pass at the daily
-interval only. It is 502 names against the core universe's 52, and pairs
-trading needs no intraday bar, so fetching the five-interval set for it would
-multiply the request count for no research value. Its membership is frozen in
-data/reference/b0_universe_1500_20260823.json and is never redefined here; the
-initial load is scripts/20260823_ingest_b0_universe.py, which shares this
-module's fetch path. Pass --no-b0 to skip that pass.
+The B0 pairs-trading universe is verified in its own pass at the daily interval
+only; pairs trading needs no intraday bar, so fetching the five-interval set for
+it would multiply the request count for no research value. Its membership is
+frozen in data/reference/b0_universe_1500_20260823.json and is never redefined
+here; the initial load is scripts/20260823_ingest_b0_universe.py, which shares
+this module's fetch path. Pass --no-b0 to skip that pass.
+
+That pass is a completeness guarantee rather than a second download. B0 names
+are stored in the same us_equity group the equity pass walks, and that pass now
+discovers its symbols from disk, so a B0 name already on disk was refreshed
+minutes earlier and is skipped here. What this pass adds is the names the disk
+walk cannot see: a frozen member that has never been fetched, or one that has
+gone stale. On a healthy lake it makes no requests at all and simply reports
+that every frozen member is present.
 
 Public functions:
     main()   Update crypto, equity and the B0 universe, then print the report.
 
 Constants:
-    B0_UNIVERSE_JSON  Path  Frozen B0 universe, 502 names.
+    B0_UNIVERSE_JSON  Path  Frozen B0 universe, 1500 names (S&P Composite 1500).
     B0_STALE_DAYS     int   A B0 name whose newest stored daily bar is younger
                             than this many calendar days is treated as current.
     CRYPTO_JOBS             list Tuples of (market, freq, dataset, period,
@@ -103,8 +110,10 @@ from common.store import clear_stale_temps, write_table
 from crypto_trading.ingest import binance_archive as archive
 from trading212.ingest import yahoo_bars as yb
 
-# B0 pairs-trading universe: 502 names, daily bars only. Frozen definition and
-# provenance live in the JSON itself; this module never redefines the list.
+# B0 pairs-trading universe: daily bars only. Frozen definition and provenance
+# live in the JSON itself; this module never redefines the list. The JSON holds
+# 1500 members; an earlier comment here said 502, which was the large-cap bucket
+# alone and did not match either the file or load_universe().
 B0_UNIVERSE_JSON = DIR_DATA / "reference" / "b0_universe_1500_20260823.json"
 B0_STALE_DAYS = 4
 
@@ -377,6 +386,77 @@ def _update_equity() -> dict:
     return stats
 
 
+def _b0_tickers() -> list[str]:
+    """Return the frozen B0 membership, normalized to the price source's spelling.
+
+    The frozen list carries Wikipedia spellings, which write a share class with a
+    dot: BRK.B, BF.B. Yahoo writes the same instruments with a hyphen. Passing the
+    dotted form through fetches nothing, so those two names would fail on every
+    run while appearing to be genuinely missing data. Normalizing here keeps the
+    frozen file untouched, which matters because it is the preregistered universe
+    definition and must not be edited to suit a downstream quirk.
+    """
+    payload = json.loads(B0_UNIVERSE_JSON.read_text())
+    return sorted({m["ticker"].replace(".", "-") for m in payload["members"]})
+
+
+def _update_b0_universe() -> dict:
+    """Ensure every frozen B0 member has current daily bars.
+
+    Runs after the equity pass, which walks the same us_equity group from disk and
+    will already have refreshed any member stored there. This pass therefore
+    fetches only what that walk could not see, and on a healthy lake makes no
+    requests at all.
+
+    Returns:
+        Counts under the keys main() prints: tickers, skipped, files, rows, bytes,
+        failed, plus missing_from_disk for members that had no stored bars.
+    """
+    stats = {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
+             "failed": [], "missing_from_disk": []}
+    print("\n" + "=" * 96)
+    print("B0 UNIVERSE  frozen membership, daily only, verification pass")
+    print("=" * 96, flush=True)
+
+    if not B0_UNIVERSE_JSON.is_file():
+        print(f"  {B0_UNIVERSE_JSON} not found; skipping.", flush=True)
+        stats["failed"].append("universe json missing")
+        return stats
+
+    tickers = _b0_tickers()
+    cutoff = pd.Timestamp(date.today() - timedelta(days=B0_STALE_DAYS), tz="UTC")
+    todo = []
+    for ticker in tickers:
+        newest = yb.latest_stored("us_equity", ticker, "1d")
+        if newest is None:
+            stats["missing_from_disk"].append(ticker)
+            todo.append(ticker)
+        elif newest < cutoff:
+            todo.append(ticker)
+        else:
+            stats["skipped"] += 1
+
+    print(f"  {len(tickers)} frozen members, {stats['skipped']} already current, "
+          f"{len(todo)} to fetch "
+          f"({len(stats['missing_from_disk'])} never stored)", flush=True)
+
+    for index, ticker in enumerate(todo, 1):
+        frame = yb.fetch_interval(ticker, "1d", None, None)
+        time.sleep(yb.PACE_SEC)
+        if frame.empty:
+            stats["failed"].append(ticker)
+            continue
+        files, size = yb.write_daily("us_equity", ticker, frame)
+        stats["tickers"] += 1
+        stats["files"] += files
+        stats["rows"] += len(frame)
+        stats["bytes"] += size
+        if index % 25 == 0 or index == len(todo):
+            print(f"  ...{index}/{len(todo)}  fetched {stats['tickers']}  "
+                  f"failed {len(stats['failed'])}", flush=True)
+    return stats
+
+
 def main() -> None:
     """Update crypto and equity, then report."""
     started = time.time()
@@ -415,6 +495,9 @@ def main() -> None:
         print("  Re-run to retry: these are usually Yahoo throttling, not missing data.")
     print(f"  b0      {b0['tickers']} tickers updated, {b0['skipped']} already current  "
           f"{b0['files']} files  {b0['rows']:,} rows  {b0['bytes']/1e6:,.1f} MB")
+    if b0.get("missing_from_disk"):
+        print(f"  b0 members never stored before this run "
+              f"({len(b0['missing_from_disk'])}): {b0['missing_from_disk'][:12]}")
     if b0.get("failed"):
         print(f"  b0 failures ({len(b0['failed'])}): {b0['failed'][:12]}")
     print(f"  elapsed {(time.time()-started)/60:.1f} min")

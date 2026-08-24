@@ -405,6 +405,28 @@ def classify_path(path: str) -> str | None:
     return None
 
 
+def _looks_like_path(value: str) -> bool:
+    """Report whether a captured value is a filesystem path rather than a secret.
+
+    Slash-separated segments ending in a short lower-case extension is a shape
+    no opaque literal takes. Base64 does use `/` in its alphabet, so the slash
+    alone proves nothing and is deliberately not the test; what settles it is
+    the trailing `.parquet`, `.py`, `.json` and the like, which a credential
+    never carries.
+
+    This is what keeps docs/data/<source>/MANIFEST.jsonl out of the results.
+    Every record there names a path, and the equity universe contains KEY
+    (KeyCorp) and KEYS (Keysight Technologies), so the word "key" appears on
+    fifty-three otherwise ordinary lines and satisfies the field side of the
+    rule on its own.
+    """
+    if "/" not in value:
+        return False
+    stem, dot, extension = value.rsplit("/", 1)[-1].rpartition(".")
+    return bool(dot) and bool(stem) and 1 <= len(extension) <= 8 \
+        and extension.isalnum() and extension.islower()
+
+
 def _looks_like_code(value: str) -> bool:
     """Report whether a captured value is a fragment of code or prose.
 
@@ -443,7 +465,7 @@ def looks_like_secret_value(value: str) -> bool:
     `secret_name: trading212_api_key` out of the results: it carries lower case
     and digits only, two classes, so it does not count as a credential.
     """
-    if _looks_like_code(value):
+    if _looks_like_code(value) or _looks_like_path(value):
         return False
     if PLACEHOLDER_RE.match(value):
         return False
