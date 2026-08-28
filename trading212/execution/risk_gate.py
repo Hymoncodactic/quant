@@ -134,7 +134,8 @@ class GateReport:
 
 def halt_active(halt_path: Path) -> bool:
     """The halt flag is a plain file; existence means stop. Creating it takes
-    one shell command in an emergency, and no code path deletes it."""
+    one shell command in an emergency; removal is deliberate -- the dashboard
+    clear route (which re-checks the book first) or a manual delete."""
     return halt_path.exists()
 
 

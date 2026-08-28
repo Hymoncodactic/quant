@@ -48,6 +48,9 @@ Change log:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+
 __all__ = ["get_state", "get_history", "get_settings", "post_settings",
            "post_collector", "post_ledger_init", "post_allocation",
            "post_ledger_reset",
@@ -324,6 +327,30 @@ def post_manual(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     return status, {"ok": status == 200, "result": result}
 
 
+@contextlib.contextmanager
+def _execution_lock(ctx):
+    """Hold the SAME advisory lock run_a0 holds, or refuse.
+
+    The dashboard and run_a0 are separate processes writing the same journal
+    and snapshot; without a shared lock a ledger reset or allocation change
+    can interleave with a decide/settle mid-flight and corrupt the book.
+    Yields True while the lock is held, False when run_a0 holds it -- the
+    caller then answers 409 instead of mutating.
+    """
+    path = ctx.state_dir / "run_a0.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        handle.close()
+
+
 def post_allocation(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """Add to or take from the strategy's allocated cash.
 
@@ -336,22 +363,26 @@ def post_allocation(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         delta = Decimal(str(raw))
     except (InvalidOperation, TypeError, ValueError):
         return 400, {"ok": False, "problem": "amount_not_a_number"}
-    ledger = ctx.ledger()
-    if ledger is None:
-        return 409, {"ok": False, "problem": "no_ledger"}
-    change_id = f"{pd.Timestamp.now(tz='UTC').value}"
-    try:
-        ledger.record_allocation_change(change_id, delta,
-                                        str((body or {}).get("reason") or
-                                            "changed from the dashboard"))
-    except LedgerFrozenError as exc:
-        return 409, {"ok": False, "problem": "ledger_frozen",
-                     "detail": repr(exc)[:200]}
-    except ValueError as exc:
-        problem = "amount_is_zero" if "zero" in str(exc) \
-            else "would_go_negative"
-        return 400, {"ok": False, "problem": problem, "detail": str(exc)[:200]}
-    return 200, {"ok": True, "cash_gbp": str(ledger.cash_gbp)}
+    with _execution_lock(ctx) as held:
+        if not held:
+            return 409, {"ok": False, "problem": "strategy_running"}
+        ledger = ctx.ledger()
+        if ledger is None:
+            return 409, {"ok": False, "problem": "no_ledger"}
+        change_id = f"{pd.Timestamp.now(tz='UTC').value}"
+        try:
+            ledger.record_allocation_change(change_id, delta,
+                                            str((body or {}).get("reason") or
+                                                "changed from the dashboard"))
+        except LedgerFrozenError as exc:
+            return 409, {"ok": False, "problem": "ledger_frozen",
+                         "detail": repr(exc)[:200]}
+        except ValueError as exc:
+            problem = "amount_is_zero" if "zero" in str(exc) \
+                else "would_go_negative"
+            return 400, {"ok": False, "problem": problem,
+                         "detail": str(exc)[:200]}
+        return 200, {"ok": True, "cash_gbp": str(ledger.cash_gbp)}
 
 
 def post_ledger_reset(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -367,6 +398,14 @@ def post_ledger_reset(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """
     if not bool((body or {}).get("confirm")):
         return 400, {"ok": False, "problem": "not_confirmed"}
+    with _execution_lock(ctx) as held:
+        if not held:
+            return 409, {"ok": False, "problem": "strategy_running"}
+        return _ledger_reset_locked(ctx)
+
+
+def _ledger_reset_locked(ctx) -> tuple[int, dict[str, Any]]:
+    """The reset body, run only while the execution lock is held."""
     try:
         ledger = ctx.ledger()
     except LedgerFrozenError as exc:
@@ -411,7 +450,17 @@ def post_halt(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         return 200, {"ok": True, "halted": True}
     if action != "clear":
         return 400, {"ok": False, "problem": "unknown_action"}
+    # Clearing runs reconcile, which journals a note into the same ledger
+    # run_a0 writes -- so it must hold the execution lock. Raising above
+    # stays lock-free on purpose: the emergency stop must never wait.
+    with _execution_lock(ctx) as held:
+        if not held:
+            return 409, {"ok": False, "problem": "strategy_running"}
+        return _halt_clear_locked(ctx)
 
+
+def _halt_clear_locked(ctx) -> tuple[int, dict[str, Any]]:
+    """The clear checks, run only while the execution lock is held."""
     blockers = []
     try:
         ledger = ctx.ledger()

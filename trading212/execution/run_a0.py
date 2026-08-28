@@ -36,6 +36,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from decimal import Decimal
 
 from common.config import load_config
@@ -53,15 +54,32 @@ def _acquire_instance_lock():
     (the QMT reference logged exactly this incident class). The lock file
     lives beside the ledger; the OS releases it on process exit, so a crash
     never leaves a stale lock.
+
+    The file is opened in append mode and truncated only AFTER the flock
+    succeeds: a failing second invocation must not wipe the holder's pid
+    line, which is what the operations card tells the operator to read.
+    A short retry rides out the dashboard's brief holds of the same lock
+    (its ledger-writing routes take it for fractions of a second).
     """
     lock_dir = execution_state_dir("t212")
     lock_dir.mkdir(parents=True, exist_ok=True)
-    handle = open(lock_dir / "run_a0.lock", "w", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise SystemExit("another run_a0 invocation is already active; "
-                         "refusing to run concurrently")
+    handle = open(lock_dir / "run_a0.lock", "a+", encoding="utf-8")
+    for attempt in range(4):
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if attempt == 3:
+                handle.seek(0)
+                holder = handle.read().strip() or "unknown holder"
+                handle.close()
+                raise SystemExit(
+                    f"the execution lock is held ({holder}); another run_a0 "
+                    f"or a dashboard ledger operation is active -- refusing "
+                    f"to run concurrently")
+            time.sleep(0.5)
+    handle.seek(0)
+    handle.truncate()
     handle.write(f"pid={os.getpid()}\n")
     handle.flush()
     return handle  # kept referenced by the caller for the process lifetime
@@ -103,8 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         halt.parent.mkdir(parents=True, exist_ok=True)
         halt.touch()
         result = {"phase": "halt", "halt_file": str(halt),
-                  "note": "no code path removes this file; delete it manually "
-                          "after ruling the situation safe"}
+                  "note": "removal is a deliberate act: the dashboard clear "
+                          "button (which re-checks the book first) or a "
+                          "manual delete after ruling the situation safe"}
     else:  # pragma: no cover - argparse enforces the choices
         raise ValueError(args.command)
 

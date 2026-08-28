@@ -35,11 +35,14 @@ from __future__ import annotations
 
 __all__ = ["ReconcileVerdict", "reconcile", "resolve_ambiguities"]
 
+import json
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 
+from common.alerts import notify
 from common.logging_setup import get_logger
 from trading212.client import T212Client
 
@@ -60,6 +63,61 @@ class ReconcileVerdict:
     def summary(self) -> str:
         state = "CLEAN" if self.ok else "MISMATCH"
         return f"{state}; problems={self.problems or 'none'}; notes={self.notes or 'none'}"
+
+
+def _manual_order_exclusions(state_dir: Path) -> tuple[set[int], list[dict]]:
+    """Manual-page evidence exclusions: known venue ids, plus taints.
+
+    The manual page journals every submitted order with its venue id
+    (trading212/dashboard/manual_orders.py). Those orders were initiated
+    through the same API key, so the venue stamps them initiatedFrom API;
+    without this exclusion a hand-placed order could be flagged as a lost
+    strategy submission or, worse, positively matched as ambiguity evidence
+    and absorbed into the strategy book.
+
+    Returns (ids, taints). ids are venue order ids of journaled manual
+    submissions -- excludable with certainty. taints are records the id
+    exclusion CANNOT cover: a manual submit whose own outcome was ambiguous
+    (it may exist at the venue with no journaled id), and any journal line
+    that failed to parse (ticker None, meaning it could concern any
+    ticker). While a taint overlaps an ambiguity's window, automatic
+    resolution must stand down and leave the freeze to a human --
+    proceeding with only the readable ids would absorb the very orders the
+    exclusion exists to keep out.
+    """
+    path = state_dir / "manual_orders.jsonl"
+    ids: set[int] = set()
+    taints: list[dict] = []
+    if not path.exists():
+        return ids, taints
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        log.warning("[reconcile] manual order journal unreadable: %r", exc)
+        return ids, [{"ticker": None, "ts": None, "reason": repr(exc)[:120]}]
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            taints.append({"ticker": None, "ts": None,
+                           "reason": "unparsable journal line"})
+            continue
+        if entry.get("outcome") == "submitted" \
+                and entry.get("order_id") is not None:
+            try:
+                ids.add(int(entry["order_id"]))
+            except (TypeError, ValueError):
+                taints.append({"ticker": entry.get("ticker"),
+                               "ts": entry.get("ts"),
+                               "reason": "submitted with unusable id"})
+        elif entry.get("outcome") == "ambiguous":
+            taints.append({"ticker": entry.get("ticker"),
+                           "ts": entry.get("ts"),
+                           "reason": "manual submit with unknown outcome"})
+    return ids, taints
 
 
 # ============================================================================
@@ -90,8 +148,11 @@ def reconcile(client: T212Client, ledger,
             notes.append(f"book order {order_id_str} ({record['ticker']}) no "
                          f"longer pending; run settle to harvest it")
     known_ids = {int(order_id) for order_id in ledger.open_orders}
+    manual_ids, _ = _manual_order_exclusions(ledger.state_dir)
     for order_id, order in pending_by_id.items():
-        if order.get("initiatedFrom") == "API" and order_id not in known_ids:
+        if order.get("initiatedFrom") == "API" \
+                and order_id not in known_ids \
+                and order_id not in manual_ids:
             problems.append(f"API-initiated pending order {order_id} "
                             f"({order.get('ticker')}) unknown to the book")
 
@@ -115,6 +176,10 @@ def reconcile(client: T212Client, ledger,
     verdict = ReconcileVerdict(ok=not problems, problems=problems, notes=notes)
     level = log.info if verdict.ok else log.critical
     level("[reconcile] %s", verdict.summary())
+    if not verdict.ok:
+        notify("A0 reconcile MISMATCH",
+               f"{len(problems)} problem(s); trading is blocked until ruled: "
+               f"{problems[0]}")
     ledger.record_note(_note_id(), "RECONCILE",
                        {"ok": verdict.ok, "problems": problems, "notes": notes})
     return verdict
@@ -123,6 +188,32 @@ def reconcile(client: T212Client, ledger,
 # ============================================================================
 # [2] Ambiguity resolution
 # ============================================================================
+
+def _overlapping_taint(taints: list[dict], record: dict) -> dict | None:
+    """First manual-journal taint that could concern this ambiguity.
+
+    A taint with no ticker (unreadable journal line) overlaps everything.
+    A ticker-bearing taint overlaps when it names the same ticker and its
+    timestamp is not clearly BEFORE the ambiguity's evidence window (at
+    minus 10 minutes); an unparsable timestamp counts as overlapping,
+    keeping the stand-down on the conservative side.
+    """
+    window_start = pd.Timestamp(record["at"]) - pd.Timedelta(minutes=10)
+    for taint in taints:
+        if taint.get("ticker") is None:
+            return taint
+        if taint["ticker"] != record.get("ticker"):
+            continue
+        raw = taint.get("ts")
+        try:
+            ts = pd.Timestamp(raw)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+        except (TypeError, ValueError):
+            return taint
+        if ts >= window_start:
+            return taint
+    return None
 
 def resolve_ambiguities(client: T212Client, ledger,
                         min_absent_age_sec: float = 600.0) -> list[str]:
@@ -143,18 +234,49 @@ def resolve_ambiguities(client: T212Client, ledger,
     if not ledger.ambiguous_intents:
         return resolved
 
+    # Evidence must come from orders THIS process could have created, so
+    # anything the venue positively attributes to another source (IOS,
+    # AUTOINVEST, ...) is excluded from the pool. A MISSING initiatedFrom is
+    # NOT proof of another source and keeps the order in the pool: 83 of the
+    # 546 archived history orders lack the field (S5, records/orders.jsonl),
+    # and excluding a field-less true API order would let the absence branch
+    # below resolve it as never-arrived and re-submit -- a double order.
+    # Hand-placed dashboard orders arrive through the same API key, so their
+    # journaled ids are excluded by id -- a person re-placing a "lost" order
+    # by hand during a freeze must never have it absorbed as the strategy's.
+    manual_ids, manual_taints = _manual_order_exclusions(ledger.state_dir)
+
+    def _foreign(order: dict, order_id: int) -> bool:
+        source = order.get("initiatedFrom")
+        return (source is not None and source != "API")             or order_id in manual_ids
+
     candidates: dict[int, dict] = {}
     for order in client.pending_orders():
-        if not ledger.knows_order(int(order["id"])):
-            candidates[int(order["id"])] = order
+        order_id = int(order["id"])
+        if _foreign(order, order_id):
+            continue
+        if not ledger.knows_order(order_id):
+            candidates[order_id] = order
     for item in client.iter_history_orders():
         order = item.get("order") or {}
-        if order.get("id") is not None and not ledger.knows_order(int(order["id"])):
-            candidates.setdefault(int(order["id"]), order)
+        if order.get("id") is None:
+            continue
+        order_id = int(order["id"])
+        if _foreign(order, order_id):
+            continue
+        if not ledger.knows_order(order_id):
+            candidates.setdefault(order_id, order)
 
     for intent_id, record in list(ledger.ambiguous_intents.items()):
         quantity = Decimal(record["quantity"])
         intent_side = "BUY" if quantity > 0 else "SELL"
+        taint = _overlapping_taint(manual_taints, record)
+        if taint is not None:
+            log.warning("[reconcile] ambiguous intent %s: manual-order "
+                        "journal taint (%s) overlaps its window; automatic "
+                        "resolution stands down, freeze kept for a human",
+                        intent_id, taint.get("reason"))
+            continue
         # Matching evidence must be strict on THREE axes at once -- same
         # ticker, same side AND |quantity|, created no earlier than shortly
         # before the ambiguous POST -- so a retired same-size order from an
@@ -163,6 +285,7 @@ def resolve_ambiguities(client: T212Client, ledger,
         # excluded everything this book ever owned.
         ambiguous_at = pd.Timestamp(record["at"])
         match_id = None
+        time_window_near_misses = []
         for order_id, order in candidates.items():
             if order.get("ticker") != record["ticker"]:
                 continue
@@ -173,11 +296,16 @@ def resolve_ambiguities(client: T212Client, ledger,
                 continue
             created = order.get("createdAt")
             if created is None:
-                continue  # no time evidence -> not evidence
+                # Same ticker, side and quantity but no time evidence: not
+                # usable as a positive match, but its existence forbids the
+                # absence branch below from ruling never-arrived.
+                time_window_near_misses.append(order_id)
+                continue
             created_ts = pd.Timestamp(created)
             if created_ts.tzinfo is None:
                 created_ts = created_ts.tz_localize("UTC")
             if created_ts < ambiguous_at - pd.Timedelta(minutes=10):
+                time_window_near_misses.append(order_id)
                 continue
             match_id = order_id
             break
@@ -189,6 +317,16 @@ def resolve_ambiguities(client: T212Client, ledger,
             resolved.append(f"{intent_id} -> order {match_id}")
             log.warning("[reconcile] ambiguous intent %s resolved to order %s",
                         intent_id, match_id)
+            continue
+        if time_window_near_misses:
+            # An order matching ticker, side and quantity exists but sits
+            # outside (or without) the time window. Ruling "never arrived"
+            # while such a candidate stands would unfreeze with a possibly
+            # real fill unbooked -- the double-order path. A human decides.
+            log.warning("[reconcile] ambiguous intent %s: candidates %s "
+                        "match everything but the time window; refusing "
+                        "automatic absence resolution, freeze kept",
+                        intent_id, time_window_near_misses)
             continue
         age_sec = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(record["at"])).total_seconds()
         if age_sec < min_absent_age_sec:

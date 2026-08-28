@@ -14,6 +14,7 @@
 
 | 文件 | 作用 | 存在必要性 | 谁在用 |
 |---|---|---|---|
+| `conftest.py` | 全局自动夹具：把 `common/alerts.py` 的通知在测试中替换为捕获列表 | 测试触发的对账失配与歧义路径会弹真实 macOS 通知，与真实交易告警无法区分，且无头环境下每次可卡 5 秒 | pytest 全部用例自动生效 |
 | `__init__.py` | 空文件（0 字节），把 `tests` 声明为常规包 | 测试模块之间用绝对路径互相 import（例如 `tests/backtest/test_broker.py` 的 `from tests.backtest.conftest import ...`），该 import 要求 `tests` 可作为包解析；本文件把它声明为常规包，使这条路径在任何 import 模式下都成立。当前内容为空，未按 `CLAUDE.md` §4.4 写模块头 docstring | pytest 收集时的包解析；`tests/backtest/` 下 5 个测试文件的绝对 import 路径以它为根 |
 
 ## 3. 子目录索引
@@ -51,3 +52,7 @@
 2026-08-22 建立本文件，登记现有文件。
 2026-08-29 新增 `test_dashboard_diagnostics.py`：锁定连接失败的原因判定，覆盖实盘密钥被
 demo 主机拒绝、本机 DNS 被劫持、CDN 边缘地址不同不得误判为劫持三类情形。
+2026-08-29 新增 `test_audit_defenses.py`（20 项）：悬空意向冻结、归因过滤、批内急停、
+场所现金核对、settle 急停路径与负现金告警、时钟偏移解析。`test_dashboard.py` 增补
+策略运行中账本变更须 409 的互斥测试。
+2026-08-29 复审轮：`test_audit_defenses.py` 增至 25 项（时间锚回归、近失候选拒缺席、手工日志污点）；新增根 `conftest.py` 静音告警通道。

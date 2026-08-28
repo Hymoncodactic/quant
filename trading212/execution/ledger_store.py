@@ -26,6 +26,7 @@ Public functions:
     snapshot_path(state_dir, strategy_id)
     read_snapshot(state_dir, strategy_id, schema_version)
     append_event(state_dir, strategy_id, record)
+    iter_journal(state_dir, strategy_id)
     write_snapshot(state_dir, strategy_id, snap)
     retire_ledger(state_dir, strategy_id, stamp)   Move a book aside so a new
                                                    one can be started.
@@ -49,7 +50,7 @@ Change log:
 
 from __future__ import annotations
 
-__all__ = ["LedgerFrozenError", "journal_path", "snapshot_path",
+__all__ = ["LedgerFrozenError", "journal_path", "snapshot_path", "iter_journal",
            "read_snapshot", "append_event", "write_snapshot", "retire_ledger"]
 
 import json
@@ -113,6 +114,24 @@ def append_event(state_dir: Path, strategy_id: str,
         handle.write(line + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def iter_journal(state_dir: Path, strategy_id: str):
+    """Yield every parsed journal record, oldest first.
+
+    Read-only companion to append_event for consumers that must inspect the
+    full event history (e.g. dangling-intent detection). A missing journal
+    yields nothing; a torn tail line is the loader's problem, not this
+    iterator's, so parse errors propagate.
+    """
+    path = journal_path(state_dir, strategy_id)
+    if not path.exists():
+        return
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
 
 def write_snapshot(state_dir: Path, strategy_id: str,

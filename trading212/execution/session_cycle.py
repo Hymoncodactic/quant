@@ -86,12 +86,13 @@ __all__ = ["decide", "settle", "status", "init_ledger",
 
 import json
 import time
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Any
 
 import pandas as pd
 import yaml
 
+from common.alerts import notify
 from common.logging_setup import get_logger
 from common.paths import config_dir, execution_state_dir
 from trading212 import archive
@@ -174,6 +175,10 @@ class _Cycle:
                                             instruments.US_SCHEDULE_ID_NASDAQ)
         return instruments.sessions(events)
 
+    def halted(self) -> bool:
+        """Whether the halt flag file is present."""
+        return risk_gate.halt_active(self.halt_path)
+
     def cycle_state(self) -> dict[str, Any]:
         if self.cycle_state_path.exists():
             return json.loads(self.cycle_state_path.read_text(encoding="utf-8"))
@@ -190,6 +195,15 @@ class _Cycle:
 # [2] decide
 # ============================================================================
 
+# Maximum tolerated gap between this machine's clock and the venue's HTTP
+# Date header before a cycle refuses to run. The submit instant is placed
+# submit_lead_sec (60s) before the close with submit_grace_sec (30s) of
+# slack; a clock off by more than 10s already distorts that placement
+# materially, while HTTP Date resolution (1s) plus round-trip latency stay
+# well under 10s on this network, so the bound cannot false-trip.
+MAX_CLOCK_SKEW_SEC = 10.0
+
+
 def decide(cfg: dict[str, Any], armed: bool,
            now_utc: pd.Timestamp | None = None) -> dict[str, Any]:
     """One decision pass. Every gate must pass or nothing is submitted."""
@@ -203,6 +217,14 @@ def decide(cfg: dict[str, Any], armed: bool,
     if summary.get("currency") != cycle.base_ccy:
         return _abort(f"account currency {summary.get('currency')!r} differs "
                       f"from configured {cycle.base_ccy!r}")
+    skew = cycle.client.last_clock_skew_sec()
+    if skew is not None and abs(skew) > MAX_CLOCK_SKEW_SEC:
+        # Submission timing is computed on the local clock against the
+        # venue's schedule; a drifted clock submits into the wrong session
+        # phase (a slow clock sends the "60s before close" order after the
+        # close, filling at the NEXT open). Refusing is the only safe move.
+        return _abort(f"system clock differs from the venue by {skew:+.1f}s "
+                      f"(bound {MAX_CLOCK_SKEW_SEC}s); fix the clock first")
 
     session = instruments.current_session(cycle.session_list(), now)
     if session is None:
@@ -230,9 +252,29 @@ def decide(cfg: dict[str, Any], armed: bool,
         ledger = cycle.ledger()
     except (FileNotFoundError, LedgerFrozenError) as exc:
         return _abort(f"ledger unavailable: {exc}")
+    dangling = ledger.freeze_dangling_live_intents()
+    if dangling:
+        notify("A0 dangling intent -- book frozen",
+               f"{len(dangling)} live intent(s) with no recorded outcome; "
+               f"run settle to resolve against the venue")
+        return _abort(f"dangling live intents frozen as ambiguous: "
+                      f"{dangling}; run settle to resolve them")
+    if ledger.is_frozen:
+        return _abort(f"ledger frozen by ambiguous intents: "
+                      f"{sorted(ledger.ambiguous_intents)}; run settle")
     if ledger.open_orders:
         return _abort(f"open orders unsettled: {sorted(ledger.open_orders)}; "
                       f"run settle first")
+    shortfall = _venue_cash_shortfall(summary, ledger.cash_gbp)
+    if shortfall is not None:
+        venue_free, book_cash = shortfall
+        log.critical("[decide] venue free cash %s below ledger cash %s",
+                     venue_free, book_cash)
+        notify("A0 cash shortfall -- no orders",
+               f"account free {venue_free} < strategy book {book_cash} "
+               f"GBP; lower the allocation or fund the account")
+        return _abort(f"venue availableToTrade {venue_free} is below ledger "
+                      f"cash {book_cash}; allocation no longer covered")
 
     trade_symbols = list(cycle.params["trade_symbols"])
     state_symbol = cycle.params["state_symbol"]
@@ -280,7 +322,8 @@ def decide(cfg: dict[str, Any], armed: bool,
 
     report = order_router.submit_intents(gate.approved, ledger, cycle.client,
                                          pd.Timestamp(session.date_ny),
-                                         dry_run=cycle.dry_run, armed=armed)
+                                         dry_run=cycle.dry_run, armed=armed,
+                                         halt_path=cycle.halt_path)
 
     archive.record_signals(None, {
         "strategy_id": cycle.strategy_id,
@@ -399,6 +442,43 @@ def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
         time.sleep(min(remaining, 15.0))
 
 
+def _venue_cash_shortfall(summary: dict[str, Any],
+                          book_cash: Decimal) -> tuple[Decimal, Decimal] | None:
+    """Whether the account's free cash no longer covers the book's cash.
+
+    The account is shared with manual trading; when its free cash has fallen
+    below what the book believes the strategy may spend, buys the gate would
+    approve die at the venue instead -- a silent drift from the baseline.
+    Cash reserved for pending orders (a manual GTC limit in the shared
+    account, say) is counted as still present: it has not left the account,
+    and aborting every session over it would stop even risk-reducing sells
+    while misnaming the cause. When free cash alone is short but reserved
+    cash covers the gap, a warning names the reservation instead. A missing
+    or unparsable field counts as zero, which fails closed. One penny of
+    tolerance absorbs float noise in the venue's cash figures. Returns
+    (available_total, book_cash) on shortfall, None when covered.
+    """
+    cash = summary.get("cash") or {}
+
+    def _dec(raw: Any) -> Decimal:
+        try:
+            return Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal("0")
+
+    venue_free = _dec(cash.get("availableToTrade"))
+    reserved = _dec(cash.get("reservedForOrders"))
+    available_total = venue_free + reserved
+    if available_total < book_cash - Decimal("0.01"):
+        return available_total, book_cash
+    if venue_free < book_cash - Decimal("0.01"):
+        log.warning("[decide] venue free cash %s below ledger cash %s but "
+                    "%s is reserved for pending orders; buys may be "
+                    "rejected at the venue until they clear",
+                    venue_free, book_cash, reserved)
+    return None
+
+
 # ============================================================================
 # [3] settle
 # ============================================================================
@@ -411,6 +491,10 @@ def settle(cfg: dict[str, Any]) -> dict[str, Any]:
         ledger = cycle.ledger()
     except (FileNotFoundError, LedgerFrozenError) as exc:
         return _abort(f"ledger unavailable: {exc}")
+
+    dangling = ledger.freeze_dangling_live_intents()
+    if dangling:
+        log.critical("[settle] dangling live intents frozen: %s", dangling)
 
     resolved = []
     if ledger.is_frozen:
@@ -437,8 +521,22 @@ def settle(cfg: dict[str, Any]) -> dict[str, Any]:
         cycle.halt_path.parent.mkdir(parents=True, exist_ok=True)
         cycle.halt_path.touch()
         log.critical("[settle] fill timing breach, halt raised: %s", breaches)
+        notify("A0 fill timing breach -- halted",
+               f"{len(breaches)} fill(s) landed far after submission; "
+               f"trading stops until the halt is cleared")
         ledger.record_note(str(pd.Timestamp.now(tz="UTC").value),
                            "FILL_TIMING_BREACH", {"breaches": breaches})
+
+    if ledger.cash_gbp < 0:
+        # The fill already happened at the venue; the book must record the
+        # truth and alarm, never block. Negative strategy cash means the
+        # strategy has spent account money outside its allocation.
+        log.critical("[settle] ledger cash is NEGATIVE: %s", ledger.cash_gbp)
+        notify("A0 strategy cash negative",
+               f"book cash {ledger.cash_gbp} GBP; the strategy overspent "
+               f"its allocation -- review before the next session")
+        ledger.record_note(str(pd.Timestamp.now(tz="UTC").value),
+                           "NEGATIVE_CASH", {"cash_gbp": str(ledger.cash_gbp)})
 
     return {"phase": "settle", "resolved_ambiguities": resolved,
             "settle": report.summary(), "reconcile": verdict.summary(),

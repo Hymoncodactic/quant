@@ -28,16 +28,22 @@ Public classes:
 
 Public functions:
     intent_id_for(strategy_id, decision_day, symbol, quantity)
-    submit_intents(intents, ledger, client, decision_day, dry_run, armed)
+    submit_intents(intents, ledger, client, decision_day, dry_run, armed,
+                   halt_path)
 """
 
 from __future__ import annotations
 
 __all__ = ["SubmitReport", "intent_id_for", "submit_intents"]
 
+import contextlib
+import signal
+import threading
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 
+from common.alerts import notify
 from common.logging_setup import get_logger
 from common.net import PermanentError
 from trading212.client import OrderSubmitAmbiguousError, T212Client
@@ -66,6 +72,25 @@ class SubmitReport:
         return " ".join(parts)
 
 
+@contextlib.contextmanager
+def _signals_held():
+    """Defer SIGINT/SIGTERM delivery for the enclosed critical section.
+
+    Only effective on the main thread (signal masks are process-wide but
+    Python delivers handlers on the main thread); on any other thread this
+    is a no-op, which is safe because the run_a0 CLI is single-threaded.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    held = {signal.SIGINT, signal.SIGTERM}
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, held)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 def intent_id_for(strategy_id: str, decision_day, symbol: str,
                   quantity: Decimal) -> str:
     """Deterministic intent id: same decision recomputed gives the same id.
@@ -79,7 +104,8 @@ def intent_id_for(strategy_id: str, decision_day, symbol: str,
 
 
 def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None,
-                   decision_day, dry_run: bool, armed: bool) -> SubmitReport:
+                   decision_day, dry_run: bool, armed: bool,
+                   halt_path: Path | None = None) -> SubmitReport:
     """Submit approved intents in sequence, honoring the ambiguity contract.
 
     Args:
@@ -89,6 +115,8 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
         decision_day: The decision day (naive Timestamp), for logging.
         dry_run: execution.dry_run from configuration.
         armed: The per-run --allow-orders flag.
+        halt_path: Halt flag file; when it appears mid-batch the remaining
+            intents are not attempted. None disables the per-intent check.
     """
     report = SubmitReport()
     effective_dry = dry_run or not armed
@@ -103,6 +131,16 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
 
     for index, intent in enumerate(intents):
         if ledger.is_frozen:
+            report.not_attempted.extend(intents[index:])
+            break
+        if halt_path is not None and halt_path.exists():
+            # The flag file is the emergency stop; re-reading it before every
+            # POST means a halt raised while the batch is running stops the
+            # remaining orders, not just the next cycle. Orders already at
+            # the venue are NOT canceled here -- they fill or die on their
+            # own; canceling is a manual act (operations card).
+            log.critical("[router] halt flag appeared mid-batch; %d intents "
+                         "not attempted", len(intents) - index)
             report.not_attempted.extend(intents[index:])
             break
         if intent.intent_id in open_intent_ids:
@@ -123,35 +161,54 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
             report.dry_run.append(intent)
             continue
 
-        try:
-            order = client.place_market_order(intent.ticker, intent.quantity,
-                                              extended_hours=False)
-            # The venue accepted; from here every failure (missing id,
-            # ledger write error, ...) leaves a LIVE order behind and must
-            # therefore land in the ambiguity branch, never the rejection
-            # branch. Only PermanentError proves the venue refused.
-            order_id = int(order["id"])
-            ledger.record_submitted(intent.intent_id, order_id, intent.symbol,
-                                    intent.ticker, intent.quantity,
-                                    intent.ref_notional_gbp,
-                                    str(order.get("status", "NEW")))
-        except PermanentError as exc:
-            ledger.record_submit_rejected(intent.intent_id, repr(exc))
-            log.error("[router] rejected %s: %r", intent.ticker, exc)
-            report.rejected.append((intent, repr(exc)))
-            continue
-        except Exception as exc:
-            detail = exc.detail if isinstance(exc, OrderSubmitAmbiguousError) \
-                else f"unexpected failure after POST: {exc!r}"
-            ledger.record_submit_ambiguous(intent.intent_id, intent.symbol,
-                                           intent.ticker, intent.quantity,
-                                           detail, intent.ref_notional_gbp)
-            log.critical("[router] AMBIGUOUS submit for %s: %s -- book frozen, "
-                         "remaining %d intents not attempted",
-                         intent.ticker, detail, len(intents) - index - 1)
-            report.ambiguous = intent
-            report.not_attempted.extend(intents[index + 1:])
-            break
+        # The POST-to-outcome stretch is the one window where an interrupt
+        # (Ctrl-C, SIGTERM) can strand a live venue order the book does not
+        # know about. The mask must cover EVERY branch through its terminal
+        # journal write -- an exception path is the likeliest moment for a
+        # human to be killing a hung process, and releasing the mask before
+        # record_submit_ambiguous would lose exactly that record. Holding
+        # signals to the branch end turns "killed mid-POST" into "killed
+        # between orders", which the design already survives. SIGKILL
+        # cannot be held; that path is covered by the dangling-intent
+        # freeze in shadow_ledger.freeze_dangling_live_intents.
+        with _signals_held():
+            try:
+                order = client.place_market_order(intent.ticker,
+                                                  intent.quantity,
+                                                  extended_hours=False)
+                # The venue accepted; from here every failure (missing id,
+                # ledger write error, ...) leaves a LIVE order behind and
+                # must therefore land in the ambiguity branch, never the
+                # rejection branch. Only PermanentError proves the venue
+                # refused.
+                order_id = int(order["id"])
+                ledger.record_submitted(intent.intent_id, order_id,
+                                        intent.symbol, intent.ticker,
+                                        intent.quantity,
+                                        intent.ref_notional_gbp,
+                                        str(order.get("status", "NEW")))
+            except PermanentError as exc:
+                ledger.record_submit_rejected(intent.intent_id, repr(exc))
+                log.error("[router] rejected %s: %r", intent.ticker, exc)
+                report.rejected.append((intent, repr(exc)))
+                continue
+            except Exception as exc:
+                detail = exc.detail \
+                    if isinstance(exc, OrderSubmitAmbiguousError) \
+                    else f"unexpected failure after POST: {exc!r}"
+                ledger.record_submit_ambiguous(intent.intent_id,
+                                               intent.symbol, intent.ticker,
+                                               intent.quantity, detail,
+                                               intent.ref_notional_gbp)
+                log.critical("[router] AMBIGUOUS submit for %s: %s -- book "
+                             "frozen, remaining %d intents not attempted",
+                             intent.ticker, detail, len(intents) - index - 1)
+                notify("A0 order AMBIGUOUS -- book frozen",
+                       f"{intent.ticker}: {detail[:120]}; check the venue "
+                       f"and run settle")
+                report.ambiguous = intent
+                report.not_attempted.extend(intents[index + 1:])
+                break
 
         log.info("[order] submitted order_id=%s ticker=%s qty=%s status=%s "
                  "dry_run=False", order_id, intent.ticker, intent.quantity,

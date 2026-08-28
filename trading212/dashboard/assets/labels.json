@@ -112,7 +112,8 @@
       "cash_must_be_positive": "金额要大于 0",
       "ledger_already_exists": "账本已经建立过了",
       "not_confirmed": "还没确认",
-      "not_empty": "账本里还有持仓或委托"
+      "not_empty": "账本里还有持仓或委托",
+      "strategy_running": "策略进程正在运行（决策或结算中），等它结束再改"
     },
     "modal_title": "还有几项没填好",
     "modal_intro": "下面这些填好之后才能开始自动交易：",

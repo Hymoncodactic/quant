@@ -399,6 +399,7 @@ class _HaltCtx:
 
     def __init__(self, halt_path, ledger, params=None):
         self.halt_path = halt_path
+        self.state_dir = halt_path.parent
         self._ledger = ledger
         self.params = params or {"trade_symbols": []}
 
@@ -635,3 +636,21 @@ def test_downsampling_keeps_the_last_point():
     rows = [{"ts": f"2026-08-23T{i:05d}"} for i in range(3000)]
     out = _downsample(rows, 700)
     assert out[-1]["ts"] == rows[-1]["ts"]
+
+
+def test_ledger_mutations_refuse_while_the_strategy_holds_its_lock(tmp_path):
+    """run_a0 and the dashboard write the same journal; when run_a0 holds its
+    execution lock, allocation changes and resets must answer 409 instead of
+    interleaving writes."""
+    import fcntl
+    from trading212.dashboard.api import post_allocation, post_ledger_reset
+    holder = open(tmp_path / "run_a0.lock", "a+")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        ctx = _ResetCtx(tmp_path, None)
+        status, body = post_allocation(ctx, {"delta_gbp": "100"})
+        assert status == 409 and body["problem"] == "strategy_running"
+        status, body = post_ledger_reset(ctx, {"confirm": True})
+        assert status == 409 and body["problem"] == "strategy_running"
+    finally:
+        holder.close()

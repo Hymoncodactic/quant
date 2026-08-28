@@ -70,6 +70,7 @@ __all__ = ["T212Client", "OrderSubmitAmbiguousError",
 import json
 import time
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from typing import Any, Iterator
 
 import httpx
@@ -170,7 +171,25 @@ class T212Client:
             timeout=timeout_sec,
         )
         self._buckets = {name: TokenBucket(rate) for name, rate in RATE_LIMITS.items()}
+        self._last_response_date: str | None = None
+        self._last_response_at: float | None = None
         log.info("[client] env=%s base=%s key=%s", env, self.base, mask(key))
+
+    def last_clock_skew_sec(self) -> float | None:
+        """Local clock minus the venue clock at the last successful GET.
+
+        Derived from the HTTP Date header (one-second resolution, GMT);
+        positive means the local clock runs ahead. None when no successful
+        GET has happened yet or the header was absent -- callers treat that
+        as "cannot be evaluated", not as zero skew.
+        """
+        if self._last_response_date is None or self._last_response_at is None:
+            return None
+        try:
+            venue = parsedate_to_datetime(self._last_response_date)
+        except (TypeError, ValueError):
+            return None
+        return self._last_response_at - venue.timestamp()
 
     def close(self) -> None:
         self._session.close()
@@ -403,6 +422,8 @@ class T212Client:
                 time.sleep(backoff_seconds(attempt))
                 continue
             if response.status_code == 200:
+                self._last_response_date = response.headers.get("date")
+                self._last_response_at = time.time()
                 return response.json()
             if response.status_code in _RETRYABLE_STATUS:
                 if attempt == self._max_attempts:

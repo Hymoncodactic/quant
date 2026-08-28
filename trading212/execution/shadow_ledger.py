@@ -84,7 +84,7 @@ import pandas as pd
 from common.logging_setup import get_logger
 # LedgerFrozenError is defined beside the persistence rules that raise it
 # first (load-time integrity) and re-exported here as the public name.
-from trading212.execution.ledger_store import (LedgerFrozenError, append_event,
+from trading212.execution.ledger_store import (LedgerFrozenError, append_event, iter_journal,
                                                journal_path, read_snapshot,
                                                snapshot_path, write_snapshot)
 
@@ -164,6 +164,11 @@ class ShadowLedger:
     # ------------------------------------------------------------------
     # [2.2] Read side
     # ------------------------------------------------------------------
+
+    @property
+    def state_dir(self) -> Path:
+        """Directory holding this book's journal and snapshot."""
+        return self._dir
 
     @property
     def cash_gbp(self) -> Decimal:
@@ -277,11 +282,21 @@ class ShadowLedger:
 
     def record_submit_ambiguous(self, intent_id: str, symbol: str, ticker: str,
                                 quantity: Decimal, detail: str,
-                                ref_notional_gbp: Decimal = ZERO) -> None:
+                                ref_notional_gbp: Decimal = ZERO,
+                                at: str | None = None) -> None:
         """Outcome unknown: freeze the book until a human or the reconciler
         proves what happened at the venue. Attempt-counted event id: a second
         ambiguous outcome of a re-submitted intent must freeze AGAIN, not be
-        skipped as a duplicate."""
+        skipped as a duplicate.
+
+        at is the instant the POST could have happened, defaulting to now.
+        The reconciler anchors BOTH its evidence window (venue createdAt no
+        earlier than at minus 10 minutes) and its absence clock to this
+        value, so a freeze recorded long after the fact (the dangling-intent
+        path) must pass the original intent's journal time here -- stamping
+        the freeze time instead would exclude the real order from the
+        evidence window and later mis-resolve it as never-arrived.
+        """
         self._apply(self._attempt_id(f"AMBIG|{intent_id}"),
                     "ORDER_SUBMIT_AMBIGUOUS",
                     {"intent_id": intent_id, "detail": detail[:300]},
@@ -289,7 +304,8 @@ class ShadowLedger:
                         intent_id, {"symbol": symbol, "ticker": ticker,
                                     "quantity": str(quantity),
                                     "ref_notional_gbp": str(ref_notional_gbp),
-                                    "detail": detail[:300], "at": _now_iso()}))
+                                    "detail": detail[:300],
+                                    "at": at or _now_iso()}))
 
     def resolve_ambiguity(self, intent_id: str, order_id: int | None,
                           evidence: str) -> None:
@@ -414,6 +430,65 @@ class ShadowLedger:
             log.warning("[ledger] allocation changed by %s to %s (%s)",
                         delta_gbp, new_cash, reason[:120])
         return applied
+
+    def freeze_dangling_live_intents(self) -> list[str]:
+        """Freeze every LIVE intent whose submission outcome never landed.
+
+        A process killed between the order POST leaving and record_submitted
+        (or record_submit_ambiguous) writing leaves exactly one trace: an
+        ORDER_INTENT journal event with dry_run false and no SUBMIT, REJECT,
+        or AMBIG event for that intent id. Such an order may be live and
+        even filled at the venue; recomputing the same decision would then
+        buy the exposure twice. Converting the dangling intent into a
+        recorded ambiguity freezes the book and routes it through the same
+        evidence-based resolution as any other ambiguous submit.
+
+        Dry-run intents legitimately have no terminal event and are skipped.
+        Returns the intent ids frozen by this call (empty on a clean book).
+
+        Known limit: an intent RE-submitted after a never-arrived resolution
+        is masked by its first attempt's terminal event, so a crash inside
+        the second POST window goes undetected here. Unreachable today --
+        the same intent id only recurs inside one session's submit window,
+        and an absence resolution cannot complete within it -- but do not
+        rely on this scan for re-submission flows without adding per-attempt
+        intent events first.
+        """
+        terminal_prefixes: dict[str, tuple[str, ...]] = {}
+        frozen: list[str] = []
+        applied = self._snap["applied_event_ids"]
+        # Materialized before the loop: freezing appends to the same journal
+        # file, and reading a file while appending to it is behavior this
+        # code must not depend on.
+        records = list(iter_journal(self._dir, self._strategy_id))
+        for record in records:
+            if record.get("event_type") != "ORDER_INTENT":
+                continue
+            payload = record.get("payload") or {}
+            if payload.get("dry_run", True):
+                continue
+            intent_id = payload.get("intent_id")
+            if not intent_id or intent_id in terminal_prefixes:
+                continue
+            prefixes = tuple(f"{kind}|{intent_id}#"
+                             for kind in ("SUBMIT", "REJECT", "AMBIG"))
+            terminal_prefixes[intent_id] = prefixes
+            if any(event_id.startswith(prefixes) for event_id in applied):
+                continue
+            if intent_id in self._snap["ambiguous_intents"]:
+                continue
+            self.record_submit_ambiguous(
+                intent_id, payload.get("symbol", "?"),
+                payload.get("ticker", "?"),
+                Decimal(payload.get("quantity", "0")),
+                "dangling live intent: the process died between the POST "
+                "and the outcome record; the order may be live at the venue",
+                Decimal(payload.get("ref_notional_gbp", "0")),
+                at=record.get("ts_utc"))
+            frozen.append(intent_id)
+            log.critical("[ledger] dangling live intent %s frozen as "
+                         "ambiguous", intent_id)
+        return frozen
 
     def record_note(self, note_id: str, kind: str, payload: dict[str, Any]) -> None:
         """Journal a bookkeeping note (cycle markers, reconcile verdicts)."""

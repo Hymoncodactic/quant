@@ -166,6 +166,7 @@ T212 无行情接口也无推送通道，故「主循环」体现为**每个交�
 | `config.py` | 加载 `<venue>/config/*.yaml`，按 `QUANT_ENV` 选 paper/live，默认 paper |
 | `secrets.py` | **唯一**的密钥读取入口（`secrets/` 或环境变量），带脱敏 |
 | `logging_setup.py` | 日志初始化，UTC 时间，落 `logs/<模块>_YYYYMMDD.log` |
+| `alerts.py` | CRITICAL 交易事件的本机系统通知（尽力而为，永不抛错） |
 | `net.py` | 指数退避、令牌桶限频、可重试与不可重试异常分类。不含 HTTP 会话对象，会话由各调用方自建 |
 | `store.py` | parquet 原子写入、临时件清理 |
 

@@ -25,6 +25,7 @@
 |---|---|---|
 | `t212/a0/01_strategy.md` | A0 信号层规格：标的池、动量、双闸、等槽定量 | `trading212/strategy/a0_v0_0_1.py`、`a0_intraday_v0_0_1.py`、`trading212/config/strategies/a0_v0_0_1.yaml` |
 | `t212/a0/02_execution.md` | A0 执行层规格：决策时刻、成交时序、数据装配、对账 | `trading212/execution/`（待建）、`trading212/client.py`（待建） |
+| `t212/a0/03_dst_hardening.md` | DST 错配窗口防御性加固：decision_key 墙钟构造、daily_rows 拒绝 FX | `trading212/execution/instruments.py`、`trading212/execution/market_data.py` |
 | `t212/platform/01_fault_catalog.md` | T212 平台缺陷目录 | `trading212/execution/`、`trading212/client.py` |
 | `t212/platform/02_latency_model.md` | T212 延迟证据与模型 | 同上 |
 | `crypto/README.md` | OKX 线占位 | `crypto_trading/` |
