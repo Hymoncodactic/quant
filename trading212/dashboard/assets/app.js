@@ -309,6 +309,27 @@
     }).join("");
   }
 
+  function paintBrokerWhy() {
+    /* When the broker is unreachable, say WHY. The four common causes need
+       four different actions, and the raw error text distinguishes none of
+       them for a reader. */
+    var el = $("broker-why");
+    var snap = STATE.snapshot || {};
+    var account = snap.account || {};
+    if (account.ok !== false) { el.classList.add("hidden"); return; }
+    var d = account.diagnosis || {};
+    var text = (L.status.diagnosis || {})[d.cause] ||
+               (L.status.diagnosis || {}).unknown;
+    var ev = d.evidence || {};
+    if (d.cause === "dns_mismatch" && ev.os_addresses) {
+      text += "  " + L.status.dns_detail + " " + ev.os_addresses.join(", ") +
+              L.status.dns_joiner + L.status.dns_should_be + " " +
+              (ev.public_addresses || []).join(", ");
+    }
+    el.textContent = L.status.broker_why + L.status.why_separator + text;
+    el.classList.remove("hidden");
+  }
+
   function paintFunding() {
     var f = STATE.funding || {};
     var el = $("funding-note");
@@ -446,7 +467,8 @@
     return getJSON("/api/state").then(function (s) {
       STATE = s;
       buildFields(s.readiness);
-      paintStatus(); paintKPIs(); paintFunding(); paintTable(); drawPositions();
+      paintStatus(); paintKPIs(); paintFunding(); paintBrokerWhy();
+      paintTable(); drawPositions();
       if ($("settings-fields").dataset.dirty !== "1") {
         text("ready-flag", s.readiness.ready ? L.setup.ready : L.setup.not_ready);
       }

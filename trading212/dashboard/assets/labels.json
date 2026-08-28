@@ -27,7 +27,22 @@
     "halt_off": "未触发",
     "updated": "最后更新",
     "ticks": "已采集",
-    "ticks_unit": "次"
+    "ticks_unit": "次",
+    "broker_why": "原因",
+    "diagnosis": {
+      "wrong_environment": "跑在模拟环境上，但你的密钥只对实盘有效。启动时要带 QUANT_ENV=live（双击启动件会自动带上）。",
+      "dns_mismatch": "本机把券商的域名解析到了错误的地址，通常是 VPN 或代理造成的。绕过本机 DNS 后券商是通的——关掉 VPN 的 DNS 接管即可。",
+      "dns_fails": "本机解析不出券商的域名，检查网络或 DNS 设置。",
+      "network_down": "网络不通，公共 DNS 也连不上。",
+      "auth": "券商拒绝了这把密钥（401）。到 Trading 212 里确认密钥还有效。",
+      "rate_limited": "请求太频繁被券商限流了，等一会儿会自己恢复。注意别同时开多个看板。",
+      "blocked": "域名解析正确、也能连上券商的地址，但请求没通过，可能是防火墙或代理拦截。",
+      "unknown": "暂时判断不出原因，详情见下方。"
+    },
+    "dns_detail": "本机解析到",
+    "dns_should_be": "实际应为",
+    "why_separator": "：",
+    "dns_joiner": "，"
   },
   "kpi": {
     "equity": "策略总资产",

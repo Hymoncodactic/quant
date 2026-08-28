@@ -68,8 +68,10 @@ from decimal import Decimal
 from typing import Any
 
 from common.logging_setup import get_logger
+from urllib.parse import urlsplit
+
 from trading212 import archive
-from trading212.dashboard import snapshots
+from trading212.dashboard import diagnostics, snapshots
 from trading212.dashboard.quotes import fetch_quotes
 
 log = get_logger("t212.dashboard")
@@ -235,7 +237,19 @@ class Collector:
         except Exception as exc:
             reason = repr(exc)[:300]
             log.warning("[collector] account poll failed: %s", reason)
-            return {"ok": False, "reason": reason, "at": _now_iso()}
+            # A bare "cannot reach the broker" is true and useless: a hijacked
+            # DNS answer, a dead network, the wrong environment and a rate
+            # limit each need a different action. Diagnose once per failure so
+            # the interface can say which one it is.
+            try:
+                host = urlsplit(self._ctx.client().base).hostname or ""
+                verdict = diagnostics.diagnose(host, reason,
+                                               env=self._ctx.env)
+            except Exception as diag_exc:
+                verdict = {"cause": "unknown", "evidence": repr(diag_exc)[:200]}
+            log.warning("[collector] diagnosis: %s", verdict.get("cause"))
+            return {"ok": False, "reason": reason, "at": _now_iso(),
+                    "diagnosis": verdict}
 
     def _build_sample(self, book: dict[str, Any]) -> dict[str, Any]:
         """Assemble one sample; strategy equity is priced from the quotes."""
