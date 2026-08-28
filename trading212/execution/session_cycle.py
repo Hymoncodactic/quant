@@ -279,7 +279,18 @@ def decide(cfg: dict[str, Any], armed: bool,
     trade_symbols = list(cycle.params["trade_symbols"])
     state_symbol = cycle.params["state_symbol"]
     fx_symbol = cycle.params["fx_symbol"]
-    instruments.validate_mapping(cycle.client, trade_symbols)
+    mapped = instruments.validate_mapping(cycle.client, trade_symbols)
+    schedule_ids = {meta.get("workingScheduleId") for meta in mapped.values()
+                    if meta.get("workingScheduleId") is not None}
+    divergences = instruments.schedule_divergences(
+        instruments.load_calendar(cycle.calendar_cache), schedule_ids,
+        session.date_ny)
+    if divergences:
+        # The cycle times ONE close for the whole universe; if the exchanges
+        # it spans disagree about this session, part of the universe would
+        # be submitted against the wrong close.
+        return _abort(f"exchange schedules disagree for {session.date_ny}: "
+                      f"{divergences}")
     tickers = {s: instruments.order_ticker(s) for s in trade_symbols}
     verdict = reconciler.reconcile(cycle.client, ledger, tickers)
     if not verdict.ok:

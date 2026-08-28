@@ -18,7 +18,8 @@ trading212/execution/session_cycle.py.
 
 Public functions:
     order_ticker(symbol)                     Venue ticker for one strategy symbol.
-    validate_mapping(client, symbols)        Prove every mapping against metadata.
+    validate_mapping(client, symbols)         Prove every mapping against metadata.
+    schedule_divergences(cal, ids, date_ny)   Whether the universe's schedules agree.
     refresh_calendar(client, cache_path)     Fetch working schedules, cache them.
     load_calendar(cache_path)                Load the cached schedules.
     session_events(calendar, schedule_id)    Sorted (ts_utc, type) event list.
@@ -174,6 +175,39 @@ def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
                            + "; ".join(problems))
     log.info("[instruments] mapping validated for %d symbols", len(result))
     return result
+
+
+def schedule_divergences(calendar: list[dict], schedule_ids: set[int],
+                         session_date) -> list[str]:
+    """Whether every schedule the universe trades on agrees for one session.
+
+    The cycle derives ONE decision key and close from
+    US_SCHEDULE_ID_NASDAQ, but a US universe spans exchanges: NYSE-listed
+    names carry a different working schedule id. Those schedules keep the
+    same regular hours and holidays, so the single-schedule model has been
+    correct in every cached session -- but nothing forced it to stay that
+    way, and a divergence would time part of the universe against the wrong
+    close while looking perfectly normal. Cheap to check, so it is checked.
+
+    Returns a list of human-readable divergences; empty means agreement.
+    """
+    reference = None
+    problems: list[str] = []
+    for schedule_id in sorted(schedule_ids):
+        found = session_on(sessions(session_events(calendar, schedule_id)),
+                           session_date)
+        if found is None:
+            problems.append(f"schedule {schedule_id} has no session on "
+                            f"{session_date}")
+            continue
+        shape = (found.open_utc, found.close_utc, found.is_full)
+        if reference is None:
+            reference = (schedule_id, shape)
+        elif shape != reference[1]:
+            problems.append(
+                f"schedule {schedule_id} session {session_date} is "
+                f"{shape} but schedule {reference[0]} is {reference[1]}")
+    return problems
 
 
 # ============================================================================

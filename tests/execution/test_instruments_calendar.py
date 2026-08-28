@@ -136,3 +136,46 @@ def test_validate_mapping_accepts_the_verified_listing():
     fake = _FakeClient([{"ticker": "FB_US_EQ", "currencyCode": "USD",
                          "type": "STOCK", "workingScheduleId": 71}])
     assert validate_mapping(fake, ["META"])["META"]["workingScheduleId"] == 71
+
+
+# ============================================================================
+# Universe schedule agreement (added 2026-08-29 after the pre-live probe found
+# DELL/ORCL/TSM on schedule 56 while the cycle times everything off 71)
+# ============================================================================
+
+def _schedule(schedule_id, date_iso, close_hour_utc):
+    return {"id": schedule_id, "name": f"X{schedule_id}", "workingSchedules": [
+        {"id": schedule_id, "timeEvents": [
+            {"date": f"{date_iso}T13:30:00.000Z", "type": "OPEN"},
+            {"date": f"{date_iso}T{close_hour_utc}:00:00.000Z",
+             "type": "AFTER_HOURS_OPEN"},
+            {"date": f"{date_iso}T23:00:00.000Z", "type": "AFTER_HOURS_CLOSE"},
+        ]}]}
+
+
+def test_agreeing_schedules_report_no_divergence():
+    from datetime import date
+    from trading212.execution.instruments import schedule_divergences
+    calendar = [_schedule(71, "2026-08-31", "20"),
+                _schedule(56, "2026-08-31", "20")]
+    assert schedule_divergences(calendar, {71, 56}, date(2026, 8, 31)) == []
+
+
+def test_diverging_close_is_reported():
+    """If NYSE ever closed at a different hour than NASDAQ, the three
+    NYSE-listed names would be timed against the wrong close."""
+    from datetime import date
+    from trading212.execution.instruments import schedule_divergences
+    calendar = [_schedule(71, "2026-08-31", "20"),
+                _schedule(56, "2026-08-31", "18")]
+    problems = schedule_divergences(calendar, {71, 56}, date(2026, 8, 31))
+    assert len(problems) == 1 and "schedule 56" in problems[0]
+
+
+def test_missing_session_on_one_schedule_is_reported():
+    from datetime import date
+    from trading212.execution.instruments import schedule_divergences
+    calendar = [_schedule(71, "2026-08-31", "20"),
+                _schedule(56, "2026-09-01", "20")]
+    problems = schedule_divergences(calendar, {71, 56}, date(2026, 8, 31))
+    assert any("no session" in p for p in problems)

@@ -22,6 +22,7 @@
 | 子目录 | 说明文档 |
 |---|---|
 | `backtest/` | `tests/backtest/README.md` |
+| `live/` | `tests/live/README.md` —— 交易时段的人工测试计划（文档，无代码） |
 
 ## 4. 依赖关系
 
@@ -56,3 +57,4 @@ demo 主机拒绝、本机 DNS 被劫持、CDN 边缘地址不同不得误判为
 场所现金核对、settle 急停路径与负现金告警、时钟偏移解析。`test_dashboard.py` 增补
 策略运行中账本变更须 409 的互斥测试。
 2026-08-29 复审轮：`test_audit_defenses.py` 增至 25 项（时间锚回归、近失候选拒缺席、手工日志污点）；新增根 `conftest.py` 静音告警通道。
+2026-08-29 新增 `live/` 子目录：交易时段测试计划。发起网络请求的驱动脚本按 §一留在 `scripts/`。
