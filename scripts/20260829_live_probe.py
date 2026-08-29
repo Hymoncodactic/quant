@@ -185,17 +185,32 @@ def probe_instruments(client: T212Client, params: dict[str, Any]
         }
     missing = [s for s, r in rows.items() if r["name"] is None]
     # The session model derives the decision key and close from ONE schedule
-    # (US_SCHEDULE_ID_NASDAQ). A symbol on a different schedule would be
-    # timed against the wrong close, so the mismatch must surface here and
-    # not inside the decision window.
-    wrong_schedule = {s: r["schedule_id"] for s, r in rows.items()
-                      if r["schedule_id"] != instruments.US_SCHEDULE_ID_NASDAQ}
+    # (US_SCHEDULE_ID_NASDAQ). Symbols on other schedules are fine as long
+    # as those schedules AGREE with it session by session -- the same test
+    # decide() runs through instruments.schedule_divergences. Different ids
+    # alone are informational; an actual divergence fails the probe.
+    other_schedules = {s: r["schedule_id"] for s, r in rows.items()
+                       if r["schedule_id"] != instruments.US_SCHEDULE_ID_NASDAQ}
+    divergences: list[str] = []
+    if other_schedules:
+        try:
+            calendar = client.exchanges()
+            schedule_ids = {r["schedule_id"] for r in rows.values()
+                            if r["schedule_id"] is not None}
+            upcoming = instruments.sessions(instruments.session_events(
+                calendar, instruments.US_SCHEDULE_ID_NASDAQ))
+            for sess in upcoming[-5:]:
+                divergences += instruments.schedule_divergences(
+                    calendar, schedule_ids, sess.date_ny)
+        except Exception as exc:
+            divergences = [f"divergence check itself failed: {exc!r}"]
     non_usd = {s: r["currency"] for s, r in rows.items()
                if r["currency"] != "USD"}
     return {
-        "ok": not missing and not wrong_schedule and not non_usd,
+        "ok": not missing and not divergences and not non_usd,
         "count": len(rows), "unresolved": missing,
-        "wrong_schedule": wrong_schedule, "non_usd": non_usd,
+        "other_schedules": other_schedules,
+        "schedule_divergences": divergences, "non_usd": non_usd,
         "schedule_expected": instruments.US_SCHEDULE_ID_NASDAQ,
         "min_quantity_published": False,
         "note": "the venue publishes maxOpenQuantity only; minimum order "

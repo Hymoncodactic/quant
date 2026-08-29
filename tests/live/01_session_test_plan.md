@@ -29,18 +29,17 @@
 
 ### 路线 A：模拟盘（demo）全链路下单测试 —— 首选，不动真钱
 
-前置条件（用户操作，本方不得代办，`CLAUDE.md` §3.2）：
+前置条件：**已于 2026-08-29 全部满足**。模拟盘凭据（key + secret 两个文件）
+已就位并实测可用（demo 账户 id 20528113，练习金 £5,000）。
 
-1. 在 Trading 212 应用内切换到 Practice（模拟）模式。
-2. 在该模式下生成 API 密钥。
-3. 存为 `secrets/trading212_demo_api_key.txt`，权限设为 600：
-   `chmod 600 secrets/trading212_demo_api_key.txt`。
-
-已证实事实：`demo.trading212.com` 是官方 OpenAPI 声明的服务器之一
-（`data/reference/t212_openapi_v0_20260820.yaml` L2205-2207）；实盘密钥在
-该主机返回 HTTP 401（2026-08-28 实测），故必须使用独立的模拟盘密钥。
-`trading212/config/t212.paper.yaml` 已备好，指向 `trading212_demo_api_key`，
-风控参数与实盘同值。
+凭据制度（2026-08-29 证实，官方文档 docs.trading212.com/api §Authentication）：
+2025 年 10 月起新签发的凭据为 **API Key + API Secret 对**，鉴权为 HTTP Basic
+（key 为用户名、secret 为密码）；旧式单钥头在规格中名为 `legacyApiKeyHeader`，
+无官方保留期承诺。secret 只在生成时显示一次，删除即刻永久失效。
+本项目四个凭据文件均在 `secrets/`（api/secret × live/demo），权限一律 600——
+**权限不是 600 时 `common/secrets.py` 会拒绝读取**（Finder/编辑器保存的文件
+默认 644，凭据轮换后第一个故障通常就是它，看板诊断会显示处置命令）。
+`trading212/config/t212.{live,paper}.yaml` 均已配置 `api_secret_name`。
 
 模拟盘可测而实盘不宜测的项：真实 POST 往返延迟、订单生命周期状态流转、
 成交回报延迟、`walletImpact` 字段结构、最小下单量与数量精度的真实边界、
@@ -190,3 +189,19 @@
 批次一发现并已修复：标的池跨两张交易所日历而执行层只按一张计时，
 现已加入日历分歧闸（`trading212/execution/instruments.py::schedule_divergences`，
 decide 中调用，分歧即中止）。
+
+---
+
+## 8. 凭据轮换后的复测（2026-08-29 执行）
+
+用户轮换全部凭据（实盘与模拟盘均换为 key+secret 对）后，受鉴权影响的项复测：
+
+| 项 | 结果 |
+|---|---|
+| 实盘鉴权 | Basic 方案 200；status 正常（账户 £1,000） |
+| 模拟盘鉴权 | Basic 方案 200；status 正常（demo 账户 £5,000，独立 id） |
+| 时钟偏移 | 0.45–0.69 秒，不阻断 |
+| 端点延迟（min） | account_summary 539 ms、positions 606 ms、exchanges 451 ms、pending_orders 1206 ms、instruments 964 ms，与轮换前同量级 |
+| 标的池 | 18 个全部解析；日历分歧核验（未来 5 个会话 × 两张日历）零分歧 |
+
+成本（§7 的 546 笔历史实测）不受凭据轮换影响，无需复测。

@@ -20,6 +20,10 @@ account:
 
 endpoints:
   secret_name: trading212_api_key   # 传给 common.secrets.get_secret() 的名字
+  # 2026-08-29 起 Trading 212 新签发的凭据为 api key + secret 对，鉴权方式为
+  # HTTP Basic（实测：Basic 200、裸 key 401）。填 secret 的凭据名即启用；
+  # 留空/删除本行则退回旧式裸 key 头（仅旧密钥可用）。
+  api_secret_name: trading212_secret_key
   # rest 主机按 QUANT_ENV 自动选择：paper→demo.trading212.com，live→live.trading212.com
   # （S4：OpenAPI servers 块）。不在此处配置，防止环境与主机错配。
 

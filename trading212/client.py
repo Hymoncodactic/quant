@@ -12,8 +12,11 @@ probed live 2026-08-21):
     - Base URLs: https://demo.trading212.com (paper), https://live.trading212.com
       (spec servers block, yaml L2205-2207).
     - Auth: either Basic key:secret or the legacy raw API key in the
-      Authorization header (yaml L810-818). The stored key was probed
-      2026-08-21: legacy header works against the live host.
+      Authorization header (yaml L810-818). Keys issued up to 2026-08
+      were legacy single keys; credentials generated 2026-08-29 arrive as
+      a key + secret pair and ONLY authenticate as Basic (probed: Basic ->
+      200 on both hosts, bare key -> 401). endpoints.api_secret_name in
+      the venue config selects the scheme.
     - Order placement endpoints are NOT idempotent and there is no client
       order id (yaml L1651-1653 and peers). Therefore this module NEVER
       retries a POST to an order endpoint; an ambiguous outcome raises
@@ -60,6 +63,10 @@ Change log:
     2026-08-23  timeout_sec and max_attempts parameterized so an interactive
                 caller can fail fast on an unreachable venue; order placement
                 stays single-attempt whatever they are set to.
+    2026-08-29  Basic key:secret authentication added after credential
+                rotation: newly issued pairs reject the legacy bare-key
+                header. Legacy stays the fallback when no
+                endpoints.api_secret_name is configured.
 """
 
 from __future__ import annotations
@@ -67,6 +74,7 @@ from __future__ import annotations
 __all__ = ["T212Client", "OrderSubmitAmbiguousError",
            "T212_BASE_PAPER", "T212_BASE_LIVE", "RATE_LIMITS"]
 
+import base64
 import json
 import time
 from decimal import Decimal
@@ -165,15 +173,34 @@ class T212Client:
         self._max_attempts = max(1, int(max_attempts))
         key = get_secret(secret_name)
         assert key is not None
+        # Credentials issued from 2026-08-29 on come as an api key plus a
+        # secret and authenticate with HTTP Basic (verified empirically on
+        # both hosts: Basic key:secret -> 200, bare key -> 401). Older
+        # single keys used the bare key as the Authorization value. The
+        # config's endpoints.api_secret_name selects the scheme: named ->
+        # Basic with that secret, absent -> legacy bare key.
+        secret_key_name = ((cfg or {}).get("endpoints") or {}) \
+            .get("api_secret_name")
+        if secret_key_name:
+            api_secret = get_secret(secret_key_name)
+            assert api_secret is not None
+            token = base64.b64encode(
+                f"{key}:{api_secret}".encode("utf-8")).decode("ascii")
+            auth_value = f"Basic {token}"
+            self.auth_scheme = "basic"
+        else:
+            auth_value = key
+            self.auth_scheme = "legacy"
         self._session = httpx.Client(
             base_url=self.base,
-            headers={"Authorization": key},
+            headers={"Authorization": auth_value},
             timeout=timeout_sec,
         )
         self._buckets = {name: TokenBucket(rate) for name, rate in RATE_LIMITS.items()}
         self._last_response_date: str | None = None
         self._last_response_at: float | None = None
-        log.info("[client] env=%s base=%s key=%s", env, self.base, mask(key))
+        log.info("[client] env=%s base=%s auth=%s key=%s", env, self.base,
+                 self.auth_scheme, mask(key))
 
     def last_clock_skew_sec(self) -> float | None:
         """Local clock minus the venue clock at the last successful GET.

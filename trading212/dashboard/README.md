@@ -76,3 +76,4 @@ shadow_ledger,ledger_store}`、`common/{config,paths,logging_setup}`、`yfinance
 输入栏在账本存在时隐藏；新增单实例锁。
 2026-08-29 新增 `diagnostics.py`：账户轮询失败时判定原因并在界面上写明原因，覆盖 QUANT_ENV 默认 paper 导致实盘密钥被 demo 主机拒绝（401）与本机 DNS 解析到无关地址两类已实际发生的故障。
 2026-08-29 账本类写路由（调整策略资金、清空账本）改为先取 run_a0 的执行锁，策略进程运行中一律 409 拒绝，杜绝双进程交错写账本；文案新增 strategy_running。
+2026-08-29 诊断新增 key_file_permissions 原因（凭据文件 644 被 secrets.py 拒读，轮换后最常见故障），auth 文案改为指引 key+secret 双文件制度。

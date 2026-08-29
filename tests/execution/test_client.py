@@ -139,3 +139,46 @@ def test_history_pagination_follows_next_page_path():
     client = _client(handler=handler)
     ids = [item["order"]["id"] for item in client.iter_history_orders()]
     assert ids == [2, 1]
+
+
+# ============================================================================
+# Authentication scheme selection (added 2026-08-29 after credential rotation:
+# newly issued key+secret pairs only authenticate as HTTP Basic)
+# ============================================================================
+
+def test_basic_auth_used_when_a_secret_is_configured(monkeypatch):
+    import base64
+    monkeypatch.setenv("QUANT_SECRET_TRADING212_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("QUANT_SECRET_T212_TEST_SECRET", "test-secret-not-real")
+    cfg = {"endpoints": {"api_secret_name": "t212_test_secret"}}
+    client = T212Client("live", cfg=cfg)
+    header = client._session.headers["Authorization"]
+    assert header.startswith("Basic ")
+    decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
+    assert decoded == "test-key-not-real:test-secret-not-real"
+    assert client.auth_scheme == "basic"
+    client.close()
+
+
+def test_legacy_bare_key_without_a_configured_secret(monkeypatch):
+    monkeypatch.setenv("QUANT_SECRET_TRADING212_API_KEY", "test-key-not-real")
+    client = T212Client("live", cfg={"endpoints": {}})
+    assert client._session.headers["Authorization"] == "test-key-not-real"
+    assert client.auth_scheme == "legacy"
+    client.close()
+
+
+def test_missing_secret_file_fails_loudly_not_with_a_401(monkeypatch):
+    import pytest
+    monkeypatch.setenv("QUANT_SECRET_TRADING212_API_KEY", "test-key-not-real")
+    cfg = {"endpoints": {"api_secret_name": "t212_absent_secret"}}
+    with pytest.raises(FileNotFoundError):
+        T212Client("live", cfg=cfg)
+
+
+def test_permission_error_is_classified_for_the_operator():
+    from trading212.dashboard.diagnostics import diagnose
+    verdict = diagnose("live.trading212.com",
+                       "PermissionError('credential file x is too permissive"
+                       " (mode=644); run chmod 600')")
+    assert verdict["cause"] == "key_file_permissions"

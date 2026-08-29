@@ -32,9 +32,10 @@ Constants:
                              so every probe is short; failing to diagnose is
                              better than stalling the interface.
     CAUSES            tuple  The labels this can return, which the interface
-                             renders: wrong_environment, dns_mismatch,
-                             dns_fails, network_down, auth, rate_limited,
-                             blocked, unknown.
+                             renders: key_file_permissions,
+                             wrong_environment, dns_mismatch, dns_fails,
+                             network_down, auth, rate_limited, blocked,
+                             unknown.
 
 Inputs:
     The OS resolver, and https://1.1.1.1 / https://dns.google as second
@@ -60,8 +61,9 @@ log = get_logger("t212.dashboard")
 
 PUBLIC_DOH = ("https://1.1.1.1/dns-query", "https://dns.google/resolve")
 PROBE_TIMEOUT_SEC = 4.0
-CAUSES = ("wrong_environment", "dns_mismatch", "dns_fails", "network_down",
-          "auth", "rate_limited", "blocked", "unknown")
+CAUSES = ("key_file_permissions", "wrong_environment", "dns_mismatch",
+          "dns_fails", "network_down", "auth", "rate_limited", "blocked",
+          "unknown")
 
 
 def _os_addresses(host: str) -> list[str]:
@@ -117,6 +119,11 @@ def diagnose(host: str, error_text: str = "",
     wrong.
     """
     lowered = (error_text or "").lower()
+    if "too permissive" in lowered or "permissionerror" in lowered:
+        # common/secrets.py refuses group/other-readable credential files.
+        # Files saved through Finder or an editor arrive as 644, so this is
+        # the first failure after every by-hand credential rotation.
+        return {"cause": "key_file_permissions", "evidence": error_text[:200]}
     if "401" in lowered or "bad api key" in lowered:
         if env == "paper":
             # QUANT_ENV defaults to paper, which points at the demo host, and
