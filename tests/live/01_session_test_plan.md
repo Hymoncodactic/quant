@@ -56,6 +56,18 @@
 
 标注「A」的仅模拟盘可做，「A/B」两条路线均可做，「只读」不涉及下单。
 
+### T0 时段判定（先做这个）
+
+`decide` 只在会话内工作，休市运行必然返回
+`no regular US session is open right now` 并中止——这是正确行为，不是故障。
+判断当前是否在窗口内：
+
+`QUANT_ENV=paper ./.venv/bin/python -m trading212.execution.run_a0 status`
+
+输出的 `session_now` 非 null 即在会话内；`next_full_session.decision_key_utc`
+是下一次可决策的时刻。注意**日志时间戳是 UTC**（`common/logging_setup.py`），
+与本机 CST 差 8 小时，不要拿日志里的时刻当本机时刻读。
+
 ### T1 会话内只读基线（只读，任意交易时段）
 
 命令：`QUANT_ENV=live ./.venv/bin/python scripts/20260829_live_probe.py latency --rounds 8`
@@ -117,9 +129,16 @@
 场所不发布 `minTradeQuantity` 与数量精度（2026-08-28 实证：instruments 端点
 仅返回 `maxOpenQuantity`），故这两个边界至今未证实（`WORKING_MEMORY.md` 未决项 13）。
 
+**本项不受交易时段限制**：场所在提交时刻就做参数校验，拒单立即返回，
+故休市时段即可测出边界（被接受的单会排到下一个开盘，不影响边界结论）。
+
 方法：在模拟盘用看板手动下单页逐次试探，每次只改一个量：
 小数位 4 位、5 位、6 位；名义额 £1、£0.5、£0.1。记录场所接受与拒绝的分界，
 以及拒单返回的错误文本。
+
+前置（2026-08-29 修复）：手动下单页原先无条件要求配置 `live: true`，
+而模拟盘配置按定义是 `live: false`，会把全部 demo 手动单拒掉。已改为
+与 `client._assert_order_allowed` 同口径——`live: true` 只在 live 环境断言。
 
 产出：把证实结果写入 `data/reference/`，并据此复核
 `trading212/config/t212.live.yaml` 的 `min_order_value_gbp`。

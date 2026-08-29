@@ -54,6 +54,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from common.config import ENV_LIVE
 from common.logging_setup import get_logger
 from common.paths import execution_state_dir
 from trading212.client import OrderSubmitAmbiguousError, T212Client
@@ -135,7 +136,13 @@ def place(context, ticker: str, quantity: str, confirm: bool,
         log.info("[manual] rehearsed ticker=%s qty=%s dry_run=True", ticker, qty)
         return entry
 
-    if context.cfg.get("live") is not True:
+    # The live: true field is the LIVE environment's arming switch
+    # (CLAUDE.md section 3.3), mirrored from client._assert_order_allowed:
+    # it is asserted for the live environment only. Demanding it in the
+    # paper environment as well would block demo submission entirely, since
+    # a paper configuration is live: false by definition -- and rehearsing
+    # against demo is exactly what the paper environment exists for.
+    if context.env == ENV_LIVE and context.cfg.get("live") is not True:
         entry = {**base, "outcome": "refused", "reason": "config_not_live"}
         _record(entry)
         return entry

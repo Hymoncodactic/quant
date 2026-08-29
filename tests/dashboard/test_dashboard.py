@@ -660,3 +660,59 @@ def test_ledger_mutations_refuse_while_the_strategy_holds_its_lock(tmp_path):
         assert status == 409 and body["problem"] == "strategy_running"
     finally:
         holder.close()
+
+
+# ============================================================================
+# Manual ordering across environments (2026-08-29: the live: true arming
+# switch is a LIVE-environment assertion; demanding it in paper blocked all
+# demo submission, which is what the paper environment exists for)
+# ============================================================================
+
+class _PaperCtx:
+    env = "paper"
+    cfg = {"live": False,
+           "endpoints": {"secret_name": "trading212_demo_api_key",
+                         "api_secret_name": "trading212_demo_secret_key"}}
+
+
+def test_paper_manual_order_is_not_refused_for_being_non_live(manual,
+                                                              monkeypatch):
+    """A paper config is live: false by definition; that must not block a
+    demo submission."""
+    sent = {}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def place_market_order(self, ticker, qty, extended_hours=False):
+            sent["ticker"], sent["qty"] = ticker, qty
+            return {"id": 4242, "status": "NEW"}
+
+    monkeypatch.setattr(manual, "T212Client", _FakeClient)
+    entry = manual.place(_PaperCtx(), "AAPL_US_EQ", "0.5", confirm=True,
+                         real=True)
+    assert entry["outcome"] == "submitted" and entry["order_id"] == 4242
+    from decimal import Decimal
+    assert sent == {"ticker": "AAPL_US_EQ", "qty": Decimal("0.5")}
+
+
+def test_live_manual_order_still_requires_the_live_flag(manual, monkeypatch):
+    class _LiveNotArmed:
+        env = "live"
+        cfg = {"live": False, "endpoints": {}}
+
+    def _must_not_construct(*a, **k):
+        raise AssertionError("an unarmed live config must not reach the venue")
+
+    monkeypatch.setattr(manual, "T212Client", _must_not_construct)
+    entry = manual.place(_LiveNotArmed(), "AAPL_US_EQ", "1", confirm=True,
+                         real=True)
+    assert entry["outcome"] == "refused"
+    assert entry["reason"] == "config_not_live"
