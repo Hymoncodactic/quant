@@ -202,16 +202,24 @@ def binance_partition_path(market: str, dataset: str, symbol: str,
             / f"year={stamp[:4]}" / f"{stamp}.parquet")
 
 
-def execution_state_dir(venue: str) -> Path:
-    """Return the directory for one venue's live-execution state.
+def execution_state_dir(venue: str, env: str = "live") -> Path:
+    """Return the directory for one venue's execution state, per environment.
 
     Holds the execution layer's event-sourced ledger (journal + snapshot),
-    cycle state and the halt flag. Kept under data/ because it is
-    machine-local mutable state that must never enter version control, but
-    it is NOT market data: neither the raw nor the curated layer applies.
+    cycle state, the halt flag and the manual-order journal. Kept under
+    data/ because it is machine-local mutable state that must never enter
+    version control, but it is NOT market data: neither the raw nor the
+    curated layer applies.
+
+    Environments are PHYSICALLY separate: the paper (demo) environment gets
+    a sibling directory so a demo fill can never be booked into the live
+    ledger and a demo halt can never stop live trading. The live path is
+    unchanged from before environments existed, so nothing migrates.
     """
     _check_venue(venue)
-    return DIR_DATA / venue / "execution_state"
+    if env == "live":
+        return DIR_DATA / venue / "execution_state"
+    return DIR_DATA / venue / f"execution_state_{env}"
 
 
 def dashboard_state_dir(venue: str) -> Path:
@@ -227,8 +235,8 @@ def dashboard_state_dir(venue: str) -> Path:
     return DIR_DATA / venue / "dashboard"
 
 
-def records_dir(venue: str) -> Path:
-    """Return the venue's bookkeeping archive directory.
+def records_dir(venue: str, env: str = "live") -> Path:
+    """Return the venue's bookkeeping archive directory, per environment.
 
     Deliberately inside the venue's source directory rather than under
     data/: the account owner asked for every accounting record to live
@@ -236,9 +244,14 @@ def records_dir(venue: str) -> Path:
     data-lake layout. The directory carries its own .gitignore, because the
     repository is public and these files hold positions, fills, cash and the
     account id.
+
+    Non-live environments archive into a subdirectory (covered by the same
+    .gitignore), so demo fills never mix into the real cost history that
+    calibrates the fee model.
     """
     _check_venue(venue)
-    return venue_dir(venue) / "records"
+    base = venue_dir(venue) / "records"
+    return base if env == "live" else base / env
 
 
 def bar_path(venue: str, layer: str, instrument: str, period: str, date_str: str) -> Path:

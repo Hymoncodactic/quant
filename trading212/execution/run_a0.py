@@ -47,7 +47,7 @@ from trading212.execution import session_cycle
 log = get_logger("t212.execution")
 
 
-def _acquire_instance_lock():
+def _acquire_instance_lock(env: str):
     """Take an exclusive non-blocking lock for the whole invocation.
 
     Two concurrent invocations racing the cycle state could double-submit
@@ -61,7 +61,7 @@ def _acquire_instance_lock():
     A short retry rides out the dashboard's brief holds of the same lock
     (its ledger-writing routes take it for fractions of a second).
     """
-    lock_dir = execution_state_dir("t212")
+    lock_dir = execution_state_dir("t212", env)
     lock_dir.mkdir(parents=True, exist_ok=True)
     handle = open(lock_dir / "run_a0.lock", "a+", encoding="utf-8")
     for attempt in range(4):
@@ -103,8 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("halt", help="set the halt flag (removal is manual only)")
 
     args = parser.parse_args(argv)
-    lock_handle = _acquire_instance_lock()  # noqa: F841  held until exit
     cfg = load_config("t212")
+    # The lock follows the environment: a paper rehearsal must not block --
+    # nor race -- the live cycle, and vice versa. Loading the configuration
+    # first is safe because it only reads files.
+    lock_handle = _acquire_instance_lock(cfg["_env"])  # noqa: F841  held until exit
     log.info("[cli] command=%s env=%s config=%s", args.command, cfg["_env"],
              cfg["_path"])
 
@@ -117,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "init-ledger":
         result = session_cycle.init_ledger(cfg, args.cash_gbp)
     elif args.command == "halt":
-        halt = execution_state_dir("t212") / "halt"
+        halt = execution_state_dir("t212", cfg["_env"]) / "halt"
         halt.parent.mkdir(parents=True, exist_ok=True)
         halt.touch()
         result = {"phase": "halt", "halt_file": str(halt),

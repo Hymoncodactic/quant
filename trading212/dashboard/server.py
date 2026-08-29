@@ -339,6 +339,11 @@ def main(argv: list[str] | None = None) -> int:
     # the lock is taken before any socket so a second launch is answered
     # rather than crashed.
     ctx = AppContext(args.env)
+    if ctx.env != "live" and args.port == DEFAULT_PORT:
+        # A paper dashboard runs beside the live one (separate state,
+        # separate lock), so it must not fight over the live port. One
+        # fixed offset keeps its address predictable.
+        args.port = DEFAULT_PORT + 1
     lock = acquire_instance_lock(ctx.state_dir, args.port)  # noqa: F841
     if lock is None:
         # Another dashboard holds the lock. Send the reader to the port that

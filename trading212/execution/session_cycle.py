@@ -94,7 +94,7 @@ import yaml
 
 from common.alerts import notify
 from common.logging_setup import get_logger
-from common.paths import config_dir, execution_state_dir
+from common.paths import config_dir, execution_state_dir, records_dir
 from trading212 import archive
 from trading212.client import T212Client
 from trading212.execution import (instruments, market_data, order_monitor,
@@ -142,7 +142,7 @@ class _Cycle:
                                               DEFAULT_MAX_WAIT_SEC))
         self.submit_grace_sec = int(execution.get("submit_grace_sec",
                                                   DEFAULT_SUBMIT_GRACE_SEC))
-        self.state_dir = execution_state_dir("t212")
+        self.state_dir = execution_state_dir("t212", cfg["_env"])
         self.halt_path = self.state_dir / "halt"
         self.calendar_cache = self.state_dir / "exchange_calendar.json"
         self.cycle_state_path = self.state_dir / f"{self.strategy_id}_cycle.json"
@@ -336,7 +336,7 @@ def decide(cfg: dict[str, Any], armed: bool,
                                          dry_run=cycle.dry_run, armed=armed,
                                          halt_path=cycle.halt_path)
 
-    archive.record_signals(None, {
+    archive.record_signals(records_dir("t212", cfg["_env"]), {
         "strategy_id": cycle.strategy_id,
         "session": session_id,
         "decision_key_utc": str(key),

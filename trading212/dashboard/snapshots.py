@@ -24,7 +24,7 @@ Public functions:
     update_rollup(venue, sample)            Fold a tick into today's daily row.
     read_rollup(venue)                      Every daily row, oldest first.
     mark_gap(venue, reason)                 Record a sampling discontinuity.
-    sample_files(venue)                     Existing per-day sample files.
+    sample_files(venue, env)                     Existing per-day sample files.
 
 Constants:
     SNAPSHOT_NAME  str  "live_snapshot.json".
@@ -67,33 +67,33 @@ SNAPSHOT_NAME = "live_snapshot.json"
 GAP_SECONDS = 90
 
 
-def _root(venue: str) -> Path:
-    path = records_dir(venue) / "equity"
+def _root(venue: str, env: str = "live") -> Path:
+    path = records_dir(venue, env) / "equity"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _samples_dir(venue: str) -> Path:
-    path = _root(venue) / "samples"
+def _samples_dir(venue: str, env: str = "live") -> Path:
+    path = _root(venue, env) / "samples"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def write_snapshot(venue: str, payload: dict[str, Any]) -> None:
+def write_snapshot(venue: str, payload: dict[str, Any], env: str = "live") -> None:
     """Replace the latest snapshot atomically.
 
     The reader may run at any instant, so the file is never truncated in
     place: a partial read would show the browser a half-written account.
     """
-    target = _root(venue) / SNAPSHOT_NAME
+    target = _root(venue, env) / SNAPSHOT_NAME
     tmp = target.with_suffix(".writing")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     tmp.replace(target)
 
 
-def read_snapshot(venue: str) -> dict[str, Any] | None:
+def read_snapshot(venue: str, env: str = "live") -> dict[str, Any] | None:
     """Read the latest snapshot; None when nothing has been sampled yet."""
-    target = _root(venue) / SNAPSHOT_NAME
+    target = _root(venue, env) / SNAPSHOT_NAME
     if not target.exists():
         return None
     try:
@@ -102,21 +102,21 @@ def read_snapshot(venue: str) -> dict[str, Any] | None:
         return None
 
 
-def append_sample(venue: str, sample: dict[str, Any]) -> None:
+def append_sample(venue: str, sample: dict[str, Any], env: str = "live") -> None:
     """Append one tick to today's sample file, flushed to disk."""
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    path = _samples_dir(venue) / f"{day}.jsonl"
+    path = _samples_dir(venue, env) / f"{day}.jsonl"
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def _rollup_path(venue: str) -> Path:
-    return _root(venue) / "daily.jsonl"
+def _rollup_path(venue: str, env: str = "live") -> Path:
+    return _root(venue, env) / "daily.jsonl"
 
 
-def update_rollup(venue: str, sample: dict[str, Any]) -> None:
+def update_rollup(venue: str, sample: dict[str, Any], env: str = "live") -> None:
     """Fold one tick into today's daily row.
 
     A per-tick series answers "what happened this afternoon" and is hopeless
@@ -136,7 +136,7 @@ def update_rollup(venue: str, sample: dict[str, Any]) -> None:
     day = str(sample.get("ts", ""))[:10]
     if not day:
         return
-    path = _rollup_path(venue)
+    path = _rollup_path(venue, env)
     rows = []
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -164,9 +164,9 @@ def update_rollup(venue: str, sample: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def read_rollup(venue: str) -> list[dict[str, Any]]:
+def read_rollup(venue: str, env: str = "live") -> list[dict[str, Any]]:
     """Every daily row, oldest first."""
-    path = _rollup_path(venue)
+    path = _rollup_path(venue, env)
     if not path.exists():
         return []
     rows = []
@@ -179,18 +179,18 @@ def read_rollup(venue: str) -> list[dict[str, Any]]:
     return rows
 
 
-def mark_gap(venue: str, reason: str) -> None:
+def mark_gap(venue: str, reason: str, env: str = "live") -> None:
     """Record that sampling stopped or resumed, so charts can show a break."""
     append_sample(venue, {"ts": datetime.now(timezone.utc).isoformat(),
                           "gap": True, "reason": reason})
 
 
-def sample_files(venue: str) -> list[Path]:
+def sample_files(venue: str, env: str = "live") -> list[Path]:
     """Every per-day sample file, oldest first."""
-    return sorted(_samples_dir(venue).glob("*.jsonl"))
+    return sorted(_samples_dir(venue, env).glob("*.jsonl"))
 
 
-def read_samples(venue: str, days: int = 7,
+def read_samples(venue: str, days: int = 7, env: str = "live",
                  max_points: int = 1500) -> list[dict[str, Any]]:
     """Return recent samples, evenly downsampled to at most max_points.
 
@@ -199,7 +199,7 @@ def read_samples(venue: str, days: int = 7,
     markers are always kept: they are what stops a chart from drawing a
     straight line across hours nobody observed.
     """
-    files = sample_files(venue)[-days:]
+    files = sample_files(venue, env)[-days:]
     rows: list[dict[str, Any]] = []
     for path in files:
         try:

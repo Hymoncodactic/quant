@@ -70,6 +70,7 @@ from typing import Any
 from common.logging_setup import get_logger
 from urllib.parse import urlsplit
 
+from common.paths import records_dir
 from trading212 import archive
 from trading212.dashboard import diagnostics, snapshots
 from trading212.dashboard.quotes import fetch_quotes
@@ -121,7 +122,7 @@ class Collector:
             return
         self._stop.clear()
         self._started_at = _now_iso()
-        snapshots.mark_gap(_VENUE, "collector started")
+        snapshots.mark_gap(_VENUE, "collector started", env=self._ctx.env)
         self._workers = [
             threading.Thread(target=self._poll_loop,
                              args=("account", self._account_every,
@@ -154,7 +155,7 @@ class Collector:
         for worker in self._workers:
             worker.join(timeout=1.0)   # a worker inside a timeout finishes alone
         self._workers = []
-        snapshots.mark_gap(_VENUE, "collector stopped")
+        snapshots.mark_gap(_VENUE, "collector stopped", env=self._ctx.env)
         log.info("[collector] stopped after %d ticks", self._ticks)
 
     def state(self) -> dict[str, Any]:
@@ -213,15 +214,17 @@ class Collector:
         watching, and stop when they stop watching, exactly like the rest of
         the polling. The strategy's own runs harvest independently.
         """
-        self._archive_result = archive.harvest_all(self._ctx.client())
+        self._archive_result = archive.harvest_all(
+            self._ctx.client(),
+            root=records_dir(_VENUE, self._ctx.env))
 
     def _tick_once(self) -> None:
         book = self._ctx.book_state()
         sample = self._build_sample(book)
         thin = _thin(sample)
-        snapshots.write_snapshot(_VENUE, sample)
-        snapshots.append_sample(_VENUE, thin)
-        snapshots.update_rollup(_VENUE, thin)
+        snapshots.write_snapshot(_VENUE, sample, env=self._ctx.env)
+        snapshots.append_sample(_VENUE, thin, env=self._ctx.env)
+        snapshots.update_rollup(_VENUE, thin, env=self._ctx.env)
         with self._lock:
             self._ticks += 1
             self._last_error = None

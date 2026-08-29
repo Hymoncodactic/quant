@@ -226,7 +226,7 @@ class _StubClient:
 def cycle_env(tmp_path, monkeypatch):
     """settle() runs against a temp state dir and a stub client."""
     monkeypatch.setattr(session_cycle, "execution_state_dir",
-                        lambda venue: tmp_path)
+                        lambda venue, env="live": tmp_path)
     monkeypatch.setattr(session_cycle, "T212Client", _StubClient)
     fired = []
     monkeypatch.setattr(session_cycle, "notify",
@@ -389,3 +389,34 @@ def test_torn_manual_journal_line_stands_down_resolution(ledger):
     resolved = resolve_ambiguities(client, book, min_absent_age_sec=0.0)
     assert resolved == []
     assert book.is_frozen
+
+
+# ============================================================================
+# [8] Environment isolation of execution state (added 2026-08-29 before the
+# first demo submission: a demo fill must never reach the live ledger)
+# ============================================================================
+
+def test_paper_state_lives_beside_not_inside_live_state():
+    from common.paths import execution_state_dir, records_dir
+    live = execution_state_dir("t212")
+    paper = execution_state_dir("t212", "paper")
+    assert live != paper
+    assert paper.name == "execution_state_paper"
+    assert paper.parent == live.parent
+    assert records_dir("t212", "paper") == records_dir("t212") / "paper"
+
+
+def test_cycle_state_dir_follows_the_config_environment(monkeypatch):
+    calls = []
+    monkeypatch.setattr(session_cycle, "execution_state_dir",
+                        lambda venue, env="live": calls.append(env) or
+                        Path("/tmp/x"))
+    monkeypatch.setattr(session_cycle, "T212Client",
+                        lambda *a, **k: object())
+    cfg = {"_env": "paper", "live": False,
+           "execution": {"strategy": {"name": "a0", "version": "0.0.1"}}}
+    try:
+        session_cycle._Cycle(cfg)
+    except Exception:
+        pass  # params file loading may fail; the path call happened first
+    assert calls == ["paper"]

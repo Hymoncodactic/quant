@@ -63,22 +63,23 @@ log = get_logger("t212.dashboard")
 JOURNAL_NAME = "manual_orders.jsonl"
 
 
-def _journal_path():
-    path = execution_state_dir("t212")
+def _journal_path(env: str = "live"):
+    path = execution_state_dir("t212", env)
     path.mkdir(parents=True, exist_ok=True)
     return path / JOURNAL_NAME
 
 
 def _record(entry: dict[str, Any]) -> None:
-    with open(_journal_path(), "a", encoding="utf-8") as handle:
+    with open(_journal_path(entry.get("env", "live")), "a",
+              encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def history(limit: int = 50) -> list[dict[str, Any]]:
-    """The most recent manual entries, newest first."""
-    path = _journal_path()
+def history(limit: int = 50, env: str = "live") -> list[dict[str, Any]]:
+    """The most recent manual entries for one environment, newest first."""
+    path = _journal_path(env)
     if not path.exists():
         return []
     rows = []

@@ -109,7 +109,7 @@ def get_state(ctx, collector) -> tuple[int, dict[str, Any]]:
     """Everything the main page repaints on each poll."""
     book = ctx.book_state()
     readiness = settings.describe(ctx.cfg, ledger_ready=bool(book.get("exists")))
-    snapshot = snapshots.read_snapshot(_VENUE)
+    snapshot = snapshots.read_snapshot(_VENUE, env=ctx.env)
     return 200, {"snapshot": snapshot,
                  "collector": collector.state(),
                  "readiness": readiness,
@@ -200,6 +200,7 @@ def get_history(ctx, range_id: str = "1D",
     use_ticks = span_days is not None and span_days <= TICK_SOURCE_MAX_DAYS
     if use_ticks:
         rows = snapshots.read_samples(_VENUE, days=int(span_days) + 2,
+                                      env=ctx.env,
                                       max_points=MAX_HISTORY_POINTS)
         rows = [r for r in rows
                 if r.get("gap") or str(r.get("ts", "")) >= start.isoformat()]
@@ -210,7 +211,7 @@ def get_history(ctx, range_id: str = "1D",
                  "cash_gbp": r.get("cash_gbp"),
                  "holdings_gbp": r.get("holdings_gbp"),
                  "account_total": r.get("account_total")}
-                for r in snapshots.read_rollup(_VENUE)]
+                for r in snapshots.read_rollup(_VENUE, env=ctx.env)]
         if start is not None:
             cut = start.strftime("%Y-%m-%d")
             rows = [r for r in rows if r["ts"][:10] >= cut]
@@ -219,6 +220,7 @@ def get_history(ctx, range_id: str = "1D",
             # Nothing has been rolled up yet, which is normal on the first
             # day. Fall back to the ticks so the chart is not blank.
             rows = snapshots.read_samples(_VENUE, days=MAX_HISTORY_DAYS,
+                                          env=ctx.env,
                                           max_points=MAX_HISTORY_POINTS)
             source = "ticks"
 
@@ -232,7 +234,7 @@ def get_records(ctx, name: str | None = None,
                 limit: int = 100) -> tuple[int, dict[str, Any]]:
     """Archive stream sizes, and one stream's recent rows when asked."""
     out: dict[str, Any] = {"streams": archive.stream_stats(),
-                           "directory": str(records_dir(_VENUE))}
+                           "directory": str(records_dir(_VENUE, ctx.env))}
     if name:
         known = [n for n, _key in archive.STREAMS]
         if name not in known:
@@ -306,7 +308,7 @@ def get_instruments(ctx) -> tuple[int, dict[str, Any]]:
 
 
 def get_manual(_ctx) -> tuple[int, dict[str, Any]]:
-    return 200, {"entries": manual_orders.history()}
+    return 200, {"entries": manual_orders.history(env=ctx.env)}
 
 
 def post_manual(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:

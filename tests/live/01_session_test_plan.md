@@ -75,9 +75,16 @@
 
 ### T3 真实提交与延迟测量（A，或 B 经授权）
 
+前置（2026-08-29 已就绪）：模拟盘状态与实盘**物理隔离**——账本、halt 旗标、
+手工单日志在 `data/t212/execution_state_paper/`，记账归档在
+`trading212/records/paper/`，demo 成交不可能污染实盘账本与成本归档。
+模拟盘账本已初始化 £1,000（与实盘同额，风控闸行为可比）。
+模拟盘看板：双击根目录 `dashboard_demo.command`（端口 8788，可与实盘看板并跑）。
+
 命令（模拟盘）：
 `QUANT_ENV=paper ./.venv/bin/python -m trading212.execution.run_a0 decide --allow-orders`
-（须先把 `t212.paper.yaml` 的 `execution.dry_run` 改为 `false`）
+（须先把 `t212.paper.yaml` 的 `execution.dry_run` 改为 `false`——即便是模拟盘，
+向场所提交订单仍按当轮授权执行）
 
 测量指标，全部从 `logs/t212_YYYYMMDD.log` 与账本 journal 提取：
 
@@ -141,7 +148,7 @@
 
 | 本机时间 | 动作 |
 |---|---|
-| 09-01 03:00 | 启动看板；`run_a0 status` 确认账户与账本；T1 |
+| 09-01 03:00 | 双击 `dashboard_demo.command`（模拟盘看板，8788）；`QUANT_ENV=paper run_a0 status` 确认账户与账本；T1 |
 | 09-01 03:35 | T2 决策窗口内演练（只读） |
 | 09-01 03:50 | 若路线 A 就绪：T3 模拟盘真实提交 |
 | 09-01 04:00 后 | T4 settle 与成本实测 |

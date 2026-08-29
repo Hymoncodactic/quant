@@ -89,7 +89,7 @@ class AppContext:
         params_path = config_dir(VENUE) / "strategies" / f"{self.strategy_id}.yaml"
         self.params = yaml.safe_load(params_path.read_text(encoding="utf-8")) or {}
         self.fx_symbol = self.params.get("fx_symbol", "GBPUSD=X")
-        self.state_dir = execution_state_dir(VENUE)
+        self.state_dir = execution_state_dir(VENUE, str(self.cfg.get("_env")))
         self.halt_path = self.state_dir / "halt"
         # Same file the execution layer refreshes; the dashboard only reads
         # it, so opening the page cannot spend the venue's metadata budget.

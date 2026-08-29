@@ -22,7 +22,8 @@
 | `docs/backtest/` | 回测框架建设计划（framework / validation） | 代码实现以计划为准，先改计划再改代码 |
 | `vendor/` | 第三方参考代码的浅克隆，只读参考 | gitignore（`/vendor/`），不入库 |
 | `scripts/` | 一次性脚本与常驻工具，一次性件带日期前缀 | 见 `scripts/README.md` |
-| `dashboard.command` | 双击启动本地看板（`trading212/dashboard/`） | 只启动看板，不碰策略进程 |
+| `dashboard.command` | 双击启动本地看板（`trading212/dashboard/`，实盘环境，端口 8787） | 只启动看板，不碰策略进程 |
+| `dashboard_demo.command` | 双击启动模拟盘看板（paper 环境，端口 8788，可与实盘看板并跑） | 同上；模拟盘状态物理隔离于 `data/t212/execution_state_paper/` 与 `trading212/records/paper/` |
 | `trading212/records/` | 账户记账归档（成交、流水、分红、快照、信号、资产曲线） | **不入库**，带自身 `.gitignore`；仓库公开，内含持仓与账户号 |
 | `tests/` | 引擎与适配层测试 | 见 `tests/README.md` |
 | `reports/` `logs/` `backtest/results/` | 运行时产物落地位置 | gitignore，允许为空，不放 `README.md`（`CLAUDE.md` §4.3） |

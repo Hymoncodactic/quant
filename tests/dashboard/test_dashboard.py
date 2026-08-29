@@ -92,7 +92,7 @@ def test_apply_refuses_to_write_an_invalid_configuration(tmp_path, monkeypatch):
 @pytest.fixture()
 def sample_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("trading212.dashboard.snapshots.records_dir",
-                        lambda venue: tmp_path / venue)
+                        lambda venue, env="live": tmp_path / venue)
     return tmp_path
 
 
@@ -167,6 +167,11 @@ def test_no_book_reports_unknown():
 # Manual orders
 # ----------------------------------------------------------------------
 
+class _EnvOnly:
+    """History reads need nothing from the context but the environment."""
+    env = "live"
+
+
 class _Ctx:
     env = "live"
     cfg = {"live": True, "endpoints": {"secret_name": "trading212_api_key"}}
@@ -176,7 +181,7 @@ class _Ctx:
 def manual(tmp_path, monkeypatch):
     from trading212.dashboard import manual_orders
     monkeypatch.setattr(manual_orders, "execution_state_dir",
-                        lambda venue: tmp_path)
+                        lambda venue, env="live": tmp_path)
     return manual_orders
 
 
@@ -290,6 +295,7 @@ def test_main_opens_the_running_dashboard_instead_of_failing(tmp_path,
     from trading212.dashboard import server as srv
 
     class _Ctx:
+        env = "live"
         state_dir = tmp_path
 
         def __init__(self, env=None):
@@ -581,32 +587,32 @@ def test_long_ranges_read_the_rollup_not_the_ticks(sample_dir, monkeypatch):
     rollup exists is that the long ranges must never touch them."""
     from trading212.dashboard import api
     monkeypatch.setattr(api.snapshots, "read_rollup",
-                        lambda venue: [{"day": "2020-01-02", "close": 900.0}])
+                        lambda venue, env="live": [{"day": "2020-01-02", "close": 900.0}])
 
     def _boom(*a, **k):
         raise AssertionError("a long range must not read the tick files")
 
     monkeypatch.setattr(api.snapshots, "read_samples", _boom)
-    status, body = api.get_history(None, "10Y")
+    status, body = api.get_history(_EnvOnly(), "10Y")
     assert status == 200 and body["source"] == "daily"
 
 
 def test_short_ranges_read_the_ticks(sample_dir, monkeypatch):
     from trading212.dashboard import api
     monkeypatch.setattr(api.snapshots, "read_samples",
-                        lambda venue, days, max_points: [
+                        lambda venue, days, max_points, env="live": [
                             {"ts": "2099-01-01T00:00:00+00:00",
                              "equity_gbp": 1.0}])
-    status, body = api.get_history(None, "1D")
+    status, body = api.get_history(_EnvOnly(), "1D")
     assert status == 200 and body["source"] == "ticks"
 
 
 def test_an_unknown_range_falls_back_to_one_day(sample_dir, monkeypatch):
     from trading212.dashboard import api
     monkeypatch.setattr(api.snapshots, "read_samples",
-                        lambda venue, days, max_points: [])
+                        lambda venue, days, max_points, env="live": [])
     monkeypatch.setattr(api.snapshots, "read_rollup", lambda venue: [])
-    status, body = api.get_history(None, "wobble")
+    status, body = api.get_history(_EnvOnly(), "wobble")
     assert status == 200 and body["range"] == "1D"
 
 
