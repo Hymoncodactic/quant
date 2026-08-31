@@ -158,6 +158,11 @@ class Collector:
         snapshots.mark_gap(_VENUE, "collector stopped", env=self._ctx.env)
         log.info("[collector] stopped after %d ticks", self._ticks)
 
+    def quotes(self) -> dict[str, dict]:
+        """The latest quote block, for the watch and signal endpoints."""
+        with self._lock:
+            return dict(self._quotes)
+
     def state(self) -> dict[str, Any]:
         """What the interface shows about the sampler itself."""
         with self._lock:
@@ -206,6 +211,11 @@ class Collector:
 
     def _refresh_quotes(self) -> None:
         self._quotes = fetch_quotes(self._ctx.watch_symbols())
+        try:
+            snapshots.append_quotes(_VENUE, self._quotes, env=self._ctx.env)
+        except Exception as exc:
+            # A chart losing one point must never take the poller down.
+            log.warning("[collector] quote persistence failed: %r", exc)
 
     def _refresh_archive(self) -> None:
         """Harvest the account's own history into the archive.

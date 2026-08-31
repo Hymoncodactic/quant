@@ -97,3 +97,12 @@ td { font-variant-numeric: tabular-nums; }
   background: rgba(76,141,255,.16); color: var(--accent);
   border-color: rgba(76,141,255,.35);
 }
+
+.watch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.watch-cell { height: 130px; }
+.watch-cell .mini { height: 100px; }
+.watch-head { display: flex; justify-content: space-between; font-size: 12px; padding: 0 2px 2px; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.badge.armed { background: #7a1f1f; color: #ffd9d9; }
+.badge.rehearse { background: #1f4d7a; color: #d9ecff; }
+.gate-row { display: flex; gap: 10px; align-items: baseline; margin: 4px 0; flex-wrap: wrap; }

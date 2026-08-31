@@ -50,8 +50,13 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import os
+import signal as os_signal
+import subprocess
+import sys
+from pathlib import Path
 
-__all__ = ["get_state", "get_history", "get_settings", "post_settings",
+__all__ = ["get_state", "get_history", "get_settings", "get_watch", "get_signals", "post_settings", "post_strategy", "strategy_state",
            "post_collector", "post_ledger_init", "post_allocation",
            "post_ledger_reset",
            "post_halt", "get_sessions", "get_instruments", "get_manual",
@@ -67,8 +72,9 @@ import pandas as pd
 
 from common.paths import records_dir
 from trading212 import archive
-from trading212.dashboard import manual_orders, settings, snapshots
+from trading212.dashboard import manual_orders, settings, signal_view, snapshots
 from trading212.execution import instruments as venue_instruments
+from trading212.execution import daemon as daemon_mod
 from trading212.execution import reconciler, session_cycle
 from trading212.execution.ledger_store import LedgerFrozenError, retire_ledger
 
@@ -112,6 +118,7 @@ def get_state(ctx, collector) -> tuple[int, dict[str, Any]]:
     snapshot = snapshots.read_snapshot(_VENUE, env=ctx.env)
     return 200, {"snapshot": snapshot,
                  "collector": collector.state(),
+                 "strategy": strategy_state(ctx),
                  "readiness": readiness,
                  "halted": ctx.halted(),
                  "book": book,
@@ -233,15 +240,38 @@ def get_history(ctx, range_id: str = "1D",
 def get_records(ctx, name: str | None = None,
                 limit: int = 100) -> tuple[int, dict[str, Any]]:
     """Archive stream sizes, and one stream's recent rows when asked."""
-    out: dict[str, Any] = {"streams": archive.stream_stats(),
-                           "directory": str(records_dir(_VENUE, ctx.env))}
+    root = records_dir(_VENUE, ctx.env)
+    out: dict[str, Any] = {"streams": archive.stream_stats(root),
+                           "directory": str(root)}
     if name:
         known = [n for n, _key in archive.STREAMS]
         if name not in known:
             return 400, {"problem": "unknown_stream", "known": known}
         out["name"] = name
-        out["rows"] = archive.read_stream(None, name, limit=int(limit or 100))
+        out["rows"] = archive.read_stream(root, name,
+                                          limit=int(limit or 100))
     return 200, out
+
+
+def get_watch(ctx, collector) -> tuple[int, dict[str, Any]]:
+    """Per-symbol intraday quote series plus the latest quote block."""
+    series = snapshots.read_quotes(_VENUE, env=ctx.env, days=1)
+    return 200, {"series": series,
+                 "quotes": collector.quotes() if collector else {},
+                 "symbols": ctx.watch_symbols()}
+
+
+def get_signals(ctx, collector) -> tuple[int, dict[str, Any]]:
+    """Gate and signal distances now, plus recently decided sessions."""
+    quotes = collector.quotes() if collector else {}
+    try:
+        live = signal_view.live_signals(ctx, quotes)
+    except Exception as exc:
+        log.warning("[signals] live view failed: %r", exc)
+        return 200, {"ok": False, "problem": repr(exc)[:200],
+                     "history": signal_view.decided_history(ctx)}
+    return 200, {"ok": True, "live": live,
+                 "history": signal_view.decided_history(ctx)}
 
 
 def get_settings(ctx) -> tuple[int, dict[str, Any]]:
@@ -327,6 +357,104 @@ def post_manual(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                                  real=bool(body.get("real")))
     status = 200 if result.get("outcome") in ("submitted", "rehearsed") else 400
     return status, {"ok": status == 200, "result": result}
+
+
+def _daemon_pid_alive(ctx) -> int | None:
+    """The daemon's pid when its lock is genuinely held, else None.
+
+    The lock file persists after exit (flock semantics), so presence proves
+    nothing; actually holding the flock does. A non-blocking probe that
+    SUCCEEDS means nobody holds it -- the daemon is not running.
+    """
+    path = ctx.state_dir / "daemon.lock"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "a+") as handle:
+            try:
+                # A SHARED probe: it fails against the daemon's exclusive
+                # hold (that failure IS the liveness signal) but two
+                # concurrent probes never collide with each other, and a
+                # daemon acquiring its exclusive lock is not raced by the
+                # probe (plus the daemon retries its acquisition briefly).
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                return None
+            except BlockingIOError:
+                handle.seek(0)
+                text = handle.read()
+    except OSError:
+        return None
+    for token in text.split():
+        if token.startswith("pid="):
+            try:
+                return int(token.split("=", 1)[1])
+            except ValueError:
+                return 0
+    # Lock held but the pid line not written yet (boot instant): running,
+    # holder momentarily unknown. 0 is the sentinel; no real pid is 0.
+    return 0
+
+
+def strategy_state(ctx) -> dict[str, Any]:
+    """The daemon's liveness and last written status, for the interface."""
+    pid = _daemon_pid_alive(ctx)
+    status = daemon_mod.read_status(ctx.state_dir)
+    return {"running": pid is not None, "pid": pid, "status": status}
+
+
+def post_strategy(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Start or stop the daemon for THIS dashboard's environment.
+
+    Start spawns a detached run_a0 daemon process (its own session, output
+    to a log file) so closing the dashboard leaves it running. Stop sends
+    SIGTERM to the lock holder's pid, but only after proving that pid is a
+    run_a0 process -- a stale pid must never route a signal to a stranger.
+    """
+    action = (body or {}).get("action")
+    if action == "start":
+        if _daemon_pid_alive(ctx) is not None:
+            return 200, {"ok": True, "running": True,
+                         "note": "already_running"}
+        log_dir = Path(str(records_dir(_VENUE, ctx.env))).parent.parent             / "logs"
+        log_dir = Path(__file__).resolve().parents[2] / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"daemon_{ctx.env}.log"
+        with open(log_path, "a") as sink:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "trading212.execution.run_a0",
+                 "daemon"],
+                cwd=str(Path(__file__).resolve().parents[2]),
+                env={**os.environ, "QUANT_ENV": ctx.env},
+                stdout=sink, stderr=sink, start_new_session=True)
+        log.warning("[strategy] daemon spawned pid=%s env=%s log=%s",
+                    process.pid, ctx.env, log_path)
+        return 200, {"ok": True, "running": True, "pid": process.pid}
+    if action == "stop":
+        pid = _daemon_pid_alive(ctx)
+        if pid is None:
+            return 200, {"ok": True, "running": False,
+                         "note": "not_running"}
+        if pid == 0:
+            return 409, {"ok": False, "problem": "daemon_booting",
+                         "detail": "holder pid not readable yet; retry"}
+        try:
+            out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=5)
+            cmdline = out.stdout
+        except Exception:
+            cmdline = ""
+        if "run_a0" not in cmdline:
+            return 409, {"ok": False, "problem": "pid_not_daemon",
+                         "detail": f"pid {pid} is not a run_a0 process"}
+        try:
+            os.kill(pid, os_signal.SIGTERM)
+        except ProcessLookupError:
+            return 200, {"ok": True, "running": False,
+                         "note": "already_exited"}
+        log.warning("[strategy] daemon pid=%s sent SIGTERM", pid)
+        return 200, {"ok": True, "running": False, "stopped_pid": pid}
+    return 400, {"ok": False, "problem": "unknown_action"}
 
 
 @contextlib.contextmanager

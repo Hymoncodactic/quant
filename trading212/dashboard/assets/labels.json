@@ -289,5 +289,66 @@
       "account_summary": "账户快照",
       "signals": "下单信号"
     }
+  },
+  "strategy": {
+    "heading": "策略进程",
+    "note": "常驻调度器：随时启动，自动等到每个交易日的决策窗口（纽约 15:30–15:59）计算信号并提交，收盘后自动结算对账。是否真发单由风控设置里的「模拟」开关决定，改动在下一次决策生效；决策进行中要改变主意：点「急停」立即拦截提交，或点「停止策略」放弃本场提交。",
+    "start": "启动策略",
+    "stop": "停止策略",
+    "running": "运行中",
+    "stopped": "未运行",
+    "armed": "实弹：会真实下单",
+    "rehearse": "模拟：只演练不下单",
+    "next_prefix": "下一动作",
+    "countdown_prefix": "倒计时",
+    "phases": {
+      "starting": "启动中",
+      "wait_decide": "等待决策窗口",
+      "deciding": "正在决策",
+      "wait_settle": "等待收盘结算",
+      "settling": "正在结算对账",
+      "idle": "日历上暂无会话",
+      "error": "出错，稍后自动重试",
+      "stopped": "已停止"
+    },
+    "last_decide": "最近决策",
+    "last_settle": "最近结算",
+    "stopped_note": "策略进程未运行：不会有任何自动交易。",
+    "stale_status": "状态文件已过时，进程可能刚停止",
+    "confirm_start_armed": "「模拟」开关当前是关闭的：启动后将在决策窗口真实下单。确定启动？",
+    "confirm_stop": "停止策略进程？正在等待提交的决策会被放弃（不会发单）；已在场所的挂单不会被撤销，已成交未入账的部分由下次启动自动结算。"
+  },
+  "signals": {
+    "heading": "开仓信号与阈值距离",
+    "note": "横条 = 各标的现价相对触发价的距离（正数已越过阈值 = 信号开）。触发价按策略同一公式计算：动量模式为 252 个交易日前的收盘价。绿色 = 信号开，红色 = 信号关。带「现价」标记的用延迟报价实时重算，其余按最近日线收盘。",
+    "gate_trend": "趋势闸",
+    "gate_trend_fmt": "QQQ 相对 200 日均线",
+    "gate_vol": "波动闸",
+    "gate_vol_fmt": "波动率历史分位",
+    "gate_open": "开",
+    "gate_blocking": "关（清仓状态）",
+    "gate_disabled": "未启用",
+    "open_for_business": "市场闸整体状态",
+    "asof_prefix": "最后一根完整日线",
+    "live_suffix": "（含延迟报价重算）",
+    "chart_axis": "距触发价 %",
+    "history_heading": "已决策场次（信号留痕）",
+    "history_cols": [
+      "场次",
+      "目标数",
+      "提交",
+      "模式"
+    ],
+    "history_dry": "演练",
+    "history_real": "实单",
+    "history_empty": "还没有决策留痕；第一次决策后这里会出现记录。",
+    "insufficient": "历史不足",
+    "empty": "暂无信号数据：日线数据尚未落地。"
+  },
+  "watch": {
+    "heading": "标的实时走势（当日）",
+    "note": "延迟约一分钟的报价，采集器运行期间每 30 秒记一个点。灰色标题 = 报价过时。",
+    "empty": "今天还没有报价采样：开启采集器后、且行情时段内才会积累。",
+    "day_change_prefix": "日内"
   }
 }

@@ -254,3 +254,62 @@ def test_halt_raised_while_waiting_stops_the_batch(tmp_path):
                                    grace_sec=30, max_wait_sec=600,
                                    halt_path=halt)
     assert isinstance(out, str) and "halt" in out
+
+
+# ============================================================================
+# signal_diagnostics (2026-08-31): threshold distances for the dashboard,
+# through the SAME helpers compute_targets uses
+# ============================================================================
+
+def _diag_view(state_closes, sym_closes):
+    class _Bar:
+        def __init__(self, c):
+            self.open, self.high, self.low, self.close = c, c, c, c
+
+    class _View:
+        now = pd.Timestamp("2026-08-31 19:30:00+00:00")
+
+        def bars(self, symbol, n):
+            series = state_closes if symbol == "QQQ" else sym_closes
+            return [_Bar(c) for c in series][-n:]
+    return _View()
+
+
+def _diag_params():
+    return {"state_symbol": "QQQ", "trade_symbols": ["NVDA"],
+            "fx_symbol": "GBPUSD=X", "signal_mode": "tsmom252",
+            "tsmom_lookback": 252, "trend_ma": 200, "warmup_bars": 260,
+            "vol_window": 20, "vol_min_history": 756,
+            "vol_pct_threshold": 0.80, "use_vol_gate": True,
+            "use_trend_gate": True, "live_from": "2018-01-01"}
+
+
+def test_diagnostics_reports_trend_margin_and_momentum_trigger():
+    from trading212.strategy.a0_v0_0_1 import signal_diagnostics
+    state = [100.0] * 300              # flat: close == ma, not blocking
+    sym = [50.0] * 100 + [60.0] * 200  # close 60 vs trigger 253 bars back
+    diag = signal_diagnostics(_diag_view(state, sym), _diag_params())
+    assert diag["gates"]["trend"]["blocking"] is False
+    assert abs(diag["gates"]["trend"]["margin_pct"]) < 1e-9
+    nvda = diag["symbols"]["NVDA"]
+    assert nvda["on"] is True
+    assert nvda["trigger"] == 50.0
+    assert abs(nvda["margin_pct"] - 20.0) < 1e-9
+
+
+def test_diagnostics_agrees_with_gates_open():
+    from trading212.strategy.a0_v0_0_1 import _gates_open, signal_diagnostics
+    falling = [200.0 - 0.3 * i for i in range(300)]  # below its own MA200
+    view = _diag_view(falling, falling)
+    params = _diag_params()
+    diag = signal_diagnostics(view, params)
+    assert diag["gates"]["trend"]["blocking"] is True
+    assert diag["open_for_business"] == _gates_open(view, params)
+
+
+def test_diagnostics_marks_thin_history_instead_of_guessing():
+    from trading212.strategy.a0_v0_0_1 import signal_diagnostics
+    diag = signal_diagnostics(_diag_view([100.0] * 300, [50.0] * 10),
+                              _diag_params())
+    assert diag["symbols"]["NVDA"]["on"] is None
+    assert diag["symbols"]["NVDA"]["reason"] == "insufficient_history"

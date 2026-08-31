@@ -5,6 +5,7 @@ entry layer -- quant-code-standards section 4.8), and human-readable
 output. All behavior lives in session_cycle.py.
 
 Usage (from the repository root, with the venv python):
+    python -m trading212.execution.run_a0 daemon
     python -m trading212.execution.run_a0 status
     python -m trading212.execution.run_a0 decide
     python -m trading212.execution.run_a0 decide --allow-orders
@@ -101,8 +102,17 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--cash-gbp", required=True, type=Decimal,
                         help="explicit GBP cash allocation for the strategy")
     sub.add_parser("halt", help="set the halt flag (removal is manual only)")
+    sub.add_parser("daemon", help="run unattended: wait for each session's "
+                   "decision window, decide, settle, repeat; arming follows "
+                   "execution.dry_run, re-read every cycle")
 
     args = parser.parse_args(argv)
+    if args.command == "daemon":
+        # The daemon manages its own locks (daemon.lock for the lifetime,
+        # the execution lock only around phases), so the one-shot instance
+        # lock below must not be held for its whole multi-day run.
+        from trading212.execution import daemon as daemon_mod
+        return daemon_mod.run("t212")
     cfg = load_config("t212")
     # The lock follows the environment: a paper rehearsal must not block --
     # nor race -- the live cycle, and vice versa. Loading the configuration

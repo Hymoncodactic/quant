@@ -106,7 +106,8 @@ class SettleReport:
 # ============================================================================
 
 def poll_until_settled(client: T212Client, ledger, expected_ccy: str,
-                       max_wait_sec: float, poll_sec: float) -> SettleReport:
+                       max_wait_sec: float, poll_sec: float,
+                       stop_check=None) -> SettleReport:
     """Poll until every ledger open order has left the venue's pending set,
     harvesting each one as it goes; give up (loudly) at max_wait_sec.
 
@@ -133,6 +134,12 @@ def poll_until_settled(client: T212Client, ledger, expected_ccy: str,
         open_ids = {int(order_id) for order_id in ledger.open_orders}
         if not open_ids:
             break
+        if stop_check is not None and stop_check():
+            report.still_open = sorted(open_ids)
+            log.warning("[settle] stop requested with orders still open: %s; "
+                        "a later settle or the boot recovery finishes them",
+                        report.still_open)
+            return report
         if time.monotonic() >= deadline:
             report.still_open = sorted(open_ids)
             log.error("[settle] deadline reached with orders still open: %s",

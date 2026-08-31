@@ -112,6 +112,65 @@ def append_sample(venue: str, sample: dict[str, Any], env: str = "live") -> None
         os.fsync(handle.fileno())
 
 
+def _quotes_dir(venue: str, env: str = "live") -> Path:
+    path = _root(venue, env) / "quotes"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def append_quotes(venue: str, quotes: dict[str, dict],
+                  env: str = "live") -> None:
+    """Append one poll's prices as a single row in today's quote file.
+
+    One row per poll ({ts, prices: {symbol: price}}) rather than one file
+    per symbol: the poll is atomic, a row is ~400 bytes, and a session of
+    30-second polls stays under a third of a megabyte.
+    """
+    prices = {sym: q.get("price") for sym, q in quotes.items()
+              if q.get("ok") and q.get("price") is not None}
+    if not prices:
+        return
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = {"ts": datetime.now(timezone.utc).isoformat(), "prices": prices}
+    with open(_quotes_dir(venue, env) / f"{day}.jsonl", "a",
+              encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+
+def read_quotes(venue: str, env: str = "live", days: int = 1,
+                max_points: int = 240) -> dict[str, list]:
+    """Per-symbol [(iso_ts, price)] series from the recent quote files.
+
+    Downsampled by stride so the busiest session hands the browser at most
+    max_points per symbol; a torn last line (a poll racing this read) is
+    skipped, never fatal.
+    """
+    files = sorted(_quotes_dir(venue, env).glob("*.jsonl"))[-max(1, days):]
+    rows: list[dict] = []
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    series: dict[str, list] = {}
+    for row in rows:
+        ts = row.get("ts")
+        for sym, price in (row.get("prices") or {}).items():
+            series.setdefault(sym, []).append((ts, price))
+    out: dict[str, list] = {}
+    for sym, points in series.items():
+        stride = max(1, -(-len(points) // max_points))
+        kept = points[::stride]
+        if kept and kept[-1] != points[-1]:
+            kept.append(points[-1])
+        out[sym] = kept
+    return out
+
+
 def _rollup_path(venue: str, env: str = "live") -> Path:
     return _root(venue, env) / "daily.jsonl"
 

@@ -93,6 +93,15 @@
   /* ---------------- static text ---------------- */
 
   function paintStatic() {
+    text("strategy-heading", L.strategy.heading);
+    text("strategy-note", L.strategy.note);
+    text("strategy-start-btn", L.strategy.start);
+    text("strategy-stop-btn", L.strategy.stop);
+    text("signals-heading", L.signals.heading);
+    text("signals-note", L.signals.note);
+    text("signals-history-heading", L.signals.history_heading);
+    text("watch-heading", L.watch.heading);
+    text("watch-note", L.watch.note);
     document.title = L.app.title;
     text("app-title", L.app.title);
     text("nav-dash", L.app.nav_dashboard);
@@ -260,6 +269,227 @@
   }
 
   /* ---------------- status and KPIs ---------------- */
+
+  function isoNorm(iso) {
+    /* The daemon writes "YYYY-MM-DD HH:MM:SS+00:00"; Date() wants a T. */
+    return iso ? String(iso).replace(" ", "T") : iso;
+  }
+
+  function paintStrategy() {
+    var st = (STATE && STATE.strategy) || {};
+    var status = st.status || {};
+    var running = !!st.running;
+    var stateEl = $("strategy-state");
+    var pieces = [];
+    pieces.push("<span class='pill " + (running ? "on'>" : "off'>") +
+      (running ? L.strategy.running : L.strategy.stopped) + "</span>");
+    if (running) {
+      var phase = L.strategy.phases[status.phase] || status.phase || "";
+      pieces.push("<span>" + phase + "</span>");
+      if (status.dry_run === false) {
+        pieces.push("<span class='badge armed'>" + L.strategy.armed + "</span>");
+      } else if (status.dry_run === true) {
+        pieces.push("<span class='badge rehearse'>" + L.strategy.rehearse +
+                    "</span>");
+      }
+    }
+    stateEl.innerHTML = pieces.join(" ");
+
+    var nextEl = $("strategy-next");
+    if (running && status.next_action_utc) {
+      var at = new Date(isoNorm(status.next_action_utc));
+      var secs = Math.max(0, Math.round((at - new Date()) / 1000));
+      var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+      nextEl.textContent = L.strategy.next_prefix + " " +
+        at.toLocaleString("zh-CN", { hour12: false }) + " | " +
+        L.strategy.countdown_prefix + " " + h + "h" +
+        String(m).padStart(2, "0") + "m";
+    } else {
+      nextEl.textContent = running ? "" : L.strategy.stopped_note;
+    }
+
+    var cyc = [];
+    if (status.last_decide && status.last_decide.session) {
+      var d = status.last_decide;
+      cyc.push(L.strategy.last_decide + " " + d.session + ": " +
+               ((d.result && (d.result.submit || d.result.reason)) || ""));
+    }
+    if (status.last_settle && status.last_settle.session) {
+      var t = status.last_settle;
+      cyc.push(L.strategy.last_settle + " " + t.session + ": " +
+               ((t.result && (t.result.reconcile || t.result.reason)) || ""));
+    }
+    $("strategy-cycle").textContent = cyc.join("  |  ");
+    $("strategy-start-btn").disabled = running;
+    $("strategy-stop-btn").disabled = !running;
+  }
+
+  function paintGates(live) {
+    var wrap = $("gates-wrap");
+    if (!live || !live.gates) { wrap.innerHTML = ""; return; }
+    function gateRow(title, fmt, gate, valueText) {
+      var pill;
+      if (!gate.enabled) {
+        pill = "<span class='pill off'>" + L.signals.gate_disabled + "</span>";
+      } else if (gate.blocking) {
+        pill = "<span class='pill bad'>" + L.signals.gate_blocking + "</span>";
+      } else {
+        pill = "<span class='pill on'>" + L.signals.gate_open + "</span>";
+      }
+      return "<div class='gate-row'><b>" + title + "</b>" + pill +
+             "<span>" + fmt + " " + valueText + "</span></div>";
+    }
+    var t = live.gates.trend || {};
+    var tv = "";
+    if (t.live_margin_pct !== undefined && t.live_margin_pct !== null) {
+      tv = (t.live_margin_pct >= 0 ? "+" : "") + num(t.live_margin_pct, 2) +
+           "%" + L.signals.live_suffix;
+    } else if (t.margin_pct !== undefined && t.margin_pct !== null) {
+      tv = (t.margin_pct >= 0 ? "+" : "") + num(t.margin_pct, 2) + "%";
+    }
+    var v = live.gates.vol || {};
+    var vv = (v.percentile === null || v.percentile === undefined)
+      ? L.signals.insufficient
+      : num(v.percentile * 100, 1) + "% / " + num(v.threshold * 100, 0) + "%";
+    wrap.innerHTML =
+      gateRow(L.signals.gate_trend, L.signals.gate_trend_fmt, t, tv) +
+      gateRow(L.signals.gate_vol, L.signals.gate_vol_fmt, v, vv);
+  }
+
+  function drawSignals(live) {
+    var chart = $("signals-chart");
+    if (!live || !live.symbols) { return; }
+    var rows = [];
+    Object.keys(live.symbols).forEach(function (sym) {
+      var r = live.symbols[sym];
+      var margin = (r.live_margin_pct !== undefined &&
+                    r.live_margin_pct !== null)
+        ? r.live_margin_pct : r.margin_pct;
+      if (margin === undefined || margin === null) return;
+      rows.push({ sym: sym, margin: margin, on: !!r.on,
+                  live: r.live_margin_pct !== undefined &&
+                        r.live_margin_pct !== null });
+    });
+    rows.sort(function (a, b) { return a.margin - b.margin; });
+    var trace = {
+      type: "bar", orientation: "h",
+      y: rows.map(function (r) {
+        return r.sym + (r.live ? " *" : "");
+      }),
+      x: rows.map(function (r) { return r.margin; }),
+      marker: { color: rows.map(function (r) {
+        return r.margin >= 0 ? "#2e8b57" : "#b34a4a";
+      }) },
+      hovertemplate: "%{y}: %{x:.2f}%<extra></extra>"
+    };
+    Plotly.react(chart, [trace], {
+      margin: { l: 70, r: 20, t: 6, b: 32 },
+      xaxis: { title: L.signals.chart_axis, zeroline: true,
+               zerolinewidth: 2, zerolinecolor: "#888" },
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#ccc", size: 11 }
+    }, { displayModeBar: false, responsive: true });
+  }
+
+  function paintSignalHistory(history) {
+    var wrap = $("signals-history-wrap");
+    if (!history || !history.length) {
+      wrap.innerHTML = "<p class='note'>" + L.signals.history_empty + "</p>";
+      return;
+    }
+    var cols = L.signals.history_cols;
+    var head = "<tr>" + cols.map(function (c) {
+      return "<th>" + c + "</th>";
+    }).join("") + "</tr>";
+    var body = history.slice(0, 10).map(function (row) {
+      var targets = row.targets || {};
+      var nonzero = Object.keys(targets).filter(function (k) {
+        return Number(targets[k]) > 0;
+      }).length;
+      var submit = row.submit || {};
+      var submitted = (submit.submitted || []).length;
+      var dry = (submit.dry_run || []).length;
+      var mode = row.dry_run ? L.signals.history_dry : L.signals.history_real;
+      return "<tr><td>" + (row.session || "") + "</td><td>" + nonzero +
+             "</td><td>" + (submitted || dry) + "</td><td>" + mode +
+             "</td></tr>";
+    }).join("");
+    wrap.innerHTML = "<table>" + head + body + "</table>";
+  }
+
+  function refreshSignals() {
+    return getJSON("/api/signals").then(function (payload) {
+      if (payload.ok && payload.live) {
+        paintGates(payload.live);
+        drawSignals(payload.live);
+        text("signals-asof", L.signals.asof_prefix + " " +
+             localTime(isoNorm(payload.live.as_of)));
+      } else {
+        $("gates-wrap").innerHTML = "<p class='note'>" + L.signals.empty +
+                                    "</p>";
+      }
+      paintSignalHistory(payload.history || []);
+    }).catch(function () {});
+  }
+
+  var watchBuilt = false;
+  function refreshWatch() {
+    return getJSON("/api/watch").then(function (payload) {
+      var grid = $("watch-grid");
+      var series = payload.series || {};
+      var quotes = payload.quotes || {};
+      var symbols = (payload.symbols || []).filter(function (s) {
+        return s.indexOf("=") === -1;   /* FX gets no cell of its own */
+      });
+      if (!watchBuilt) {
+        grid.innerHTML = symbols.map(function (sym) {
+          return "<div class='watch-cell'><div class='watch-head'>" +
+                 "<b id='wh-" + sym + "'>" + sym + "</b>" +
+                 "<span id='wq-" + sym + "'></span></div>" +
+                 "<div class='mini' id='wc-" + sym + "'></div></div>";
+        }).join("");
+        watchBuilt = true;
+      }
+      var any = false;
+      symbols.forEach(function (sym) {
+        var points = series[sym] || [];
+        var quote = quotes[sym] || {};
+        var head = $("wq-" + sym);
+        if (head) {
+          var price = quote.ok ? num(quote.price, 2) : L.app.unknown;
+          var change = "";
+          if (points.length > 1 && quote.ok) {
+            var first = points[0][1];
+            if (first) {
+              var pct = (quote.price / first - 1) * 100;
+              change = " " + (pct >= 0 ? "+" : "") + num(pct, 2) + "%";
+            }
+          }
+          head.textContent = price + change;
+          head.style.color = quote.stale ? "#777" : "";
+        }
+        if (!points.length) return;
+        any = true;
+        Plotly.react($("wc-" + sym), [{
+          type: "scatter", mode: "lines",
+          x: points.map(function (pt) { return inZone(pt[0]); }),
+          y: points.map(function (pt) { return pt[1]; }),
+          line: { width: 1.4 }
+        }], {
+          margin: { l: 40, r: 6, t: 4, b: 18 },
+          paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+          font: { color: "#999", size: 9 },
+          xaxis: { showgrid: false, nticks: 4 },
+          yaxis: { showgrid: false, nticks: 3 }
+        }, { displayModeBar: false, responsive: true });
+      });
+      if (!any) {
+        text("watch-note", L.watch.empty);
+      } else {
+        text("watch-note", L.watch.note);
+      }
+    }).catch(function () {});
+  }
 
   function paintStatus() {
     var c = STATE.collector, snap = STATE.snapshot;
@@ -467,8 +697,8 @@
     return getJSON("/api/state").then(function (s) {
       STATE = s;
       buildFields(s.readiness);
-      paintStatus(); paintKPIs(); paintFunding(); paintBrokerWhy();
-      paintTable(); drawPositions();
+      paintStatus(); paintStrategy(); paintKPIs(); paintFunding();
+      paintBrokerWhy(); paintTable(); drawPositions();
       if ($("settings-fields").dataset.dirty !== "1") {
         text("ready-flag", s.readiness.ready ? L.setup.ready : L.setup.not_ready);
       }
@@ -634,6 +864,22 @@
                   items.length ? items : [r.body.problem || ""]);
       });
     };
+    $("strategy-start-btn").onclick = function () {
+      var status = ((STATE || {}).strategy || {}).status || {};
+      var readiness = (STATE || {}).readiness || {};
+      var dryField = (readiness.fields || []).filter(function (f) {
+        return f.id === "dry_run";
+      })[0];
+      var armed = dryField ? dryField.value === false : false;
+      if (armed && !window.confirm(L.strategy.confirm_start_armed)) return;
+      postJSON("/api/strategy", { action: "start" }).then(refreshState);
+    };
+    $("strategy-stop-btn").onclick = function () {
+      if (!window.confirm(L.strategy.confirm_stop)) return;
+      postJSON("/api/strategy", { action: "stop" }).then(function () {
+        setTimeout(refreshState, 800);
+      });
+    };
     $("start-btn").onclick = function () {
       postJSON("/api/collector", { action: "start" }).then(function () {
         refreshState(); refreshHistory(true);
@@ -659,5 +905,8 @@
       .then(refreshRecords);
     setInterval(function () { refreshState(); refreshHistory(false); }, STATE_MS);
     setInterval(refreshRecords, 30000);
+    refreshSignals(); refreshWatch();
+    setInterval(refreshSignals, 30000);
+    setInterval(refreshWatch, 30000);
   });
 })();

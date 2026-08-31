@@ -281,3 +281,21 @@ FINRA TAF、SEC 费。actual 档滑点 0 bps、无时段加宽。
 | 2026-08-22 | 建档。依据 `research/decisions/20260822_a0_intraday_frequency_ruling.md` 与该轮回测产物。 |
 | 2026-08-23 | §10 第 1、2、5 项按用户裁定关闭，新增第 6 项；口径实现与核验见 `research/decisions/20260823_a0_live_execution_calibers.md`。 |
 | 2026-08-22 | 迁入 `fixplans/t212/a0/`（`CLAUDE.md` §六：fixplans 只放交易代码规格）。权威成交时序改为 `same_close`，§2.4/§3/§4 按重跑结果改写；§7.1 补入封锁事件实测；§8 对账项按 same_close 改写并增拒单项。 |
+
+---
+
+## 附录 A：常驻调度器（2026-08-31 增补）
+
+用户裁定：盯钟是机器的事，看板是唯一手动操作面。据此执行层增加常驻运行方式，
+一次性 CLI 保持不变。
+
+| 条目 | 规格 | 实现 |
+|---|---|---|
+| 进程模型 | 常驻进程，随时可启动；启动时刻不影响行为 | `trading212/execution/daemon.py::run` |
+| 规划 | 纯函数：给定日历、当前时刻与两个进度标记，返回下一动作（等窗/决策/等收盘/结算/闲置），半日会话整场跳过 | `daemon.py::plan_next`（`tests/execution/test_daemon_planner.py` 11 分支） |
+| 武装 | 每周期现读 `execution.dry_run`：false 即真实提交。`--allow-orders` 仅存于一次性 CLI | `daemon.py::run_decide`（armed = not dry_run） |
+| 锁 | `daemon.lock` 全程持有（每环境一个调度器）；执行锁 `run_a0.lock` 仅在 decide/settle 相位短持 | `daemon.py::acquire_daemon_lock` / `_hold_execution_lock` |
+| 启动自恢复 | 账本有未结订单或冻结时，先 settle 再进入调度 | `daemon.py::boot_recovery` |
+| 状态外发 | `daemon_status.json` 原子写：阶段、下一动作时刻、武装态、最近决策/结算摘要 | `daemon.py::write_status`；看板经 `dashboard/api.py::strategy_state` 读 |
+| 启停 | 看板按钮：spawn 分离进程 / 校验命令行后 SIGTERM | `dashboard/api.py::post_strategy` |
+| 失败重试 | 决策中止（如急停未清）窗口内每 60 秒重试；结算失败每 300 秒重试 | `daemon.py` RETRY_SEC / SETTLE_RETRY_SEC |

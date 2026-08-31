@@ -205,7 +205,8 @@ MAX_CLOCK_SKEW_SEC = 10.0
 
 
 def decide(cfg: dict[str, Any], armed: bool,
-           now_utc: pd.Timestamp | None = None) -> dict[str, Any]:
+           now_utc: pd.Timestamp | None = None,
+           stop_check=None) -> dict[str, Any]:
     """One decision pass. Every gate must pass or nothing is submitted."""
     cycle = _Cycle(cfg)
     now = now_utc or pd.Timestamp.now(tz="UTC")
@@ -325,7 +326,8 @@ def decide(cfg: dict[str, Any], armed: bool,
 
     waited = _wait_for_submit_instant(submit_at, session.close_utc,
                                       cycle.submit_grace_sec,
-                                      cycle.max_wait_sec, cycle.halt_path)
+                                      cycle.max_wait_sec, cycle.halt_path,
+                                      stop_check=stop_check)
     if isinstance(waited, str):
         return _abort(waited) | {
             "targets": {s: str(q) for s, q in targets.items()},
@@ -410,7 +412,7 @@ def _assemble_market(cycle: _Cycle, session, key: pd.Timestamp,
 
 def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
                              grace_sec: int, max_wait_sec: int,
-                             halt_path) -> None | str:
+                             halt_path, stop_check=None) -> None | str:
     """Sleep until the submission instant; return an abort reason instead of
     submitting when that instant has already gone by.
 
@@ -426,7 +428,10 @@ def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
     batch is abandoned and the session simply goes undecided.
 
     The halt flag is re-read while waiting, so a halt raised between the
-    decision and the submission still stops the orders.
+    decision and the submission still stops the orders. stop_check, when
+    given, is polled the same way: an operator stopping the daemon while
+    this wait is parked must abandon the pending submission, not have it
+    fire half an hour after the stop.
     """
     while True:
         now = pd.Timestamp.now(tz="UTC")
@@ -449,6 +454,9 @@ def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
                     f"beyond max_wait_sec {max_wait_sec}")
         if risk_gate.halt_active(halt_path):
             return f"halt flag raised while waiting to submit at {submit_at}"
+        if stop_check is not None and stop_check():
+            return (f"stop requested while waiting to submit at {submit_at}; "
+                    f"abandoning this session's submission")
         log.info("[cycle] waiting %.0fs to submit at %s", remaining, submit_at)
         time.sleep(min(remaining, 15.0))
 
@@ -494,7 +502,7 @@ def _venue_cash_shortfall(summary: dict[str, Any],
 # [3] settle
 # ============================================================================
 
-def settle(cfg: dict[str, Any]) -> dict[str, Any]:
+def settle(cfg: dict[str, Any], stop_check=None) -> dict[str, Any]:
     """Harvest the session's orders after the close, then reconcile."""
     cycle = _Cycle(cfg)
     execution = cfg.get("execution") or {}
@@ -514,7 +522,8 @@ def settle(cfg: dict[str, Any]) -> dict[str, Any]:
     report = order_monitor.poll_until_settled(
         cycle.client, ledger, expected_ccy=cycle.base_ccy,
         max_wait_sec=float(execution.get("settle_max_wait_min", 90)) * 60,
-        poll_sec=float(execution.get("settle_poll_sec", 30)))
+        poll_sec=float(execution.get("settle_poll_sec", 30)),
+        stop_check=stop_check)
 
     trade_symbols = list(cycle.params["trade_symbols"])
     tickers = {s: instruments.order_ticker(s) for s in trade_symbols}
@@ -550,7 +559,11 @@ def settle(cfg: dict[str, Any]) -> dict[str, Any]:
                            "NEGATIVE_CASH", {"cash_gbp": str(ledger.cash_gbp)})
 
     return {"phase": "settle", "resolved_ambiguities": resolved,
-            "settle": report.summary(), "reconcile": verdict.summary(),
+            "settle": report.summary(),
+            "still_open": sorted(ledger.open_orders),
+            "frozen": ledger.is_frozen,
+            "reconcile_ok": verdict.ok,
+            "reconcile": verdict.summary(),
             "fill_timing_breaches": breaches,
             "halted": cycle.halted(),
             "positions": {s: str(q) for s, q in ledger.positions.items()},

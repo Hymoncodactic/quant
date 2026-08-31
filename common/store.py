@@ -35,7 +35,7 @@ Constants:
                             100k to 3M because min/max statistics can no longer
                             prune, and DuckDB's own guidance is 100k to 1M.
                             Source: the same benchmark.
-    TEMP_SUFFIX        str  ".writing". Partitions are written to this suffix and
+    TEMP_SUFFIX        str  ".writing" (plus ".<pid>"). Partitions are staged at this suffix and
                             then renamed onto the target, so an interrupted run
                             leaves a file that is either absent or complete.
 
@@ -110,7 +110,11 @@ def write_table(table: pa.Table, path: Path | str,
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + TEMP_SUFFIX)
+    # The temp name carries the pid: two processes refreshing the same
+    # partition (the live and paper daemons hit the shared curated store at
+    # the same decision instant) must not truncate each other's staging
+    # file; each renames its own complete file over the target instead.
+    temp = path.with_name(f"{path.name}{TEMP_SUFFIX}.{os.getpid()}")
 
     if sort_by is not None:
         keys = [sort_by] if isinstance(sort_by, str) else list(sort_by)
@@ -175,9 +179,12 @@ def clear_stale_temps(root: Path | str) -> list[Path]:
     removing them is safe; the corresponding work is simply redone.
     """
     removed = []
-    for temp in Path(root).rglob(f"*{TEMP_SUFFIX}"):
-        temp.unlink(missing_ok=True)
-        removed.append(temp)
+    # Both the plain suffix (pre-2026-08-31 layout) and the pid-suffixed
+    # staging names are stale once no writer is running.
+    for pattern in (f"*{TEMP_SUFFIX}", f"*{TEMP_SUFFIX}.*"):
+        for temp in Path(root).rglob(pattern):
+            temp.unlink(missing_ok=True)
+            removed.append(temp)
     return removed
 
 

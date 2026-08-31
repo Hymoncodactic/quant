@@ -91,6 +91,8 @@ __all__ = ["group_for", "refresh_bars", "load_frames", "daily_rows",
 
 from dataclasses import dataclass
 
+import fcntl
+
 import pandas as pd
 
 from common.logging_setup import get_logger
@@ -148,12 +150,28 @@ def refresh_bars(symbols: list[str], interval: str) -> dict[str, int]:
     an appended file would straddle two scales. Returns rows fetched per
     symbol; an empty fetch is logged and left to the freshness gate to
     reject, so one flaky symbol does not abort the others.
+
+    Serialized across processes: the curated store is shared by BOTH
+    environments, and the live and paper daemons reach their decision
+    instant simultaneously. The blocking flock makes the second refresher
+    wait for the first instead of interleaving writes and stale-sibling
+    deletions in the same partition directories.
     """
     if interval not in _FETCH_SPAN:
         raise ValueError(f"unsupported interval {interval!r}, "
                          f"expected one of {sorted(_FETCH_SPAN)}")
     lookback, chunk = _FETCH_SPAN[interval]
     rows: dict[str, int] = {}
+    lock_path = equity_curated_root() / ".refresh.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        return _refresh_bars_locked(symbols, interval, lookback, chunk, rows)
+
+
+def _refresh_bars_locked(symbols: list[str], interval: str, lookback, chunk,
+                         rows: dict[str, int]) -> dict[str, int]:
+    """The refresh body, run while holding the cross-process store lock."""
     for symbol in symbols:
         frame = fetch_interval(symbol, interval, lookback, chunk)
         rows[symbol] = len(frame)

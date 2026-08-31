@@ -132,29 +132,118 @@ def _yang_zhang(opens, highs, lows, closes, window: int) -> np.ndarray:
     return np.sqrt(var.to_numpy() * 252.0)
 
 
+def _trend_gate_values(closes: np.ndarray, ma_window: int
+                       ) -> tuple[float | None, bool]:
+    """(moving average, blocking) for the trend gate; None below history."""
+    if len(closes) < ma_window:
+        return None, False
+    ma = float(closes[-ma_window:].mean())
+    return ma, bool(closes[-1] < ma)
+
+
+def _vol_gate_values(state_bars, closes: np.ndarray, params
+                     ) -> tuple[float | None, bool]:
+    """(volatility percentile, blocking) for the vol gate.
+
+    Percentile is None while the estimator lacks the ruled minimum history;
+    a gate that cannot be evaluated never blocks, exactly as before this
+    refactor (the boolean paths are the same expressions, only hoisted so
+    the dashboard can display the values instead of just the verdict).
+    """
+    window = int(params.get("vol_window", 20))
+    if len(closes) < window + 1:
+        return None, False
+    opens = np.array([b.open for b in state_bars], dtype=float)
+    highs = np.array([b.high for b in state_bars], dtype=float)
+    lows = np.array([b.low for b in state_bars], dtype=float)
+    vol = _yang_zhang(opens, highs, lows, closes, window)
+    vol = vol[~np.isnan(vol)]
+    if len(vol) < int(params.get("vol_min_history", 756)):
+        return None, False
+    pct = float((vol <= vol[-1]).mean())
+    return pct, bool(pct >= float(params.get("vol_pct_threshold", 0.80)))
+
+
 def _gates_open(view, params) -> bool:
     """Evaluate both market-level gates on the state symbol. True = may hold."""
     state_bars = view.bars(params["state_symbol"], 8000)
     closes = np.array([b.close for b in state_bars], dtype=float)
 
     if params.get("use_trend_gate", True):
-        ma = int(params.get("trend_ma", 200))
-        if len(closes) >= ma and closes[-1] < closes[-ma:].mean():
+        _ma, blocking = _trend_gate_values(closes,
+                                           int(params.get("trend_ma", 200)))
+        if blocking:
             return False
 
     if params.get("use_vol_gate", True):
-        window = int(params.get("vol_window", 20))
-        if len(closes) >= window + 1:
-            opens = np.array([b.open for b in state_bars], dtype=float)
-            highs = np.array([b.high for b in state_bars], dtype=float)
-            lows = np.array([b.low for b in state_bars], dtype=float)
-            vol = _yang_zhang(opens, highs, lows, closes, window)
-            vol = vol[~np.isnan(vol)]
-            if len(vol) >= int(params.get("vol_min_history", 756)):
-                pct = float((vol <= vol[-1]).mean())
-                if pct >= float(params.get("vol_pct_threshold", 0.80)):
-                    return False
+        _pct, blocking = _vol_gate_values(state_bars, closes, params)
+        if blocking:
+            return False
     return True
+
+
+def signal_diagnostics(view, params) -> dict:
+    """Read-only view of every gate and signal against its threshold.
+
+    Same formulas as compute_targets, through the same helpers -- this
+    exists so the dashboard can show HOW FAR each condition sits from
+    flipping, not merely whether it holds. Pure and side-effect free; the
+    backtest never calls it.
+    """
+    state_bars = view.bars(params["state_symbol"], 8000)
+    closes = np.array([b.close for b in state_bars], dtype=float)
+    state_close = float(closes[-1]) if len(closes) else None
+
+    ma, trend_blocking = _trend_gate_values(
+        closes, int(params.get("trend_ma", 200)))
+    pct, vol_blocking = _vol_gate_values(state_bars, closes, params)
+    trend_enabled = bool(params.get("use_trend_gate", True))
+    vol_enabled = bool(params.get("use_vol_gate", True))
+    gates = {
+        "trend": {"enabled": trend_enabled, "blocking": trend_blocking,
+                  "close": state_close, "ma": ma,
+                  "margin_pct": (state_close / ma - 1.0) * 100.0
+                  if ma else None},
+        "vol": {"enabled": vol_enabled, "blocking": vol_blocking,
+                "percentile": pct,
+                "threshold": float(params.get("vol_pct_threshold", 0.80))},
+    }
+    open_for_business = (not (trend_enabled and trend_blocking)
+                         and not (vol_enabled and vol_blocking))
+
+    lookback = int(params.get("tsmom_lookback", 252))
+    trend_ma = int(params.get("trend_ma", 200))
+    warmup = int(params.get("warmup_bars", 260))
+    mode = params.get("signal_mode", "tsmom252")
+    symbols: dict[str, dict] = {}
+    for symbol in list(params["trade_symbols"]):
+        bars = view.bars(symbol, max(lookback, trend_ma) + 1)
+        if len(bars) < warmup and len(bars) < lookback + 1:
+            symbols[symbol] = {"on": None, "reason": "insufficient_history",
+                               "bars": len(bars)}
+            continue
+        closes_s = [b.close for b in bars]
+        close = float(closes_s[-1])
+        if mode == "always":
+            symbols[symbol] = {"on": True, "close": close, "trigger": None,
+                               "margin_pct": None}
+        elif mode == "ma200":
+            trigger = float(np.mean(closes_s[-trend_ma:]))                 if len(closes_s) >= trend_ma else None
+            on = trigger is not None and close >= trigger
+            symbols[symbol] = {
+                "on": bool(on), "close": close, "trigger": trigger,
+                "margin_pct": (close / trigger - 1.0) * 100.0
+                if trigger else None}
+        else:
+            trigger = float(closes_s[-lookback - 1])                 if len(closes_s) >= lookback + 1 else None
+            on = trigger is not None and close > trigger
+            symbols[symbol] = {
+                "on": bool(on), "close": close, "trigger": trigger,
+                "margin_pct": (close / trigger - 1.0) * 100.0
+                if trigger else None}
+    return {"as_of": str(view.now), "mode": mode,
+            "open_for_business": open_for_business,
+            "gates": gates, "symbols": symbols}
 
 
 def compute_targets(view, portfolio, params) -> dict[str, Decimal]:

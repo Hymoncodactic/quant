@@ -137,6 +137,17 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return {}
 
+    def _host_ok(self) -> bool:
+        """Refuse foreign Host headers (DNS-rebinding defense).
+
+        The server only ever binds loopback, so a legitimate request's Host
+        is a loopback name. A rebinding attack reaches the socket with the
+        attacker's hostname in Host; rejecting that breaks the attack
+        before any page (and the embedded write token) is served.
+        """
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        return host in ("127.0.0.1", "localhost", "[::1]", "::1")
+
     def _authorized(self) -> bool:
         """Writes need the token this server minted and embedded in its pages."""
         return self.headers.get(DASH_HEADER) == self.server.token
@@ -144,6 +155,8 @@ class _Handler(BaseHTTPRequestHandler):
     # -- routes --------------------------------------------------------
 
     def do_GET(self) -> None:                       # noqa: N802  stdlib name
+        if not self._host_ok():
+            return self._json(403, {"problem": "bad_host"})
         parsed = urlparse(self.path)
         route = parsed.path
         query = parse_qs(parsed.query)
@@ -171,6 +184,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.get_instruments(ctx))
             if route == "/api/manual":
                 return self._json(*api.get_manual(ctx))
+            if route == "/api/watch":
+                return self._json(*api.get_watch(ctx, collector))
+            if route == "/api/signals":
+                return self._json(*api.get_signals(ctx, collector))
             if route == "/api/sessions":
                 return self._json(*api.get_sessions(
                     ctx, int(_first(query, "days", api.SESSION_WINDOW_DAYS))))
@@ -180,6 +197,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(500, {"problem": "server_error", "detail": repr(exc)[:300]})
 
     def do_POST(self) -> None:                      # noqa: N802  stdlib name
+        if not self._host_ok():
+            return self._json(403, {"problem": "bad_host"})
         route = urlparse(self.path).path
         ctx, collector = self.server.ctx, self.server.collector
         if not self._authorized():
@@ -198,6 +217,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(*api.post_ledger_reset(ctx, body))
             if route == "/api/halt":
                 return self._json(*api.post_halt(ctx, body))
+            if route == "/api/strategy":
+                return self._json(*api.post_strategy(ctx, body))
             if route == "/api/manual":
                 return self._json(*api.post_manual(ctx, body))
             if route == "/api/shutdown":

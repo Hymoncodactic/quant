@@ -24,6 +24,18 @@
     <p class="note hidden" id="broker-why"></p>
   </section>
 
+  <section class="panel" id="strategy-panel">
+    <h2 id="strategy-heading"></h2>
+    <p class="note" id="strategy-note"></p>
+    <div class="row" id="strategy-state"></div>
+    <div class="row">
+      <button id="strategy-start-btn" class="primary"></button>
+      <button id="strategy-stop-btn"></button>
+      <span class="note" id="strategy-next"></span>
+    </div>
+    <p class="note" id="strategy-cycle"></p>
+  </section>
+
   <section class="panel" id="setup-panel">
     <h2 id="setup-heading"></h2>
     <p class="note" id="setup-intro"></p>
@@ -103,6 +115,22 @@
   <section class="panel">
     <h2 id="positions-heading"></h2>
     <div class="chart" id="positions-chart" style="height:280px"></div>
+  </section>
+
+  <section class="panel">
+    <h2 id="signals-heading"></h2>
+    <p class="note" id="signals-note"></p>
+    <div id="gates-wrap"></div>
+    <div class="chart" id="signals-chart" style="height:430px"></div>
+    <p class="note" id="signals-asof"></p>
+    <h3 id="signals-history-heading" style="margin-top:14px"></h3>
+    <div id="signals-history-wrap"></div>
+  </section>
+
+  <section class="panel">
+    <h2 id="watch-heading"></h2>
+    <p class="note" id="watch-note"></p>
+    <div class="watch-grid" id="watch-grid"></div>
   </section>
 
   <section class="panel">

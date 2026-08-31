@@ -76,3 +76,4 @@ import：
 
 2026-08-22 建立本文件，登记现有文件。
 2026-08-22 删除 `.gitkeep` 占位件，本目录已有实体文件与本说明，占位不再起作用（`CLAUDE.md` §4.2 第 6、8 条）。
+2026-08-31 a0_v0_0_1 新增只读 `signal_diagnostics`（阈值距离诊断，供看板），双闸公式抽为 `_trend_gate_values`/`_vol_gate_values` 两个取值助手，`_gates_open` 改为调用它们；`compute_targets` 行为未变（等价性测试守卫）。
