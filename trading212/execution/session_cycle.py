@@ -653,7 +653,7 @@ def _diff_to_intents(cycle: _Cycle, targets: dict[str, Decimal], ledger,
             + ledger.pending_signed_qty(symbol)
         delta = target - current
         sign = 1 if delta > 0 else -1
-        magnitude = abs(delta).quantize(risk_gate.T212_QTY_STEP,
+        magnitude = abs(delta).quantize(risk_gate.qty_step(symbol),
                                         rounding=ROUND_DOWN)
         if magnitude == 0:
             continue

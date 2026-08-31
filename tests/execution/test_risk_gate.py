@@ -155,3 +155,36 @@ def test_a_buy_before_any_sell_still_fails_on_the_starting_cash(tmp_path):
                            in_submit_window=True, halt_path=tmp_path / "halt")
     assert [i.symbol for i in report.approved] == ["NVDA"]
     assert any("insufficient_free_for_stocks_buy" in r for _, r in report.rejected)
+
+
+# ============================================================================
+# Per-symbol quantity precision (2026-08-31 first live session: INTC rejected
+# with "invalid quantity precision 3" while 4-decimal siblings passed)
+# ============================================================================
+
+def test_intc_quantity_floors_to_three_decimals():
+    from decimal import Decimal
+    from trading212.execution.risk_gate import QTY_STEP_OVERRIDES, qty_step
+    assert qty_step("INTC") == Decimal("0.001")
+    assert qty_step("NVDA") == Decimal("0.0001")
+    assert "INTC" in QTY_STEP_OVERRIDES
+
+
+def test_gate_trims_intc_to_its_step():
+    from decimal import Decimal
+    from trading212.execution.risk_gate import OrderIntent, _check_one
+
+    class _View:
+        positions = {}
+        pending_signed_qty = {}
+        cash_gbp = Decimal("1000")
+        available_cash_gbp = Decimal("1000")
+
+    intent = OrderIntent(intent_id="x", symbol="INTC", ticker="INTC_US_EQ",
+                         quantity=Decimal("0.8326"),
+                         ref_price_usd=Decimal("89.5"),
+                         fx_usd_per_gbp=Decimal("1.35"))
+    out = _check_one(intent, _View(), max_order=Decimal("70"),
+                     min_value=Decimal("1"))
+    assert not isinstance(out, str)
+    assert out.quantity == Decimal("0.832")

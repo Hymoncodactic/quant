@@ -62,7 +62,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["OrderIntent", "GateReport", "check_intents", "halt_active",
-           "T212_QTY_STEP", "REQUIRED_RISK_KEYS"]
+           "T212_QTY_STEP", "QTY_STEP_OVERRIDES", "qty_step", "REQUIRED_RISK_KEYS"]
 
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_DOWN
@@ -82,6 +82,22 @@ log = get_logger("t212.execution")
 # (WORKING_MEMORY open item 13). 4 dp is therefore the conservative floor;
 # the strategy already quantizes to the same step.
 T212_QTY_STEP = Decimal("0.0001")
+
+# Per-symbol overrides where the venue rejects the default 4-decimal step.
+# The venue publishes NO precision metadata (instruments endpoint carries
+# only maxOpenQuantity); every entry here is an EMPIRICAL fact from a real
+# rejection, recorded with its evidence. First live session 2026-08-31:
+# INTC order of 0.8326 rejected with "quantity-precision-mismatch: invalid
+# quantity precision 3" (traceId 695304f478dbe5e5fe98f642539baa6b) while
+# fifteen 4-decimal siblings were accepted -- precision is per instrument.
+QTY_STEP_OVERRIDES: dict[str, Decimal] = {
+    "INTC": Decimal("0.001"),
+}
+
+
+def qty_step(symbol: str) -> Decimal:
+    """The order-quantity step for one symbol (override or default)."""
+    return QTY_STEP_OVERRIDES.get(symbol, T212_QTY_STEP)
 
 # Every one of these must be present and positive in cfg["risk"]; the gate
 # fails closed otherwise. Values are the user's call, not code defaults.
@@ -252,9 +268,10 @@ def _check_one(intent: OrderIntent, ledger_view, max_order: Decimal,
         return "non-positive reference price or FX"
 
     quantity = intent.quantity
-    magnitude = abs(quantity).quantize(T212_QTY_STEP, rounding=ROUND_DOWN)
+    step = qty_step(intent.symbol)
+    magnitude = abs(quantity).quantize(step, rounding=ROUND_DOWN)
     if magnitude == 0:
-        return f"below quantity step {T212_QTY_STEP}"
+        return f"below quantity step {step}"
 
     if quantity < 0:
         held = ledger_view.positions.get(intent.symbol, Decimal("0"))
@@ -265,7 +282,8 @@ def _check_one(intent: OrderIntent, ledger_view, max_order: Decimal,
         if sellable <= 0:
             return "sell with no strategy-owned position (never short)"
         if magnitude > sellable:
-            magnitude = sellable.quantize(T212_QTY_STEP, rounding=ROUND_DOWN)
+            magnitude = sellable.quantize(qty_step(intent.symbol),
+                                          rounding=ROUND_DOWN)
             if magnitude == 0:
                 return "held quantity rounds to zero at the venue step"
 
