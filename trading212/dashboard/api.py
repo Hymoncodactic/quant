@@ -421,9 +421,12 @@ def post_strategy(ctx, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"daemon_{ctx.env}.log"
         with open(log_path, "a") as sink:
+            # caffeinate -i holds off IDLE sleep while the daemon lives, so
+            # an unattended Mac stays awake through the decision window. It
+            # cannot prevent lid-close sleep -- that stays on the ops card.
             process = subprocess.Popen(
-                [sys.executable, "-m", "trading212.execution.run_a0",
-                 "daemon"],
+                ["/usr/bin/caffeinate", "-i", sys.executable, "-m",
+                 "trading212.execution.run_a0", "daemon"],
                 cwd=str(Path(__file__).resolve().parents[2]),
                 env={**os.environ, "QUANT_ENV": ctx.env},
                 stdout=sink, stderr=sink, start_new_session=True)

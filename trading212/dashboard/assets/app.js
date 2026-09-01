@@ -532,11 +532,30 @@
       [L.kpi.account_total, summary ? money(summary.totalValue) : L.app.unknown],
       [L.kpi.account_free, summary ? money(cash.availableToTrade) : L.app.unknown]
     ];
-    $("kpis").innerHTML = rows.map(function (r) {
+    /* The two marked figures (strategy equity and holdings value) are only
+       as fresh as the quotes behind them. Outside market hours those quotes
+       stop at the last regular close while the broker keeps marking with
+       overnight prices, so the gap against the account total is expected --
+       say so instead of letting the reader hunt for a phantom bug. */
+    var quotes = snap.quotes || {};
+    var oldest = null;
+    Object.keys(book.marked || {}).forEach(function (sym) {
+      var q = quotes[sym];
+      if (q && q.ok && q.ts && (oldest === null || q.ts < oldest)) oldest = q.ts;
+    });
+    var priceStale = Object.keys(book.marked || {}).some(function (sym) {
+      var q = quotes[sym];
+      return q && q.stale;
+    });
+    $("kpis").innerHTML = rows.map(function (r, i) {
       var dim = (r[1] === L.app.unknown || r[1] === L.kpi.no_price) ? " dim" : "";
+      if (priceStale && (i === 0 || i === 2)) dim = " dim";
       return "<div class='kpi'><div class='k'>" + r[0] +
              "</div><div class='v" + dim + "'>" + r[1] + "</div></div>";
     }).join("");
+    text("kpi-caliber", priceStale && oldest
+      ? L.kpi.stale_note.replace("{when}", localTime(oldest))
+      : L.kpi.fresh_note);
   }
 
   function paintBrokerWhy() {
@@ -644,34 +663,95 @@
     return { x: x, y: y };
   }
 
+  var equityWired = false;
+  var fittingY = false;
+  var userXRange = null;   /* set while the reader is zoomed/panned in */
+
+  function fitEquityY(x0, x1) {
+    /* Fit the y range so the visible data spans about 95% of the plot
+       height. The window is the CURRENT x range (wheel-zoomed or panned),
+       so zooming in re-reads the local extremes instead of keeping the
+       global scale, which is what makes zooming feel proportional. */
+    var lo = null, hi = null;
+    LAST_ROWS.forEach(function (r) {
+      if (r.gap) return;
+      var v = r.holdings_gbp;
+      if (v === null || v === undefined) return;
+      var t = inZone(r.ts);
+      if (x0 !== null && (t < x0 || t > x1)) return;
+      if (lo === null || v < lo) lo = v;
+      if (hi === null || v > hi) hi = v;
+    });
+    if (lo === null) return;
+    var span = hi - lo;
+    var pad = span > 0 ? span * 0.0263 : Math.max(Math.abs(hi) * 0.01, 1);
+    fittingY = true;
+    Plotly.relayout("equity-chart",
+                    { "yaxis.range": [lo - pad, hi + pad] })
+      .then(function () { fittingY = false; })
+      .catch(function () { fittingY = false; });
+  }
+
   function drawEquity(rows) {
     LAST_ROWS = rows;
     var empty = !rows.length;
     $("equity-empty").classList.toggle("hidden", !empty);
     $("equity-chart").classList.toggle("hidden", empty);
     if (empty) return;
-    var eq = splitOnGaps(rows, "equity_gbp");
-    var ca = splitOnGaps(rows, "cash_gbp");
     var ho = splitOnGaps(rows, "holdings_gbp");
-    var ac = splitOnGaps(rows, "account_total");
     var traces = [
-      { x: eq.x, y: eq.y, name: L.charts.equity_series, type: "scatter",
-        mode: "lines", line: { color: "#4c8dff", width: 2 },
-        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.equity_series + "</extra>" },
-      { x: ca.x, y: ca.y, name: L.charts.cash_series, type: "scatter",
-        mode: "lines", line: { color: "#38b26b", width: 1.4 },
-        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.cash_series + "</extra>" },
       { x: ho.x, y: ho.y, name: L.charts.holdings_series, type: "scatter",
-        mode: "lines", line: { color: "#d99a2b", width: 1.4 },
-        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.holdings_series + "</extra>" },
-      { x: ac.x, y: ac.y, name: L.charts.account_series, type: "scatter",
-        mode: "lines", line: { color: "#98a1b3", width: 1.2, dash: "dot" },
-        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" + L.charts.account_series + "</extra>" }
+        mode: "lines", line: { color: "#d99a2b", width: 2 },
+        hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" +
+                       L.charts.holdings_series + "</extra>" }
     ];
     var layout = JSON.parse(JSON.stringify(LAYOUT_BASE));
     layout.yaxis.title = { text: L.charts.equity_y, font: { size: 11 } };
     layout.shapes = sessionBands(rows);
-    Plotly.react("equity-chart", traces, layout, CONFIG);
+    layout.showlegend = false;
+    layout.dragmode = "pan";
+    /* The wheel zooms the TIME axis only, anchored at the cursor (Plotly's
+       scroll zoom is proportional by construction); the y axis never zooms
+       by hand -- it follows the visible window via fitEquityY. */
+    layout.yaxis.fixedrange = true;
+    var cfg = JSON.parse(JSON.stringify(CONFIG));
+    cfg.scrollZoom = true;
+    cfg.doubleClick = "reset";
+    if (userXRange) {
+      layout.xaxis.range = userXRange.slice();
+      layout.xaxis.autorange = false;
+    }
+    var chart = $("equity-chart");
+    Plotly.react(chart, traces, layout, cfg).then(function () {
+      if (!equityWired) {
+        equityWired = true;
+        chart.on("plotly_relayout", function (ev) {
+          /* Wheel and drag emit xaxis.range[0]/[1]; programmatic relayout
+             and some gestures emit xaxis.range as a pair. Accept both.
+             The chosen window is remembered so the 30-second data refresh
+             repaints INSIDE it instead of snapping back to the full span;
+             a double-click (autorange) forgets it. */
+          if (fittingY || !ev) return;
+          var pair = ev["xaxis.range"];
+          var x0 = ev["xaxis.range[0]"] !== undefined
+            ? ev["xaxis.range[0]"] : (pair ? pair[0] : undefined);
+          var x1 = ev["xaxis.range[1]"] !== undefined
+            ? ev["xaxis.range[1]"] : (pair ? pair[1] : undefined);
+          if (x0 !== undefined) {
+            userXRange = [x0, x1];
+            fitEquityY(x0, x1);
+          } else if (ev["xaxis.autorange"] || ev.autosize) {
+            userXRange = null;
+            fitEquityY(null, null);
+          }
+        });
+      }
+      if (userXRange) {
+        fitEquityY(userXRange[0], userXRange[1]);
+      } else {
+        fitEquityY(null, null);
+      }
+    });
   }
 
   function drawPositions() {
@@ -707,7 +787,12 @@
       $("adjust-field").classList.toggle("hidden", !hasBook);
       var book = s.book || {};
       if (book.cash_gbp !== null && book.cash_gbp !== undefined) {
-        text("adjust-current", L.setup.money_current + " " + money(book.cash_gbp));
+        var eqTxt = (book.equity_gbp === null || book.equity_gbp === undefined)
+          ? L.kpi.no_price : money(book.equity_gbp);
+        text("adjust-current", L.setup.money_current + " " +
+             L.setup.money_current_equity + " " + eqTxt + " | " +
+             L.setup.money_current_cash + " " + money(book.cash_gbp) + " " +
+             L.setup.money_current_note);
       }
       text("halt-state", s.halted ? L.controls.halt_on : L.controls.halt_off);
       $("halt-raise-btn").disabled = !!s.halted;
@@ -725,6 +810,7 @@
       if (id === RANGE_ID) btn.className = "on";
       btn.onclick = function () {
         RANGE_ID = id;
+        userXRange = null;   /* a range button defines a fresh window */
         localStorage.setItem("dash.range", id);
         [].forEach.call(bar.children, function (b) {
           b.className = b.dataset.range === id ? "on" : "";
@@ -815,6 +901,24 @@
           err.classList.remove("hidden");
         }
       });
+    };
+    $("adjust-input").oninput = function () {
+      var out = $("adjust-preview");
+      if (!out) return;
+      var v = parseFloat($("adjust-input").value);
+      var snap = (STATE || {}).snapshot || {};
+      var book = snap.book || {};
+      if (isNaN(v) || v === 0 || book.cash_gbp === undefined) {
+        out.textContent = ""; return;
+      }
+      var cashAfter = Number(book.cash_gbp) + v;
+      if (cashAfter < 0) { out.textContent = L.setup.money_preview_bad; return; }
+      var eqAfter = (book.equity_gbp === null || book.equity_gbp === undefined)
+        ? null : Number(book.equity_gbp) + v;
+      out.textContent = L.setup.money_preview
+        .replace("{cash_after}", money(cashAfter))
+        .replace("{equity_after}", eqAfter === null ? L.app.unknown
+                                                    : money(eqAfter));
     };
     $("adjust-btn").onclick = function () {
       var err = $("adjust-err");

@@ -179,6 +179,7 @@ class _Daemon:
         self._calendar_at = 0.0
         self._notified: set[str] = set()
         self._abort_streak = 0
+        self.started_at = pd.Timestamp.now(tz="UTC")
 
     def _notify_once(self, key: str, title: str, message: str) -> None:
         """Desktop-notify the first occurrence of one failure key only.
@@ -393,6 +394,33 @@ class _Daemon:
             return True
 
 
+def _notify_missed_sessions(daemon: "_Daemon", sessions: list,
+                            now: pd.Timestamp, lead_sec: int) -> None:
+    """Tell an armed owner, once per session, that a window went untraded.
+
+    Covers every way a window can slip past on this daemon's watch: the
+    machine slept through it (the planner then skips straight to the next
+    session, so no per-session branch ever fires), every attempt aborted,
+    or the network was down for the whole half hour. Sessions whose window
+    predates this daemon's start are not its to report.
+    """
+    for sess in sessions:
+        sid = str(sess.date_ny)
+        if not sess.is_full:
+            continue
+        submit_at = sess.close_utc - pd.Timedelta(seconds=lead_sec)
+        if now <= submit_at:
+            break  # this window and everything later is still ahead
+        if sid == daemon.decided_session or sid in daemon.settled_sessions:
+            continue
+        if instruments.decision_key(sess) < daemon.started_at:
+            continue
+        daemon._notify_once(f"missed:{sid}",
+                            "A0 daemon: session not decided",
+                            f"{sid}: the decision window passed without "
+                            f"a submission")
+
+
 # ============================================================================
 # [3] The loop
 # ============================================================================
@@ -467,8 +495,11 @@ def run(venue: str = "t212") -> int:
                     daemon.stop.wait(SETTLE_RETRY_SEC)
                 continue
 
+            if not dry_run:
+                _notify_missed_sessions(daemon, sessions, now, lead)
             detail = {"wait_decide": "sleeping until the decision window",
                       "wait_settle": "awaiting the close",
+                      "settle": "harvesting and reconciling",
                       "idle": "no upcoming session in the timetable"}[action]
             daemon.write_status(action, detail, at, sid, dry_run)
             remaining = (at - pd.Timestamp.now(tz="UTC")).total_seconds()
