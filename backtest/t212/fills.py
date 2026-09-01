@@ -80,7 +80,8 @@ def fill_order(broker: "T212BrokerSim", order: Order, bar: Bar, raw: Decimal,
             exec_price = min(exec_price, spec.limit_price) if is_buy \
                 else max(exec_price, spec.limit_price)
     else:
-        slip = broker.cost_cfg.slippage_bps if extra_bps is None else extra_bps
+        slip = broker.cost_cfg.slippage_for(spec.symbol) \
+            if extra_bps is None else extra_bps
         exec_price = apply_spread(raw, is_buy, hs, slip)
 
     qty = order.remaining_qty

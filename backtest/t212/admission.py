@@ -91,7 +91,7 @@ def estimated_buy_cost(broker: "T212BrokerSim", spec: OrderSpec,
     else:
         ref = Decimal(str(bar.close))
     exec_est = apply_spread(ref, True, broker.half_spread(spec.symbol, key),
-                            broker.cost_cfg.slippage_bps)
+                            broker.cost_cfg.slippage_for(spec.symbol))
     fx_mid = None
     if bar.quote_ccy == "USD":
         fx_mid = broker.fx.rate_at(broker.fx_query_ts(key))

@@ -73,6 +73,7 @@ def try_same_close_fill(broker: "T212BrokerSim", order: Order,
     if bar is None or not broker.cooldown_ok(order, key):
         return None
     raw = Decimal(str(bar.close))
-    extra = broker.cost_cfg.slippage_bps + broker.cost_cfg.close_gap_bps
+    extra = broker.cost_cfg.slippage_for(spec.symbol) \
+        + broker.cost_cfg.close_gap_bps
     return fill_order(broker, order, bar, raw, broker.current_step, key,
                       ledger, extra_bps=extra, at_close=True)

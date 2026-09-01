@@ -85,6 +85,9 @@ Inputs: None. Pure arithmetic over the arguments passed in; no file or network
 Outputs: None.
 
 Change log:
+    2026-09-01  slippage_bps_by_symbol + slippage_for(): per-symbol slippage
+                overrides for measured tables; empty default keeps the flat
+                behavior byte for byte.
     2026-08-22  Header expanded to the six-section spec; the fact sources of
                 the previous header and of the inline constant comments are
                 carried over into "Parameters and constants".
@@ -99,7 +102,7 @@ __all__ = ["CostConfig", "price_to_gbp", "apply_spread", "fill_cash_and_costs",
            "PTM_THRESHOLD_GBP", "FINRA_TAF_USD_PER_SHARE", "SEC_FEE_RATE",
            "FRENCH_FTT_RATE", "MIN_ORDER_VALUE_GBP"]
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 # ============================================================================
@@ -144,6 +147,12 @@ class CostConfig:
     (docs/backtest/framework/04_cost_model.md section 6)."""
     fx_fee_rate: Decimal = FX_FEE_RATE
     slippage_bps: Decimal = Decimal("5")   # zipline FixedBasisPointsSlippage default
+    # Per-symbol slippage overrides, in bps per leg, on top of the half
+    # spread. Empty (the default) reproduces the flat slippage_bps for every
+    # symbol byte for byte; a measured table (e.g. the 2026-08-31 demo run,
+    # data/reference/t212_demo_slippage_by_symbol_20260831.csv) is injected
+    # here by the entry layer. Resolution goes through slippage_for().
+    slippage_bps_by_symbol: dict[str, Decimal] = field(default_factory=dict)
     spread_session_multiplier: Decimal = Decimal("2")  # INFERRED, section 4.4
     ptm_levy_on_etf: bool = True           # unverified whether T212 charges; conservative
     min_order_value_gbp: Decimal = MIN_ORDER_VALUE_GBP
@@ -169,6 +178,10 @@ class CostConfig:
     # to count as a same-close fill; a latency draw beyond it spills the
     # order to the next open (user statement: last minute is feasible).
     close_window_sec: int = 60
+
+    def slippage_for(self, symbol: str) -> Decimal:
+        """Per-leg slippage for one symbol: the override, else the flat value."""
+        return self.slippage_bps_by_symbol.get(symbol, self.slippage_bps)
 
     @staticmethod
     def actual_tier() -> "CostConfig":

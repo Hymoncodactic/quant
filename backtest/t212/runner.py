@@ -134,7 +134,7 @@ def liquidation_valuer(broker: T212BrokerSim):
     def to_liquidation(symbol: str, bar: Bar, key: pd.Timestamp) -> Decimal:
         exec_price = apply_spread(Decimal(str(bar.close)), False,
                                   broker.half_spread(symbol, key),
-                                  broker.cost_cfg.slippage_bps)
+                                  broker.cost_cfg.slippage_for(symbol))
         fx_mid = None
         if bar.quote_ccy == "USD":
             fx_mid = broker.fx.rate_at(broker.fx_query_ts(key))
