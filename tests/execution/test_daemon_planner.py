@@ -197,3 +197,34 @@ def test_notify_once_deduplicates(tmp_path, monkeypatch):
     for _ in range(5):
         d._notify_once("k1", "t", "m")
     assert len(calls) == 1
+
+
+def test_slept_through_window_notifies_once(tmp_path, monkeypatch):
+    """A machine that slept through the whole window must tell the armed
+    owner the session went untraded, exactly once -- even though the
+    planner itself skips straight past such a session."""
+    daemon_mod, d = _daemon(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(daemon_mod, "notify",
+                        lambda title, msg: calls.append(title) or True)
+    d.started_at = pd.Timestamp("2026-08-31 10:00:00+00:00")
+    table = [_session("2026-08-28"), _session("2026-08-31"),
+             _session("2026-09-01")]
+    wake = pd.Timestamp("2026-08-31 21:00:00+00:00")  # past close+delay
+    for _ in range(3):
+        daemon_mod._notify_missed_sessions(d, table, wake, LEAD)
+    # 08-28 predates the daemon; 09-01 is still ahead; only 08-31 fires.
+    assert calls == ["A0 daemon: session not decided"]
+
+
+def test_decided_or_settled_sessions_are_not_reported(tmp_path, monkeypatch):
+    daemon_mod, d = _daemon(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(daemon_mod, "notify",
+                        lambda title, msg: calls.append(title) or True)
+    d.started_at = pd.Timestamp("2026-08-31 10:00:00+00:00")
+    d.decided_session = "2026-08-31"
+    table = [_session("2026-08-31")]
+    daemon_mod._notify_missed_sessions(
+        d, table, pd.Timestamp("2026-08-31 21:00:00+00:00"), LEAD)
+    assert calls == []
