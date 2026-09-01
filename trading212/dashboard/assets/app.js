@@ -532,11 +532,30 @@
       [L.kpi.account_total, summary ? money(summary.totalValue) : L.app.unknown],
       [L.kpi.account_free, summary ? money(cash.availableToTrade) : L.app.unknown]
     ];
-    $("kpis").innerHTML = rows.map(function (r) {
+    /* The two marked figures (strategy equity and holdings value) are only
+       as fresh as the quotes behind them. Outside market hours those quotes
+       stop at the last regular close while the broker keeps marking with
+       overnight prices, so the gap against the account total is expected --
+       say so instead of letting the reader hunt for a phantom bug. */
+    var quotes = snap.quotes || {};
+    var oldest = null;
+    Object.keys(book.marked || {}).forEach(function (sym) {
+      var q = quotes[sym];
+      if (q && q.ok && q.ts && (oldest === null || q.ts < oldest)) oldest = q.ts;
+    });
+    var priceStale = Object.keys(book.marked || {}).some(function (sym) {
+      var q = quotes[sym];
+      return q && q.stale;
+    });
+    $("kpis").innerHTML = rows.map(function (r, i) {
       var dim = (r[1] === L.app.unknown || r[1] === L.kpi.no_price) ? " dim" : "";
+      if (priceStale && (i === 0 || i === 2)) dim = " dim";
       return "<div class='kpi'><div class='k'>" + r[0] +
              "</div><div class='v" + dim + "'>" + r[1] + "</div></div>";
     }).join("");
+    text("kpi-caliber", priceStale && oldest
+      ? L.kpi.stale_note.replace("{when}", localTime(oldest))
+      : L.kpi.fresh_note);
   }
 
   function paintBrokerWhy() {
