@@ -127,14 +127,14 @@
     "saved_need_ledger": "已保存，还差策略账本",
     "unsaved": "有改动还没保存",
     "over_account": "注意：这个额度比账户当前可用现金多。账户里的钱不够时，买单会被券商拒绝。",
-    "money_current": "当前策略资金",
-    "money_adjust_heading": "调整策略资金",
-    "money_adjust_hint": "账上钱多了想加大策略容量，或者想收回一部分，都在这里改。填正数是增加，填负数是收回。这只是改记账额度，不会真的划钱。",
-    "money_adjust_placeholder": "例如 500 或 -200",
+    "money_current": "当前",
+    "money_adjust_heading": "注资 / 收回（策略资金变动）",
+    "money_adjust_hint": "这里填的是**变动额（差额）**，不是目标值：填 500 = 给策略多划 500 记账额度，填 -200 = 收回 200。只改记账，不会立刻买卖任何东西；新划入的钱要到下一次决策（纽约 15:30）才会按槽位规则用于**新开仓**，已有持仓不会因此加仓，更不会推倒重买。收回的上限是当前策略现金——已经变成持仓的部分要等策略自己卖出后才能收回。注资后记得把右边的「最大持仓额度」一起调大，那是另一道独立的硬上限。",
+    "money_adjust_placeholder": "填变动额：如 500（注资）或 -200（收回）",
     "money_adjust_btn": "调整",
     "money_adjust_done": "已调整",
     "reset_btn": "清空策略账本",
-    "reset_hint": "策略资金只在建账本时定一次。要换一个数额，就在这里清空后重建。旧账本不会被删掉，只是改名归档，随时还能翻。",
+    "reset_hint": "清空重建是给「想从零开始换个起点」用的：旧账本改名归档（不会丢），持仓必须先清干净才允许。平时加减策略资金用上面的注资/收回即可，不需要清空。",
     "reset_confirm": "确定要清空策略账本吗？清空后策略资金要重新设定。旧账本会改名归档，不会丢。",
     "reset_done": "已清空，可以重新设定策略资金",
     "reset_blocked_title": "现在还不能清空",
@@ -143,7 +143,12 @@
       "no_positions": "还有持仓没清掉",
       "no_open_orders": "还有委托没收完",
       "no_ambiguity": "有下单结果不明的委托没处理完"
-    }
+    },
+    "money_current_equity": "策略总资产",
+    "money_current_cash": "其中现金",
+    "money_current_note": "（总资产=现金+持仓按最新报价估值，即策略定仓位所用的口径）",
+    "money_preview": "调整后：现金 {cash_after}，总资产约 {equity_after}",
+    "money_preview_bad": "收回额超过当前现金，会被拒绝"
   },
   "controls": {
     "heading": "实时数据",

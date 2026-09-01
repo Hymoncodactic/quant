@@ -726,7 +726,12 @@
       $("adjust-field").classList.toggle("hidden", !hasBook);
       var book = s.book || {};
       if (book.cash_gbp !== null && book.cash_gbp !== undefined) {
-        text("adjust-current", L.setup.money_current + " " + money(book.cash_gbp));
+        var eqTxt = (book.equity_gbp === null || book.equity_gbp === undefined)
+          ? L.kpi.no_price : money(book.equity_gbp);
+        text("adjust-current", L.setup.money_current + " " +
+             L.setup.money_current_equity + " " + eqTxt + " | " +
+             L.setup.money_current_cash + " " + money(book.cash_gbp) + " " +
+             L.setup.money_current_note);
       }
       text("halt-state", s.halted ? L.controls.halt_on : L.controls.halt_off);
       $("halt-raise-btn").disabled = !!s.halted;
@@ -834,6 +839,24 @@
           err.classList.remove("hidden");
         }
       });
+    };
+    $("adjust-input").oninput = function () {
+      var out = $("adjust-preview");
+      if (!out) return;
+      var v = parseFloat($("adjust-input").value);
+      var snap = (STATE || {}).snapshot || {};
+      var book = snap.book || {};
+      if (isNaN(v) || v === 0 || book.cash_gbp === undefined) {
+        out.textContent = ""; return;
+      }
+      var cashAfter = Number(book.cash_gbp) + v;
+      if (cashAfter < 0) { out.textContent = L.setup.money_preview_bad; return; }
+      var eqAfter = (book.equity_gbp === null || book.equity_gbp === undefined)
+        ? null : Number(book.equity_gbp) + v;
+      out.textContent = L.setup.money_preview
+        .replace("{cash_after}", money(cashAfter))
+        .replace("{equity_after}", eqAfter === null ? L.app.unknown
+                                                    : money(eqAfter));
     };
     $("adjust-btn").onclick = function () {
       var err = $("adjust-err");
