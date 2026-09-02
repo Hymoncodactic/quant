@@ -150,6 +150,16 @@ PUBLISH_LAG_MONTH_DAYS = 10
 # anything beyond that is a partial response and the stored copy is kept.
 TRUNCATION_TOLERANCE = pd.Timedelta(days=7)
 
+# Window fetched for the daily pass. Two years covers the current calendar year
+# in full, which is all that gets rewritten when prices were not restated, and
+# still reaches far enough back to anchor the restatement check.
+DAILY_WINDOW_DAYS = 730
+
+# Consecutive symbol failures that mean the source has stopped serving rather
+# than that one symbol is bad. Grinding on past this point wastes hours and
+# hardens the throttle.
+FAILURE_CIRCUIT_BREAK = 25
+
 
 def _crypto_out(market: str, dataset: str, symbol: str, period: str | None,
                 date_str: str) -> Path:
@@ -197,7 +207,20 @@ def _wanted_months(have: set[str]) -> list[str]:
 
 
 def _wanted_days(have: set[str], since: date | None = None) -> list[str]:
-    """Return the day labels to fetch for a daily dataset."""
+    """Return the day labels to fetch for a daily dataset, excluding what is stored.
+
+    Days already on disk are dropped in both modes. An archive day is immutable
+    once published, so refetching one buys nothing; the earlier version skipped
+    that filter whenever `since` was given, which made every run re-download the
+    whole current month. On a link measured at 1.6 MB/s that was roughly 1.3 GB
+    and thirteen minutes thrown away per run.
+
+    Args:
+        have: Date labels already stored, in both "YYYY-MM-DD" and "YYYY-MM" form.
+        since: Start the scan here instead of continuing from the newest stored
+            day. Used to cover the stretch no monthly file spans yet, where the
+            newest stored day is not the right anchor.
+    """
     today = datetime.now(timezone.utc).date()
     if since is not None:
         start = since
@@ -208,7 +231,8 @@ def _wanted_days(have: set[str], since: date | None = None) -> list[str]:
     end = today - timedelta(days=PUBLISH_LAG_DAYS)
     if start > end:
         return []
-    return [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+    span = ((start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1))
+    return [day for day in span if day not in have]
 
 
 def _current_month_days(have: set[str]) -> list[str]:
@@ -292,7 +316,9 @@ def _update_crypto() -> dict:
 def _update_equity() -> dict:
     """Refresh every stored equity symbol, maintaining only the intervals it has."""
     stats = {"updated": 0, "skipped": 0, "readjusted": 0, "files": 0, "rows": 0,
-             "bytes": 0, "failed": [], "truncated": []}
+             "bytes": 0, "failed": [], "truncated": [], "full_fetch_failed": [],
+             "aborted": False}
+    consecutive_failures = 0
     print("\n" + "=" * 96)
     print("EQUITY  Yahoo, symbols discovered from disk")
     print("=" * 96, flush=True)
@@ -307,14 +333,27 @@ def _update_equity() -> dict:
         for index, ticker in enumerate(symbols, 1):
             intervals = yb.stored_intervals(group, ticker)
 
-            # The daily fetch doubles as the probe: it is needed anyway when the
-            # symbol has moved, so probing separately would double the requests
-            # across fifteen hundred symbols for no gain.
-            frame = yb.fetch_interval(ticker, "1d", None, None)
+            # The daily pass uses a two-year window, not the full history.
+            # period="max" measured 9.55 seconds and succeeded on one attempt in
+            # three, against 0.57 seconds and three-for-three at two years. Using
+            # it as the daily probe made a fifteen-hundred-symbol pass take four
+            # hours in the best case, and when Yahoo throttled it turned into a
+            # multi-day retry storm because every symbol burned its full back-off
+            # ladder. Full history is now fetched only when it is actually needed:
+            # for a symbol never stored, or one whose prices were restated.
+            frame = yb.fetch_interval(ticker, "1d", DAILY_WINDOW_DAYS, None)
             time.sleep(yb.PACE_SEC)
             if frame.empty:
                 stats["failed"].append(f"{ticker}/1d")
+                consecutive_failures += 1
+                if consecutive_failures >= FAILURE_CIRCUIT_BREAK:
+                    print(f"\n  {consecutive_failures} symbols failed in a row; "
+                          f"the source is refusing traffic. Stopping rather than "
+                          f"grinding through the rest. Re-run later.", flush=True)
+                    stats["aborted"] = True
+                    return stats
                 continue
+            consecutive_failures = 0
 
             stored_max = yb.latest_stored(group, ticker, "1d")
             if (stored_max is not None and frame["ts"].max() <= stored_max
@@ -326,35 +365,40 @@ def _update_equity() -> dict:
                           flush=True)
                 continue
 
-            # A retroactive adjustment rewrites history all the way back, so the
-            # oldest close is the cheapest tell. Unchanged means only the current
-            # year can differ.
-            #
-            # The date is checked before the close. A response that starts years
-            # later than what is stored is a truncated fetch, not an adjustment,
-            # and rewriting on that basis would leave the older files on the old
-            # basis and the newer ones on a new one. In that case the stored
-            # history is the better copy: only the current year is refreshed and
-            # the symbol is reported, so a shrinking history is visible rather
-            # than silently absorbed.
-            stored_first = yb.earliest_bar(group, ticker)
-            fetched_first_ts = frame["ts"].min()
-            fetched_first_close = float(frame["close"].iloc[0])
+            # Decide whether history was restated by comparing one bar from the
+            # far end of the window against the stored copy of that same bar.
+            anchor_ts = frame["ts"].min()
+            fetched_anchor = float(frame.loc[frame["ts"] == anchor_ts, "close"].iloc[0])
+            stored_anchor = yb.stored_close_at(group, ticker, anchor_ts)
 
-            truncated = (stored_first is not None
-                         and fetched_first_ts > stored_first[0] + TRUNCATION_TOLERANCE)
-            if truncated:
-                stats["truncated"].append(
-                    f"{ticker}: stored from {str(stored_first[0])[:10]}, "
-                    f"fetch from {str(fetched_first_ts)[:10]}")
-                readjusted = False
+            if stored_max is None:
+                need_full, reason = True, "never stored"
+            elif stored_anchor is None:
+                # The anchor date is absent from storage, so the two copies cannot
+                # be compared. Refetching in full is the safe reading.
+                need_full, reason = True, "anchor absent"
+            elif abs(fetched_anchor - stored_anchor) > max(
+                    1e-6, abs(stored_anchor) * 1e-6):
+                need_full, reason = True, "prices restated"
             else:
-                readjusted = stored_first is None or abs(
-                    fetched_first_close - stored_first[1]) > max(
-                        1e-6, abs(stored_first[1]) * 1e-6)
-            years = None if readjusted else {int(frame["ts"].max().year)}
-            if readjusted and stored_first is not None:
-                stats["readjusted"] += 1
+                need_full, reason = False, ""
+
+            if need_full:
+                full = yb.fetch_interval(ticker, "1d", None, None)
+                time.sleep(yb.PACE_SEC)
+                if full.empty:
+                    # The window fetch succeeded, so the symbol is fine and only
+                    # the heavy request failed. Write what is in hand rather than
+                    # losing the day, and report it.
+                    stats["full_fetch_failed"].append(f"{ticker} ({reason})")
+                    years = {int(frame["ts"].max().year)}
+                else:
+                    frame = full
+                    years = None
+                    if reason == "prices restated":
+                        stats["readjusted"] += 1
+            else:
+                years = {int(frame["ts"].max().year)}
 
             files, size = yb.write_daily(group, ticker, frame, years=years)
             stats["files"] += files
@@ -481,6 +525,12 @@ def main() -> None:
           f"{equity['readjusted']} had a retroactive adjustment (full rewrite)")
     print(f"          {equity['files']} files  {equity['rows']:,} rows  "
           f"{equity['bytes']/1e6:,.1f} MB")
+    if equity.get("aborted"):
+        print("  equity ABORTED early: too many consecutive failures. Re-run later.")
+    if equity.get("full_fetch_failed"):
+        print(f"  equity full-history refetch failed for "
+              f"{len(equity['full_fetch_failed'])} symbol(s); current year written "
+              f"from the window instead: {equity['full_fetch_failed'][:10]}")
     if equity["truncated"]:
         print(f"  equity truncated fetches ({len(equity['truncated'])}) -- stored history "
               f"kept, only the current year refreshed:")
