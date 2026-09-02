@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A0 + A1 合并回测 · 一池打满 vs 两池独立</title>
+<script>__PLOTLY_JS__</script>
+<style>
+:root{color-scheme:light;--bg:#f6f6f4;--surface:#fcfcfb;--border:#e2e1dc;--text:#0b0b0b;--muted:#52514e;--grid:#eceae5;
+ --c-merged:#2a78d6;--c-a0:#1baf7a;--c-a1:#e08a1e;--c-two:#8b5cf6;--c-dd:#e34948;--c-cash:#a8a7a0;}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#111110;--surface:#1a1a19;--border:#33322e;--text:#fff;--muted:#c3c2b7;--grid:#2a2926;}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#111110;--surface:#1a1a19;--border:#33322e;--text:#fff;--muted:#c3c2b7;--grid:#2a2926;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;line-height:1.5}
+.wrap{max-width:1280px;margin:0 auto;padding:24px 20px 60px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:34px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}th{color:var(--muted);font-weight:600}
+.pos{color:#1baf7a}.neg{color:#e34948}
+.btn{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;margin-right:6px}
+.btn[aria-pressed="true"]{background:var(--c-merged);color:#fff;border-color:var(--c-merged)}
+.chart{width:100%;height:420px}.chart.tall{height:520px}.chart.short{height:300px}
+.note{font-size:13px;color:var(--muted)}ol,ul{font-size:13px}
+.legend{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body><div class="wrap">
+<h1>A0 + A1 合并回测：一池 £1,000 每日打满 vs 两池各 £1,000 独立</h1>
+<div class="sub" id="sub"></div>
+<div><button class="btn" id="tier-worst" aria-pressed="true">最坏费率档（权威）</button><button class="btn" id="tier-actual" aria-pressed="false">实测费率档</button><button class="btn" id="tg-log" aria-pressed="false">对数坐标</button><button class="btn" id="theme">切换主题</button></div>
+
+<h2>1. 核心指标总表</h2>
+<div class="card"><table id="tbl-main"></table>
+<p class="note">口径：真实引擎，interval 1d，fill_timing same_close（收盘前约一分钟市价单、按收盘价成交），本金 £1,000（两池合计为 £2,000，其指标按 £2,000 计算）。年化与回撤为清算口径（若全部按卖出价卖出）。换手为双边成交名义额除以平均权益。</p></div>
+
+<h2>2. 净值曲线（相对本金）</h2>
+<div class="card"><div id="ch-eq" class="chart"></div></div>
+
+<h2>3. 回撤曲线</h2>
+<div class="card"><div id="ch-dd" class="chart short"></div></div>
+
+<h2>4. 合并账户的资金占用：A0 份额 / A1 份额 / 现金</h2>
+<div class="card"><div id="ch-occ" class="chart"></div><p class="note">按持仓市值归因：某日某标的若在 A1 当期名单内，其市值记入 A1；否则若属 A0 的 18 只记入 A0；现金 = 权益 − 两者之和。归因按中间价、权益按清算价（含卖出侧点差与滑点），差额并入现金并截断为 0，故现金份额略偏高。</p></div>
+
+<h2>5. 持仓数量与 A0 标的的持仓区间（合并账户）</h2>
+<div class="card"><div id="ch-cnt" class="chart short"></div><div id="ch-bands" class="chart tall"></div></div>
+
+<h2>6. 月度收益</h2>
+<div class="card"><div id="ch-mon" class="chart"></div><table id="tbl-mon"></table></div>
+
+<h2>7. 持仓时间分布与逐笔胜率</h2>
+<div class="card"><div id="ch-dur" class="chart short"></div><table id="tbl-ep"></table></div>
+
+<h2>8. 成本、成交与相关性</h2>
+<div class="card"><table id="tbl-cost"></table><table id="tbl-corr" style="margin-top:12px"></table></div>
+
+<h2>9. 口径、假设与限定</h2>
+<div class="card"><ol>
+<li><b>合并规则的读法</b>：A0 照常产生信号；A0 未开的槽位资金与它本会持有的现金，全部投入 A1 的当期 20 只名单；两者同时想持有的股票按 <span id="prio"></span> 的定量规则占用。A0 名下的持仓沿用 A0 的免加仓规则；A1 名下的持仓每日按「A0 之外的剩余资金」重定量，带 10% 免动带，被拒订单次日自动重试。</li>
+<li><b>A1 名单</b>：与 A1 规格一致（宽池 12-1 动量、每 21 个交易日重排、前 20/前 40 缓冲带、等权、无市场闸、因果流动性准入）。</li>
+<li><b>A0</b>：与现行 A0 完全一致（18 只、TSMOM252、QQQ 双闸、等槽、免加仓），历史自 2010-01-04 预热，2020-01-02 起用。</li>
+<li><b>存活者偏差</b>：两套标的池都是 2026 年的名单，所有绝对收益偏高；三条曲线共享该偏差，相对比较较可信。</li>
+<li><b>£1,000 的规模效应</b>：单仓约 £25–£55，T212 最小订单 £1 与 0.0001 股步进均不构成约束；但最坏档 5bp 滑点 + 11bp 收盘临近滑移 + 15bp 换汇按比例计，与 £10,000 回测的比例结论一致。</li>
+<li><b>窗口</b>：2020-01-02 至 2026-08-28，为 A1 的验证段（A1 在 2012–2019 上选出），A0 在此窗内非样本外。</li>
+<li>合并账户中 A0 的信号从其原模块读取；因 A0 只按自己看得见的资金定量，合并层用合成现金视图只取信号集、定量统一由合并层完成。</li>
+</ol></div>
+
+<h2>10. 来源</h2>
+<div class="card"><ul>
+<li>回测入口：<code>scripts/20260902_a0_a1_merge_backtest.py</code>；引擎结果件 <code>backtest/results/*_merged_*</code>、<code>*_a0_solo_*</code>、<code>*_a1_solo_*</code></li>
+<li>数据派生：<code>research/xsmom_wide/report/make_merge_report_data.py</code>；本页由 <code>build_merge_report.py</code> 拼装</li>
+<li>A1 规格：<code>trading212/strategy/a1_v0_0_1_spec.md</code>；A0：<code>trading212/strategy/a0_v0_0_1.py</code></li>
+<li>费率档定义：<code>backtest/t212/costs.py</code>（最坏档：换汇 0.15%/腿、半点差 1bp×2、滑点 5bp、收盘临近 11bp、15 项故障开关全开）</li>
+</ul></div>
+</div>
+<script id="payload" type="application/json">__DATA_JSON__</script>
+<script>
+const P = JSON.parse(document.getElementById('payload').textContent);
+const state = {tier:'worst', log:false};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const pct = v => (v==null||isNaN(v)) ? '—' : (v*100).toFixed(2)+'%';
+const num = (v,d=2) => (v==null||isNaN(v)) ? '—' : Number(v).toLocaleString('en-GB',{maximumFractionDigits:d,minimumFractionDigits:d});
+const arm = k => P.arms[k+'/'+state.tier];
+const S = P.sessions;
+document.getElementById('sub').textContent = `窗口 ${P.window[0]} 至 ${P.window[1]} · ${S.length} 个美股交易日 · 本金 £${num(P.capital,0)} · A1 重排 ${P.n_plan} 次 · 合并优先级：${P.priority.toUpperCase()}`;
+document.getElementById('prio').textContent = P.priority.toUpperCase();
+
+function baseLayout(extra){
+  return Object.assign({paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:css('--surface'),font:{color:css('--text'),size:12},
+    margin:{l:56,r:20,t:30,b:44},legend:{orientation:'h',y:1.08},xaxis:{gridcolor:css('--grid')},yaxis:{gridcolor:css('--grid')},hovermode:'x unified'},extra||{});
+}
+function cls(v){return v>0?'pos':(v<0?'neg':'')}
+
+function drawMain(){
+  const rows=[['merged','合并一池 £1,000'],['twopot','两池合计 £2,000'],['a0','A0 独立 £1,000'],['a1','A1 独立 £1,000']];
+  let h='<tr><th>臂</th><th>期末</th><th>总收益</th><th>CAGR</th><th>最大回撤</th><th>回撤区间</th><th>年化波动</th><th>夏普</th><th>Calmar</th><th>月胜率</th><th>最差月</th><th>逐笔胜率</th><th>平均持仓(日)</th><th>中位持仓(日)</th><th>换手(腿/年)</th><th>资金占用均值</th><th>成交</th><th>拒单</th><th>成本</th><th>换汇占比</th></tr>';
+  for(const [k,label] of rows){const a=arm(k); if(!a) continue; const m=a.metrics, e=a.episodes||{}, c=a.costs||{};
+    h+=`<tr><td>${label}</td><td>£${num(m.final)}</td><td class="${cls(m.total_return)}">${pct(m.total_return)}</td><td class="${cls(m.cagr)}">${pct(m.cagr)}</td><td class="neg">${pct(m.max_dd)}</td><td>${m.dd_peak}→${m.dd_trough}</td><td>${pct(m.ann_vol)}</td><td>${num(m.sharpe)}</td><td>${num(m.calmar)}</td><td>${pct(m.monthly_win)}</td><td class="neg">${pct(m.worst_month)} (${m.worst_month_label})</td><td>${e.win_rate==null?'—':pct(e.win_rate)}</td><td>${e.mean_days==null?'—':num(e.mean_days,1)}</td><td>${e.median_days==null?'—':num(e.median_days,0)}</td><td>${a.turnover_legs_per_yr==null?'—':num(a.turnover_legs_per_yr)}</td><td>${a.exposure_mean==null?'—':pct(a.exposure_mean)}</td><td>${a.fills??'—'}</td><td>${a.rejected??'—'}</td><td>£${num(c.total||0)}</td><td>${c.fx_share==null?'—':pct(c.fx_share)}</td></tr>`;}
+  document.getElementById('tbl-main').innerHTML=h;
+}
+function drawEq(){
+  const tr=[];const spec=[['merged','合并一池','--c-merged',1000],['twopot','两池合计','--c-two',2000],['a0','A0 独立','--c-a0',1000],['a1','A1 独立','--c-a1',1000]];
+  for(const [k,n,c,b] of spec){const a=arm(k); if(!a) continue; tr.push({x:S,y:a.curve.map(v=>v/b),name:n,mode:'lines',line:{color:css(c),width:k==='merged'?2.2:1.4}});}
+  Plotly.react('ch-eq',tr,baseLayout({yaxis:{title:'净值 / 本金',type:state.log?'log':'linear',gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+}
+function drawDd(){
+  const tr=[];const spec=[['merged','合并一池','--c-merged'],['twopot','两池合计','--c-two'],['a0','A0 独立','--c-a0'],['a1','A1 独立','--c-a1']];
+  for(const [k,n,c] of spec){const a=arm(k); if(!a) continue; tr.push({x:S,y:a.metrics.drawdown,name:n,mode:'lines',line:{color:css(c),width:1.4},fill:k==='merged'?'tozeroy':'none',fillcolor:'rgba(42,120,214,.12)'});}
+  Plotly.react('ch-dd',tr,baseLayout({yaxis:{title:'回撤',tickformat:'.0%',gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+}
+function drawOcc(){
+  const a=arm('merged'); if(!a||!a.occupancy) return; const o=a.occupancy; const eq=a.curve;
+  const sh=k=>o[k].map((v,i)=>eq[i]>0?v/eq[i]:0);
+  const tr=[{x:S,y:sh('a0'),name:'A0 份额',stackgroup:'one',line:{color:css('--c-a0'),width:.5}},{x:S,y:sh('a1'),name:'A1 份额',stackgroup:'one',line:{color:css('--c-a1'),width:.5}},{x:S,y:sh('cash'),name:'现金',stackgroup:'one',line:{color:css('--c-cash'),width:.5}}];
+  Plotly.react('ch-occ',tr,baseLayout({yaxis:{title:'占权益比例',tickformat:'.0%',range:[0,1.02],gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+}
+function drawCnt(){
+  const a=arm('merged'); if(!a||!a.occupancy) return; const o=a.occupancy;
+  Plotly.react('ch-cnt',[{x:S,y:o.n_a0,name:'A0 持仓数',line:{color:css('--c-a0')}},{x:S,y:o.n_a1,name:'A1 持仓数',line:{color:css('--c-a1')}}],baseLayout({yaxis:{title:'持仓只数',gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+  const bands=(a.episodes&&a.episodes.bands)||{}; const names=P.a0_names.slice().reverse(); const tr=[];
+  names.forEach((s,i)=>{(bands[s]||[]).forEach(([st,en])=>{tr.push({x:[st,en||S[S.length-1]],y:[s,s],mode:'lines',line:{color:css('--c-a0'),width:9},showlegend:false,hoverinfo:'text',text:`${s} ${st} → ${en||'持有中'}`});});});
+  Plotly.react('ch-bands',tr,baseLayout({yaxis:{type:'category',categoryorder:'array',categoryarray:names,gridcolor:css('--grid')},xaxis:{range:[S[0],S[S.length-1]],gridcolor:css('--grid')},margin:{l:70,r:20,t:20,b:44}}),{displaylogo:false,responsive:true});
+}
+function drawMon(){
+  const spec=[['merged','合并一池','--c-merged'],['twopot','两池合计','--c-two']];const tr=[];let months=null;
+  for(const [k,n,c] of spec){const a=arm(k); if(!a) continue; const m=a.metrics.monthly; const ks=Object.keys(m); months=months||ks; tr.push({x:ks,y:ks.map(x=>m[x]),name:n,type:'bar',marker:{color:css(c)}});}
+  Plotly.react('ch-mon',tr,baseLayout({barmode:'group',yaxis:{title:'月收益',tickformat:'.0%',gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+  const years=[...new Set(months.map(x=>x.slice(0,4)))]; let h='<tr><th>年</th>'+[...Array(12)].map((_,i)=>`<th>${i+1}月</th>`).join('')+'<th>年内累计(合并)</th><th>年内累计(两池)</th></tr>';
+  const mm=arm('merged').metrics.monthly, mt=arm('twopot').metrics.monthly;
+  for(const y of years){let cm=1,ct=1;h+=`<tr><td>${y}</td>`;for(let i=1;i<=12;i++){const k=`${y}-${String(i).padStart(2,'0')}`;const v=mm[k];if(v!=null){cm*=1+v;} if(mt[k]!=null){ct*=1+mt[k];} h+=`<td class="${cls(v)}">${v==null?'':pct(v)}</td>`;} h+=`<td class="${cls(cm-1)}">${pct(cm-1)}</td><td class="${cls(ct-1)}">${pct(ct-1)}</td></tr>`;}
+  document.getElementById('tbl-mon').innerHTML=h;
+}
+function drawDur(){
+  const spec=[['merged','合并一池','--c-merged'],['a0','A0 独立','--c-a0'],['a1','A1 独立','--c-a1']];const tr=[];let h='<tr><th>臂</th><th>已平仓笔数</th><th>持有中</th><th>平均持仓(日)</th><th>中位持仓(日)</th><th>逐笔胜率</th></tr>';
+  for(const [k,n,c] of spec){const a=arm(k); if(!a) continue; const e=a.episodes; tr.push({x:e.durations,name:n,type:'histogram',opacity:.55,marker:{color:css(c)},xbins:{size:10}}); h+=`<tr><td>${n}</td><td>${e.count}</td><td>${e.open}</td><td>${num(e.mean_days,1)}</td><td>${num(e.median_days,0)}</td><td>${pct(e.win_rate)}</td></tr>`;}
+  Plotly.react('ch-dur',tr,baseLayout({barmode:'overlay',xaxis:{title:'持仓天数（交易日）',gridcolor:css('--grid')},yaxis:{title:'笔数',gridcolor:css('--grid')}}),{displaylogo:false,responsive:true});
+  document.getElementById('tbl-ep').innerHTML=h;
+}
+function drawCost(){
+  const spec=[['merged','合并一池'],['a0','A0 独立'],['a1','A1 独立']];let h='<tr><th>臂</th><th>成交笔数</th><th>拒单</th><th>成本合计</th><th>换汇费</th><th>换汇占比</th><th>其他项</th></tr>';
+  for(const [k,n] of spec){const a=arm(k); if(!a) continue; const c=a.costs; const fx=(c.items||{}).currency_conversion_fee||0; const other=Object.entries(c.items||{}).filter(([x])=>x!=='currency_conversion_fee').map(([x,v])=>`${x} £${num(v)}`).join('，'); h+=`<tr><td>${n}</td><td>${a.fills}</td><td>${a.rejected}</td><td>£${num(c.total)}</td><td>£${num(fx)}</td><td>${pct(c.fx_share)}</td><td style="white-space:normal">${other||'—'}</td></tr>`;}
+  document.getElementById('tbl-cost').innerHTML=h;
+  const corr=P.arms['corr/'+state.tier]; if(!corr) return; const ks=Object.keys(corr); let g='<tr><th>日收益相关性</th>'+ks.map(k=>`<th>${k}</th>`).join('')+'</tr>'; for(const r of ks){g+=`<tr><td>${r}</td>`+ks.map(c=>`<td>${num(corr[r][c],3)}</td>`).join('')+'</tr>';} document.getElementById('tbl-corr').innerHTML=g;
+}
+function drawAll(){drawMain();drawEq();drawDd();drawOcc();drawCnt();drawMon();drawDur();drawCost();}
+drawAll();
+for(const t of ['worst','actual']){document.getElementById('tier-'+t).addEventListener('click',()=>{state.tier=t;document.getElementById('tier-worst').setAttribute('aria-pressed',String(t==='worst'));document.getElementById('tier-actual').setAttribute('aria-pressed',String(t==='actual'));drawAll();});}
+const lg=document.getElementById('tg-log');lg.addEventListener('click',()=>{state.log=!state.log;lg.setAttribute('aria-pressed',String(state.log));drawEq();});
+document.getElementById('theme').addEventListener('click',()=>{const cur=document.documentElement.getAttribute('data-theme');const next=cur==='dark'?'light':(cur==='light'?'dark':(matchMedia('(prefers-color-scheme: dark)').matches?'light':'dark'));document.documentElement.setAttribute('data-theme',next);drawAll();});
+</script>
+</body></html>

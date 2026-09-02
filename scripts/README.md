@@ -34,6 +34,8 @@
 | `resume_bookticker.command` | 双击入口（已置可执行位）。`cd` 到仓库根后用 `caffeinate -i` 抑制闲置休眠，以 `.venv/bin/python -u` 跑 `20260819_ingest_crypto_bookticker.py` | bookTicker 数据集已 100% 完成且不再更新，本入口当前无待办工作；保留仅为该数据集需重下时的现成入口。已知缺陷：无单实例保护，`WORKING_MEMORY.md:105` 记录过双开抢带宽使错误数由 0 升至 13/560 的实例 | 用户手工双击。无代码调用点 |
 | `sync_to_git.py` | 常驻工具，每日手动执行的 git 同步器。四道闸门：origin 必须等于 `EXPECTED_REMOTE`、提交身份必须已配置、单文件超过 `MAX_BLOB_BYTES`（10 MB）拒绝、密钥闸（路径模式 + PEM/GitHub/AWS/Slack/Anthropic 等硬令牌正则 + 「字段名像密钥且取值也像密钥」软规则，占位符与引用名放行）。闸门命中以退出码 2 中止，不提交不推送，索引保持已暂存状态；`--overwrite-remote` 为强制覆盖，只能显式命令行触发 | 仓库为 public（`WORKING_MEMORY.md`「当前状态」），密钥闸是 `.gitignore` 之外的第二道防线。删除后入库内容无门禁，且推错仓库无拦截 | 根目录 `sync_to_git.command:48`；`WORKING_MEMORY.md:31` 记它为每日同步入口。`__all__` 导出 4 个符号，但检索无任何外部 import 点 |
 | `update_data.py` | 常驻工具，日常数据更新的主入口。股票走「全窗口重取」（复权是追溯性的，追加会在拆股日造成序列断裂），实取逻辑调 `trading212/ingest/yahoo_bars.py`，并先用一次 5 日探针跳过无变动的标的；加密走真增量（归档一经发布即不可变），月档到位后删除被其覆盖的日档；bookTicker 不更新（已停止发布）。开跑前先清理中断残留的临时分区。可反复运行、可随时中断 | 根目录 `update_data.command:9` 双击入口直接调它，是数据保鲜的唯一路径。删除后日常更新无入口 | `update_data.command:9`；`WORKING_MEMORY.md:28` |
+| `20260902_xsmom_a0_headtohead.py` | A1 赢家配置与 A0 在真实引擎上的正面对比（1d、same_close、worst 档、2020-01~2026-08） | A1 裁定 §2 的数字来源；合并回测脚本 import 其 `winner_plan`/`make_wide_strategy`/`session_curve`/`stats` | 人工执行；`20260902_a0_a1_merge_backtest.py` |
+| `20260902_a0_a1_merge_backtest.py` | A0+A1 合并一池 £1,000 每日打满（A1 吸收 A0 未开仓资金）与 A0/A1 各 £1,000 独立，六臂真实引擎回测 | 合并报告 `reports/a0_a1_merge_20260902.html` 的全部结果件来源 | 人工执行；`research/xsmom_wide/report/make_merge_report_data.py` 读其产物 |
 
 ## 3. 子目录索引
 
@@ -86,3 +88,4 @@ import 本仓库：`common.paths`、`common.store`、`crypto_trading.ingest.bina
 2026-08-22 建立本文件，登记现有文件。
 2026-08-22 删除 `.gitkeep` 占位件，本目录已有实体文件与本说明，占位不再起作用（`CLAUDE.md` §4.2 第 6、8 条）。
 2026-08-29 新增 `20260829_live_probe.py`（只读探针，登记保留）。
+| 2026-09-02 | 新增 `20260902_xsmom_a0_headtohead.py` 与 `20260902_a0_a1_merge_backtest.py`（A1 对比与 A0+A1 合并回测入口） |
