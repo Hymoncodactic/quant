@@ -13,15 +13,12 @@
 
 | 文件 | 作用 | 存在必要性 | 谁在用 |
 |---|---|---|---|
-| `__init__.py` | 空文件（0 字节），把本目录声明为常规 Python 包，与 `crypto_trading/__init__.py` 同规格 | 三处绝对导入以 `trading212` 为包根：`scripts/update_data.py:44`、`scripts/20260822_a0_minute_backtest.py:42`、`trading212/strategy/a0_intraday_v0_0_1.py:56`。删除后这些导入仍能以隐式命名空间包解析，但包边界不再显式，且与 `crypto_trading/` 不一致 | 上述三处导入语句 |
+| `__init__.py` | 空文件（0 字节），把本目录声明为常规 Python 包，与 `crypto_trading/__init__.py` 同规格 | 三处绝对导入以 `trading212` 为包根：`scripts/update_data.py`、`scripts/20260822_a0_minute_backtest.py:42`、`trading212/strategy/a0_intraday_v0_0_1.py:101`。删除后这些导入仍能以隐式命名空间包解析，但包边界不再显式，且与 `crypto_trading/` 不一致 | 上述三处导入语句 |
+| `client.py` | Trading 212 REST 客户端：鉴权、逐端点令牌桶限频、GET 重试、下单 POST 永不重试（场所无幂等键）、`follow_page` 修补 transactions 分页缺陷。常量 `RATE_LIMITS` 是场所的物理限频 | 唯一的 HTTP 出口。执行层的吞吐守卫直接按 `RATE_LIMITS["order_market"]` 推算收盘前还能发多少单 | `trading212/execution/` 全层；`trading212/archive.py` |
+| `archive.py` | 记账归档：把场所的历史订单/流水/分红原样落 `records/`，按场所自身 id 去重；另有本地写入的三条决策流 `signals`、`a1_plan`（每次 A1 重排）、`b0_allocation`（每个已决策场次） | `a1_plan` 是**上期名单的唯一记忆**——A1 的缓冲带按它定义，持仓不能替代（被拒的订单会让两者不一致）。看板经 `/api/records` 读同一批流 | `trading212/execution/session_cycle.py`、`trading212/execution/market_data.py::a1_book_from_records`、看板 |
 
-本目录直属文件只有 `__init__.py` 一个，其余内容全部在四个子目录中。
-
-`ARCHITECTURE.md` §2 登记的 `<venue>/client.py`（REST/WS 客户端，供 ingest 与
-execution 共用）在本目录**尚未创建**。原因见 `WORKING_MEMORY.md` 未决项 2：
-Trading 212 的 `equity/*` 系列接口返回 401（存在，需密钥），
-`equity/prices`、`equity/quotes`、`market/candles` 均返回 404（不存在），
-故本线的行情不走 T212，改由 `ingest/yahoo_bars.py` 取自 Yahoo。
+本目录直属文件三个（`__init__.py`、`client.py`、`archive.py`），
+其余内容全部在四个子目录中。另有 gitignore 的 `records/` 落地目录。
 
 ## 3. 子目录索引
 
