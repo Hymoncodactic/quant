@@ -28,6 +28,7 @@
 | `t212/a0/03_dst_hardening.md` | DST 错配窗口防御性加固：decision_key 墙钟构造、daily_rows 拒绝 FX | `trading212/execution/instruments.py`、`trading212/execution/market_data.py` |
 | `t212/platform/01_fault_catalog.md` | T212 平台缺陷目录 | `trading212/execution/`、`trading212/client.py` |
 | `t212/platform/02_latency_model.md` | T212 延迟证据与模型 | 同上 |
+| `t212/b0/` 七份 | **B0（A0+A1）实盘化实施计划**：`00` 为骨架（架构总图、七个接缝的冻结签名、所有权、数据契约、12 项共享决定），`01`/`02` 策略模块，`03` 盘前数据，`04` 执行层，`05` 看板，`06` 口径矩阵与上线 | `trading212/strategy/{a1,b0}_v0_0_1.py`（待建）、`trading212/execution/*`、`trading212/ingest/a1_rank.py`（待建）、`scripts/update_data.py`、`trading212/dashboard/*` |
 | `crypto/README.md` | OKX 线占位 | `crypto_trading/` |
 
 ## 4. 变更记录
@@ -35,3 +36,5 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-08-22 | 重构：目录收敛为 `t212/` 与 `crypto/`；`framework/` 与 `validation/` 移至 `docs/backtest/`；`t212_faults/` 移至 `t212/platform/`；A0 规格进 `t212/a0/`。依据 `CLAUDE.md` §六新增条款。 |
+| 2026-09-02 | 新增 `t212/b0/`：B0 实盘化七份计划，双对话（交易代码 / 看板）并行的章程与契约 |
+| 2026-09-02 | `t212/b0/` 经对抗复审后整体重写：接缝架构替代按层描述，场次真值统一为 SPY 日线，新增口径矩阵 |
