@@ -1,5 +1,7 @@
 # 裁定：宽池横截面动量选股（对比 A0）
 
+> 命名：本策略于 2026-09-02 正式命名为 **A1**（v0.0.1）。权威规格见 `trading212/strategy/a1_v0_0_1_spec.md`。
+
 对应预注册：`research/prereg/20260902_xsmom_wide_prereg.md`（含 §10 复审驱动修订）
 代码：`research/xsmom_wide/run_study.py`、`scripts/20260902_xsmom_a0_headtohead.py`
 结果（权威=因果口径，文件带 causal 后缀）：`research/xsmom_wide/results/`、
