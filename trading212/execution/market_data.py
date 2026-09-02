@@ -34,6 +34,15 @@ Public functions:
     assert_intraday_ready(frames, decision_key, trade_symbols, state_symbol,
                           fx_symbol)        Freshness gate; returns the trade
                                             symbols that lack a decision bar.
+    us_sessions(start, end)                 US trading sessions from the
+                                            local SPY daily partitions.
+    refresh_for_decision(params, session, key)  Seam S4: every refresh one
+                                            decision needs, time boxed;
+                                            returns the names left thin.
+    load_b0_injection(params, as_of, held)  Seam S3: the read-only injection
+                                            object B0 and the dashboard share.
+    a1_book_from_records(records_root)      The previous A1 book, from the
+                                            a1_plan stream.
 
 Public classes:
     LiveBar          One OHLCV bar; field-compatible with the engine's Bar.
@@ -55,6 +64,29 @@ Constants:
                             Its presence is what makes the strategy's
                             positional lookup land on the same bar the cost
                             path resolves to by time.
+    A1_REFRESH_BUDGET_SEC  int  120. Whole-batch ceiling on the short-window
+                            refresh of the A1 names. The decision window is
+                            about half an hour and an A0-only decide already
+                            measured 88 to 104 seconds, so an unbounded loop
+                            over forty names would walk past the submission
+                            instant and abort the session. A name the budget
+                            cuts off is reported thin, not fatal.
+    A1_REFRESH_ATTEMPTS int  2, and A1_REFRESH_BACKOFF_SEC 4. Deliberately far
+                            shorter than the ingest ladder (6 attempts, 8 to
+                            128 seconds): inside a decision, giving up on one
+                            name is cheap and being late is not.
+    A1_INTRADAY_DAYS int    7. Days of 1h history fetched for an A1 name. The
+                            strategy reads today's decision bar and the one
+                            before it; a week covers a long weekend.
+    RANK_STALE_FREEZE_SESSIONS int  3. Beyond this many sessions of ranking
+                            staleness the A1 leg is frozen rather than traded
+                            on an old ranking.
+    SESSION_SYMBOL   str    "SPY". The session calendar's single source of
+                            truth: its stored daily bars ARE the US trading
+                            days, half days included. The venue calendar is
+                            not usable for this -- its cached span measured
+                            six weeks on 2026-09-02, and refresh_calendar
+                            overwrites the cache rather than merging it.
     INTRADAY_SESSIONS_LOADED int  40. Sessions of 1h history handed to the
                             shim. It only reads today's bars and the previous
                             session's last bar, so a deeper window changes no
@@ -85,18 +117,23 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["group_for", "refresh_bars", "load_frames", "daily_rows",
-           "build_view", "assert_intraday_ready", "LiveBar", "LiveMarketView",
+           "build_view", "assert_intraday_ready", "us_sessions",
+           "refresh_for_decision", "load_b0_injection", "a1_book_from_records",
+           "LiveBar", "LiveMarketView",
            "GROUPS", "FX_SYMBOL", "FX_LAG_MINUTES", "FX_CURRENT_LAG_MINUTES",
-           "INTRADAY_SESSIONS_LOADED"]
+           "INTRADAY_SESSIONS_LOADED", "SESSION_SYMBOL"]
 
 from dataclasses import dataclass
 
 import fcntl
+import time
 
 import pandas as pd
 
 from common.logging_setup import get_logger
-from common.paths import equity_curated_root, equity_interval_dir
+from common.paths import (a1_rank_path, equity_curated_root,
+                          equity_interval_dir)
+from trading212 import archive
 from trading212.ingest.yahoo_bars import (UNIVERSE, fetch_interval, write_daily,
                                           write_intraday)
 
@@ -107,6 +144,12 @@ FX_SYMBOL = "GBPUSD=X"
 FX_LAG_MINUTES = 90
 FX_CURRENT_LAG_MINUTES = 30
 INTRADAY_SESSIONS_LOADED = 40
+SESSION_SYMBOL = "SPY"
+A1_REFRESH_BUDGET_SEC = 120
+A1_REFRESH_ATTEMPTS = 2
+A1_REFRESH_BACKOFF_SEC = 4
+A1_INTRADAY_DAYS = 7
+RANK_STALE_FREEZE_SESSIONS = 3
 
 _TZ_LONDON = "Europe/London"
 _TZ_NEW_YORK = "America/New_York"
@@ -115,6 +158,10 @@ _TZ_NEW_YORK = "America/New_York"
 # the daily series is refetched whole because adjustment is retroactive, and
 # 1h is capped by the vendor at 730 sessions.
 _FETCH_SPAN = {"1d": (None, None), "1h": (730, None)}
+
+# The interval the live cycle decides on. Kept here rather than
+# imported from session_cycle, which imports this module.
+_LIVE_INTERVAL = "1h"
 
 
 @dataclass(frozen=True)
@@ -134,12 +181,23 @@ class LiveBar:
 # ============================================================================
 
 def group_for(symbol: str) -> str:
-    """Return the universe group holding one symbol."""
+    """Return the universe group holding one symbol.
+
+    The configured universe is consulted first, then the disk. B0 trades names
+    from a 1,500-strong candidate pool that was never listed in UNIVERSE --
+    they arrived through scripts/20260823_ingest_b0_universe.py and live under
+    us_equity -- so a configuration-only lookup would raise for most of the
+    book.
+    """
     for group, members in UNIVERSE.items():
         if symbol in members:
             return group
+    for group in GROUPS:
+        if (equity_curated_root() / group / symbol).is_dir():
+            return group
     raise KeyError(f"{symbol!r} is not in the ingest universe "
-                   f"(trading212/ingest/yahoo_bars.py UNIVERSE)")
+                   f"(trading212/ingest/yahoo_bars.py UNIVERSE) and has no "
+                   f"stored partitions under {equity_curated_root()}")
 
 
 def refresh_bars(symbols: list[str], interval: str) -> dict[str, int]:
@@ -264,6 +322,236 @@ def daily_rows(symbols: list[str], start: str,
     return out
 
 
+def us_sessions(start, end) -> list:
+    """US trading sessions in [start, end], from the stored SPY daily bars.
+
+    Seam S2 of fixplans/t212/b0/00_coordination.md. A half day is one session
+    like any other, which is what a1_spec.md section 5 counts and therefore
+    what the rebalance rotation must count; excluding them would shift every
+    rebalance after the first half day in the window.
+
+    Read-only: it opens parquet files and nothing else, so the dashboard may
+    call it inside a request.
+    """
+    frames = load_frames([SESSION_SYMBOL], "1d", str(start), str(end))
+    frame = frames[SESSION_SYMBOL]
+    days = frame["ts"].dt.tz_convert(_TZ_NEW_YORK).dt.date
+    return sorted(set(days))
+
+
+# ============================================================================
+# [1b] Seams S3 and S4: the decision's refresh and its read-only injection
+# ============================================================================
+
+def _write_intraday_merged(group: str, symbol: str, interval: str,
+                           frame: pd.DataFrame) -> None:
+    """Store a SHORT intraday window without truncating the month it lands in.
+
+    write_intraday names a file after the span it holds and deletes any
+    earlier file for the same month, so handing it a seven-day frame would
+    replace a full month of hourly bars with seven days of them. The months
+    the new frame touches are therefore read back first and merged, newest
+    row winning, before the whole month is written again.
+    """
+    if frame.empty:
+        return
+    folder = equity_interval_dir(group, symbol, interval)
+    months = set(frame["ts"].dt.to_period("M"))
+    parts = sorted(folder.glob("*.parquet")) if folder.is_dir() else []
+    existing = []
+    for path in parts:
+        stored = pd.read_parquet(path)
+        stored["ts"] = pd.to_datetime(stored["ts"], utc=True)
+        stored = stored.loc[stored["ts"].dt.to_period("M").isin(months)]
+        if not stored.empty:
+            existing.append(stored)
+    merged = pd.concat(existing + [frame], ignore_index=True) if existing \
+        else frame
+    merged = (merged.drop_duplicates(subset=["ts"], keep="last")
+              .sort_values("ts").reset_index(drop=True))
+    write_intraday(group, symbol, interval, merged)
+
+
+def _refresh_one_short(symbol: str, interval: str, days: int) -> int:
+    """Fetch a few days of one symbol's intraday bars and merge them in.
+
+    Returns the number of rows stored; zero means the fetch came back empty
+    and the caller should report the name thin rather than raise.
+    """
+    frame = fetch_interval(symbol, interval, days, None)
+    if frame.empty:
+        return 0
+    lock_path = equity_curated_root() / ".refresh.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _write_intraday_merged(group_for(symbol), symbol, interval, frame)
+    return len(frame)
+
+
+def refresh_for_decision(params: dict, session, key: pd.Timestamp,
+                         a1_symbols: list[str] | None = None) -> list[str]:
+    """Seam S4: every refresh one decision needs. Returns the thin names.
+
+    Two halves. The A0 half is the existing path, unchanged: the eighteen
+    trade symbols, the state symbol and FX at 1h, and the daily series too,
+    because adjustment is retroactive and an ex-dividend date rewrites the
+    splice factor the shim applies to today's session.
+
+    The A1 half is new and is where the time pressure sits. It fetches a short
+    intraday window per name, under a whole-batch budget: a decision that
+    walks past its submission instant is worse than a decision taken without a
+    fresh price for one name, because a late market order fills at the next
+    open and silently swaps the caliber. A name that times out, fails or comes
+    back empty is returned in the thin list, which the B0 module reads as
+    "freeze this leg" rather than "sell it".
+
+    Only session_cycle.decide calls this. The dashboard must not: it takes the
+    store lock and hits the network.
+    """
+    trade_symbols = list(params["trade_symbols"])
+    state_symbol = params["state_symbol"]
+    fx_symbol = params["fx_symbol"]
+    refresh_bars(trade_symbols + [state_symbol, fx_symbol], _LIVE_INTERVAL)
+    refresh_bars(trade_symbols + [state_symbol], "1d")
+
+    thin: list[str] = []
+    extra = [s for s in (a1_symbols or []) if s not in set(trade_symbols)]
+    if not extra:
+        return thin
+    started = time.monotonic()
+    for symbol in extra:
+        if time.monotonic() - started > A1_REFRESH_BUDGET_SEC:
+            remaining = extra[extra.index(symbol):]
+            log.warning("[bars] short-window budget %ds spent; %d A1 name(s) "
+                        "left unrefreshed and reported thin: %s",
+                        A1_REFRESH_BUDGET_SEC, len(remaining),
+                        ", ".join(remaining[:10]))
+            thin.extend(remaining)
+            break
+        rows = 0
+        for attempt in range(1, A1_REFRESH_ATTEMPTS + 1):
+            try:
+                rows = _refresh_one_short(symbol, _LIVE_INTERVAL,
+                                          A1_INTRADAY_DAYS)
+            except Exception as exc:                # noqa: BLE001
+                log.warning("[bars] %s short refresh attempt %d failed: %s",
+                            symbol, attempt, exc)
+                rows = 0
+            if rows:
+                break
+            if attempt < A1_REFRESH_ATTEMPTS:
+                time.sleep(A1_REFRESH_BACKOFF_SEC)
+        if not rows:
+            thin.append(symbol)
+    if thin:
+        log.warning("[bars] %d A1 name(s) without a fresh intraday window: %s",
+                    len(thin), ", ".join(sorted(thin)[:10]))
+    return thin
+
+
+def a1_book_from_records(records_root=None) -> dict[str, float]:
+    """The previous A1 book, from the newest a1_plan record.
+
+    An empty result means no rotation has been recorded yet, which is exactly
+    the first-rebalance case the buffer band already handles by taking the
+    plain top twenty. Order is preserved, because the band keeps its members
+    in book order.
+    """
+    rows = archive.read_stream(records_root, "a1_plan", limit=1)
+    if not rows:
+        return {}
+    return {str(entry["symbol"]): float(entry.get("weight") or 0.0)
+            for entry in (rows[0].get("book") or [])}
+
+
+def _latest_rank_table(target, sessions_before: list):
+    """(frame, session) of the newest ranking table at or before `target`.
+
+    Walks backwards through real sessions rather than calendar days, so the
+    staleness it reports is measured in the same unit the rotation counts in.
+    """
+    for offset, day in enumerate(reversed(sessions_before)):
+        path = a1_rank_path(day)
+        if path.is_file():
+            return pd.read_parquet(path), day, offset
+    return None, None, None
+
+
+def load_b0_injection(params: dict, as_of, held=None,
+                      records_root=None) -> dict:
+    """Seam S3: the read-only injection B0 and the dashboard both consume.
+
+    Strictly read-only -- no network call, no lock, no write -- because the
+    dashboard calls it inside a request and a panel refresh must never be able
+    to move the live book or block a decision.
+
+    The ranking table is the previous session's by design: the whole pool
+    cannot be ranked inside the decision window, so the ranking is computed
+    after the previous close (decision A3). When that file is absent the most
+    recent one is used instead and the gap is reported in rank_stale_sessions;
+    past RANK_STALE_FREEZE_SESSIONS the A1 leg is frozen, because rotating a
+    book on a ranking that old is a different strategy from the one that was
+    tested.
+
+    The previous book comes from the a1_plan record stream and never from the
+    positions: a rejected order leaves the two disagreeing, and rebuilding the
+    band from holdings would then quietly drop a name the plan still holds
+    (decision A12).
+    """
+    as_of = pd.Timestamp(str(as_of)).date()
+    a0_params = params.get("a0_params") or params
+    a1_params = params.get("a1_params") or {}
+    anchor = str(a1_params.get("rebalance_anchor")
+                 or params.get("live_from"))
+    sessions_list = us_sessions(anchor, as_of)
+    if as_of not in sessions_list and (not sessions_list
+                                       or as_of > sessions_list[-1]):
+        # The decision runs at 15:30, INSIDE the session it trades. SPY's own
+        # daily bar for that session does not exist yet at that instant, so
+        # the session list built from stored bars stops at yesterday. Leaving
+        # it there would make B0 read today as "not a session" and return no
+        # targets, which the cycle treats as an abort -- every session, for
+        # ever. The caller has already proven today is a regular session
+        # against the venue calendar (session_cycle.decide refuses otherwise),
+        # so today is appended rather than inferred from price data that has
+        # not been published yet.
+        sessions_list = list(sessions_list) + [as_of]
+    history_start = str(params.get("history_start", "2010-01-04"))
+
+    a0_symbols = list(a0_params["trade_symbols"]) + [a0_params["state_symbol"]]
+    a0_rows = daily_rows(a0_symbols, history_start, str(as_of))
+
+    all_sessions = us_sessions("2000-01-01", str(as_of))
+    before = [d for d in all_sessions if d < as_of]
+    frame, rank_as_of, stale = _latest_rank_table(as_of, before)
+    if frame is None:
+        log.error("[bars] no A1 ranking table at or before %s; the A1 leg "
+                  "has nothing to rotate on", as_of)
+        stale = None
+
+    book = a1_book_from_records(records_root)
+
+    held_names = sorted(set(held or []))
+    view_symbols = sorted(set(a0_symbols) | set(book) | set(held_names)
+                          | {params["fx_symbol"]})
+    return {
+        "a0_rows": a0_rows,
+        "a0_mode": "rows",
+        "a1_rank": frame,
+        "rank_as_of": rank_as_of,
+        "rank_stale_sessions": int(stale) if stale is not None else None,
+        "a1_frozen": frame is None
+        or (stale is not None and stale > RANK_STALE_FREEZE_SESSIONS),
+        "a1_book": book,
+        "sessions": sessions_list,
+        "as_of": as_of,
+        "thin": [],
+        "held": held_names,
+        "view_symbols": view_symbols,
+    }
+
+
 # ============================================================================
 # [2] Cutoff view and freshness gate
 # ============================================================================
@@ -292,7 +580,8 @@ def build_view(frames: dict[str, pd.DataFrame],
 def assert_intraday_ready(frames: dict[str, pd.DataFrame],
                           decision_key: pd.Timestamp,
                           trade_symbols: list[str], state_symbol: str,
-                          fx_symbol: str) -> list[str]:
+                          fx_symbol: str,
+                          soft_symbols: list[str] | None = None) -> list[str]:
     """Refuse to decide unless every series is exactly where it must be.
 
     Three conditions, each a way the decision would silently diverge from the
@@ -307,15 +596,25 @@ def assert_intraday_ready(frames: dict[str, pd.DataFrame],
          under an FX hole it would silently fall back to a much older rate
          and price the slots wrong, so the gate pins the bar instead of
          tolerating staleness.
+
+    soft_symbols relaxes condition 2, and only condition 2, for the A1 half of
+    a B0 book. Those names are re-sized every session out of whatever capital
+    is left, so a missing information bar costs one name its re-size; A0's
+    eighteen are the caliber the recorded numbers were measured on, and a hole
+    there still stops the session.
     """
     problems: list[str] = []
     thin: list[str] = []
     prior_key = decision_key - pd.Timedelta(hours=1)
-    for symbol in list(trade_symbols) + [state_symbol]:
+    # The state symbol and FX are never soft: the whole session's timing and
+    # every price in GBP depend on them, so a hole there is not one name's
+    # problem.
+    soft = set(soft_symbols or []) - {state_symbol, fx_symbol}
+    for symbol in list(trade_symbols) + [state_symbol] + sorted(soft):
         stamps = set(frames[symbol]["ts"])
         newest = frames[symbol]["ts"].max() if not frames[symbol].empty else None
         if decision_key not in stamps:
-            if symbol == state_symbol:
+            if symbol == state_symbol and symbol not in soft:
                 problems.append(f"{symbol}: no bar at decision key "
                                 f"{decision_key} (newest {newest})")
             else:
@@ -327,7 +626,11 @@ def assert_intraday_ready(frames: dict[str, pd.DataFrame],
                 thin.append(symbol)
             continue
         if prior_key not in stamps:
-            problems.append(f"{symbol}: missing the information bar {prior_key}")
+            if symbol in soft:
+                thin.append(symbol)
+            else:
+                problems.append(
+                    f"{symbol}: missing the information bar {prior_key}")
     fx_stamps = set(frames[fx_symbol]["ts"])
     newest_fx = frames[fx_symbol]["ts"].max() if not frames[fx_symbol].empty else None
     fx_key = decision_key - pd.Timedelta(minutes=FX_LAG_MINUTES)

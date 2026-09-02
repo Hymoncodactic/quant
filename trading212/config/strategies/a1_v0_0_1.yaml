@@ -1,0 +1,29 @@
+# A1 v0.0.1 baseline parameters. This file holds the TRUE A1 definition; the
+# source of every value is trading212/strategy/a1_spec.md, section noted per
+# key. The strategy module never reads this file: the entry layer reads it once
+# and passes it in as params (docs/backtest/framework/06_strategy_plugin.md).
+universe_file: data/reference/b0_universe_1500_20260823.json   # spec 3.1
+n_hold: 20                        # spec 6
+band_multiple: 2                  # spec 6, so the band is the top 40
+rebalance_every: 21               # spec 5
+mom_long: 252                     # spec 4
+mom_skip: 21                      # spec 4
+liq_window: 252                   # spec 3.2
+min_dollar_volume_usd: 1000000    # spec 3.2 E1
+max_zero_volume_share: 0.01       # spec 3.2 E2
+min_history_bars: 300             # spec 3.2 E3
+order_usd_for_participation: 640  # spec 3.2 E4
+# E5, live only: a candidate with no verified venue ticker is not admitted.
+# instruments.order_ticker raises for an unmapped symbol, so admitting one
+# would abort the whole session at submission time
+# (fixplans/t212/b0/00_coordination.md decision A5). The research arm runs
+# with four conditions and sets this to false.
+require_verified_ticker: true
+slot_headroom: 0.99               # spec 7.2
+fx_symbol: GBPUSD=X               # spec 7.2
+# Session 0 of the rotation, and the first day a target may be emitted. Both
+# are overridden by the entry layer with execution.b0_live_from
+# (fixplans/t212/b0/00_coordination.md section 2.1), so the value here is only
+# the reproduction arm's anchor.
+rebalance_anchor: "2020-01-02"
+live_from: "2020-01-02"

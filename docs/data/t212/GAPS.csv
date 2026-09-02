@@ -1,0 +1,12 @@
+source,group,symbol,interval,first_missing,last_missing,sessions,cause,status,checked_utc
+t212,us_equity,AMAT,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,JNJ,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,KO,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,LRCX,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,NEM,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,PG,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,XOM,1d,2026-08-28,2026-08-28,1,upstream_hole,open,2026-09-03
+t212,us_equity,LEG,1d,2026-08-28,2026-08-31,2,tail_truncated,open,2026-09-03
+t212,us_equity,WBS,1d,2026-08-28,2026-08-31,2,tail_truncated,open,2026-09-03
+t212,us_equity,BRK-B,1d,,,0,pool_spelling_mismatch,by_design,2026-09-03
+t212,us_equity,BF-B,1d,,,0,pool_spelling_mismatch,by_design,2026-09-03

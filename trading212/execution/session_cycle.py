@@ -36,6 +36,10 @@ Public functions:
     settle(cfg)                        One settle pass; returns a report.
     status(cfg)                        Read-only account and book overview.
     init_ledger(cfg, cash_gbp)         Create the strategy book, once.
+    adopt_book(cfg, from_id, confirm)  Move cash and positions from another
+                                       strategy's book into this one.
+    assemble_params(cfg)               Seam S1: the one parameter mapping the
+                                       decision and the dashboard share.
 
 Constants:
     DEFAULT_SUBMIT_LEAD_SEC   int  60. Seconds before the close at which
@@ -80,10 +84,12 @@ Change log:
 
 from __future__ import annotations
 
-__all__ = ["decide", "settle", "status", "init_ledger",
+__all__ = ["decide", "settle", "status", "init_ledger", "adopt_book",
+           "assemble_params",
            "DEFAULT_SUBMIT_LEAD_SEC", "DEFAULT_MAX_WAIT_SEC",
            "DECISION_PARAM_OVERRIDES"]
 
+import fcntl
 import json
 import time
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -93,14 +99,17 @@ import pandas as pd
 import yaml
 
 from common.alerts import notify
+from common.net import SAFETY_RATIO
 from common.logging_setup import get_logger
 from common.paths import config_dir, execution_state_dir, records_dir
 from trading212 import archive
-from trading212.client import T212Client
+from trading212.client import RATE_LIMITS, T212Client
 from trading212.execution import (instruments, market_data, order_monitor,
                                   order_router, reconciler, risk_gate)
+from trading212.execution import ledger_store
 from trading212.execution.shadow_ledger import LedgerFrozenError, ShadowLedger
-from trading212.execution.strategy_loader import load_intraday_strategy
+from trading212.execution.strategy_loader import (load_intraday_strategy,
+                                                  load_module)
 
 log = get_logger("t212.execution")
 
@@ -121,6 +130,83 @@ _INTERVAL = "1h"
 # [1] Shared setup
 # ============================================================================
 
+def _strategy_params(strategy_id: str) -> dict[str, Any]:
+    """One strategy's parameter file, parsed. The strategy never reads it."""
+    path = config_dir("t212") / "strategies" / f"{strategy_id}.yaml"
+    params = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(params, dict):
+        raise ValueError(f"{path} did not parse to a mapping")
+    return params
+
+
+def assemble_params(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Seam S1: the parameter mapping a decision and the dashboard share.
+
+    The strategy layer never reads configuration itself
+    (docs/backtest/framework/06_strategy_plugin.md section 2), so the whole
+    mapping is built here, once. Two callers exist -- the decision cycle and
+    the dashboard's signal view -- and they MUST see the same values or the
+    panel will explain a decision that was taken on different numbers.
+
+    For a single-signal configuration (name: a0) the result is the strategy's
+    own file plus DECISION_PARAM_OVERRIDES, exactly as before this seam
+    existed. For name: b0 it also carries:
+
+        a0_params   A0's file, with live_from overridden to
+                    execution.b0_live_from. The yaml's own 2018-01-01 would
+                    let A0 trade inside the merged book before B0 started.
+        a1_params   A1's file, with live_from AND rebalance_anchor overridden
+                    to the same date. The anchor is what session 0 of the
+                    21-session rotation counts from, so B0's start date must
+                    also be a rebalance date; a different anchor would mean
+                    the first session has no book to hold.
+        trade_symbols / state_symbol
+                    Copied up from a0_params. They are what the execution
+                    layer feeds, refreshes and reconciles against; the B0
+                    module itself reads them out of a0_params and never off
+                    the top level.
+
+    Both nested mappings receive DECISION_PARAM_OVERRIDES too, because the
+    synthetic daily view A0's signal is computed on is built from them.
+    """
+    execution = cfg.get("execution") or {}
+    strategy_cfg = execution.get("strategy") or {}
+    name = str(strategy_cfg.get("name", "a0"))
+    version = str(strategy_cfg.get("version", "0.0.1"))
+    strategy_id = f"{name}_v" + version.replace(".", "_")
+
+    params = _strategy_params(strategy_id)
+    params.update(DECISION_PARAM_OVERRIDES)
+    if name != "b0":
+        return params
+
+    live_from = str(execution.get("b0_live_from") or "")
+    if not live_from:
+        # Deliberately NOT falling back to the yaml's own live_from. That
+        # value is the reproduction arm's date; inheriting it silently would
+        # anchor the 21-session rotation on 2020-01-02, so the go-live day
+        # would land on an arbitrary point in the cycle instead of on session
+        # zero, and A1 would have no book on its first day.
+        raise ValueError("execution.b0_live_from must be set for strategy b0; "
+                         "it is B0's start date AND A1's rebalance anchor, "
+                         "and the two have to be the same day")
+    a0_params = _strategy_params("a0_v0_0_1")
+    a0_params.update(DECISION_PARAM_OVERRIDES)
+    a0_params["live_from"] = live_from
+    a1_params = _strategy_params("a1_v0_0_1")
+    a1_params.update(DECISION_PARAM_OVERRIDES)
+    a1_params["live_from"] = live_from
+    a1_params["rebalance_anchor"] = live_from
+
+    params["live_from"] = live_from
+    params["a0_params"] = a0_params
+    params["a1_params"] = a1_params
+    params["trade_symbols"] = list(a0_params["trade_symbols"])
+    params["state_symbol"] = a0_params["state_symbol"]
+    params.setdefault("fx_symbol", a0_params["fx_symbol"])
+    return params
+
+
 class _Cycle:
     """Everything one phase needs, constructed once per invocation."""
 
@@ -134,6 +220,11 @@ class _Cycle:
         self.shim_version = strategy_cfg.get("intraday_version", "0.0.1")
         self.strategy_id = f"{self.signal_name}_v" \
                            + self.signal_version.replace(".", "_")
+        # B0 is the only configuration whose universe is not fixed, so it is
+        # the only one that needs the injection path, the wide ticker map and
+        # the per-name schedule check.
+        self.is_b0 = self.signal_name == "b0"
+        self.records_root = records_dir("t212", cfg["_env"])
         self.dry_run = bool(execution.get("dry_run", True))
         self.history_start = str(execution.get("history_start", "2010-01-04"))
         self.submit_lead_sec = int(execution.get("submit_lead_sec",
@@ -153,18 +244,8 @@ class _Cycle:
         self.base_ccy = str((cfg.get("account") or {}).get("base_ccy", "GBP"))
 
     def _load_params(self) -> dict[str, Any]:
-        """Strategy parameters, read once here and passed in as params.
-
-        The strategy layer never reads configuration itself
-        (docs/backtest/framework/06_strategy_plugin.md section 2). The
-        hourly overrides are applied on top of the shared A0 baseline.
-        """
-        path = config_dir("t212") / "strategies" / f"{self.strategy_id}.yaml"
-        params = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(params, dict):
-            raise ValueError(f"{path} did not parse to a mapping")
-        params.update(DECISION_PARAM_OVERRIDES)
-        return params
+        """Strategy parameters for this cycle; see assemble_params()."""
+        return assemble_params(self.cfg)
 
     def ledger(self) -> ShadowLedger:
         return ShadowLedger.load(self.state_dir, self.strategy_id)
@@ -249,13 +330,18 @@ def decide(cfg: dict[str, Any], armed: bool,
     if state.get("last_decide_session") == session_id:
         return _abort(f"already decided for session {session_id}")
 
+    # Learned venue precisions, before any quantity is floored. A step
+    # learned from a rejection last session is worthless if it is not
+    # installed before this session sizes the same name.
+    risk_gate.load_qty_steps(cycle.state_dir)
+
     try:
         ledger = cycle.ledger()
     except (FileNotFoundError, LedgerFrozenError) as exc:
         return _abort(f"ledger unavailable: {exc}")
     dangling = ledger.freeze_dangling_live_intents()
     if dangling:
-        notify("A0 dangling intent -- book frozen",
+        notify(f"{cycle.strategy_id} dangling intent -- book frozen",
                f"{len(dangling)} live intent(s) with no recorded outcome; "
                f"run settle to resolve against the venue")
         return _abort(f"dangling live intents frozen as ambiguous: "
@@ -271,45 +357,66 @@ def decide(cfg: dict[str, Any], armed: bool,
         venue_free, book_cash = shortfall
         log.critical("[decide] venue free cash %s below ledger cash %s",
                      venue_free, book_cash)
-        notify("A0 cash shortfall -- no orders",
+        notify(f"{cycle.strategy_id} cash shortfall -- no orders",
                f"account free {venue_free} < strategy book {book_cash} "
                f"GBP; lower the allocation or fund the account")
         return _abort(f"venue availableToTrade {venue_free} is below ledger "
                       f"cash {book_cash}; allocation no longer covered")
 
     trade_symbols = list(cycle.params["trade_symbols"])
-    state_symbol = cycle.params["state_symbol"]
-    fx_symbol = cycle.params["fx_symbol"]
-    mapped = instruments.validate_mapping(cycle.client, trade_symbols)
+
+    # Everything this session may touch: A0's fixed eighteen, A1's current
+    # book, and whatever the ledger still holds. Mapping and reconciliation
+    # both have to cover that set. Proving eighteen tickers while the book
+    # holds forty positions would report a clean reconciliation that is not
+    # one, and it is the positions outside the eighteen that a wide-universe
+    # strategy accumulates.
+    a1_book = (market_data.a1_book_from_records(cycle.records_root)
+               if cycle.is_b0 else {})
+    in_play = sorted(set(trade_symbols) | set(a1_book) | set(ledger.positions))
+    mapped = instruments.validate_mapping(cycle.client, in_play)
     schedule_ids = {meta.get("workingScheduleId") for meta in mapped.values()
                     if meta.get("workingScheduleId") is not None}
-    divergences = instruments.schedule_divergences(
+    divergent_ids = instruments.divergent_schedule_ids(
         instruments.load_calendar(cycle.calendar_cache), schedule_ids,
         session.date_ny)
-    if divergences:
-        # The cycle times ONE close for the whole universe; if the exchanges
-        # it spans disagree about this session, part of the universe would
-        # be submitted against the wrong close.
-        return _abort(f"exchange schedules disagree for {session.date_ny}: "
-                      f"{divergences}")
-    tickers = {s: instruments.order_ticker(s) for s in trade_symbols}
+    schedule_divergent = sorted(
+        symbol for symbol, meta in mapped.items()
+        if meta.get("workingScheduleId") in divergent_ids)
+    if set(schedule_divergent) & set(trade_symbols):
+        # The cycle times ONE close for the whole universe. A0's eighteen are
+        # the caliber every recorded number was measured on, so a divergence
+        # among them still costs the whole session.
+        return _abort(f"exchange schedules disagree for {session.date_ny} on "
+                      f"A0 names: {sorted(set(schedule_divergent) & set(trade_symbols))}")
+    if schedule_divergent:
+        # One wide-universe name on an odd schedule loses its own order, not
+        # everyone else's decision.
+        log.warning("[decide] dropping %d name(s) on a divergent schedule: %s",
+                    len(schedule_divergent), schedule_divergent)
+
+    tickers = instruments.ticker_map_for(in_play)
     verdict = reconciler.reconcile(cycle.client, ledger, tickers)
     if not verdict.ok:
         return _abort(f"reconcile mismatch: {verdict.problems}")
 
-    view, history, thin = _assemble_market(cycle, session, key, trade_symbols,
-                                           state_symbol, fx_symbol)
+    view, injected, thin = _assemble_market(cycle, session, key, ledger,
+                                            a1_book)
 
     fee_buffer = Decimal(str((cfg.get("risk") or {}).get("fee_buffer", "0")))
     portfolio = ledger.portfolio_view(fee_buffer)
     strategy = load_intraday_strategy(cycle.shim_name, cycle.shim_version,
-                                      history)
+                                      injected)
     targets = strategy(view, portfolio, cycle.params)
+    for symbol in schedule_divergent:
+        targets.pop(symbol, None)
+    diagnostics = _signal_diagnostics(cycle, view, portfolio, injected)
     if not targets:
         return _abort(f"strategy returned no targets at key {key}; the shim's "
                       f"own decision gate did not fire")
 
     intents = _diff_to_intents(cycle, targets, ledger, view, session)
+    _warn_if_buys_precede_sells(intents)
     held_notional = _positions_ref_notional(ledger, view, cycle.params)
     orders_done = int(state.get("orders_by_session", {}).get(session_id, 0))
     gate_now = pd.Timestamp.now(tz="UTC")
@@ -333,10 +440,25 @@ def decide(cfg: dict[str, Any], armed: bool,
             "targets": {s: str(q) for s, q in targets.items()},
             "intents": len(intents)}
 
-    report = order_router.submit_intents(gate.approved, ledger, cycle.client,
+    # Throughput, measured at the moment orders actually go out rather than
+    # assumed at decision time: market orders clear at about 0.58 per second
+    # after the client's own headroom, so a rebalance-day batch can be longer
+    # than the runway that is left. Orders that cannot fit before the close
+    # are deferred rather than sent late -- a market order that misses the
+    # close fills at the next open and silently swaps the caliber. Deferred
+    # names come back the next session by ordinary re-sizing.
+    submit_now, deferred = _fit_before_close(gate.approved, session)
+    if deferred:
+        log.warning("[decide] %d intent(s) deferred: the remaining runway to "
+                    "%s does not fit them at the venue's order rate: %s",
+                    len(deferred), session.close_utc,
+                    ", ".join(i.symbol for i in deferred[:10]))
+
+    report = order_router.submit_intents(submit_now, ledger, cycle.client,
                                          pd.Timestamp(session.date_ny),
                                          dry_run=cycle.dry_run, armed=armed,
-                                         halt_path=cycle.halt_path)
+                                         halt_path=cycle.halt_path,
+                                         state_dir=cycle.state_dir)
 
     archive.record_signals(records_dir("t212", cfg["_env"]), {
         "strategy_id": cycle.strategy_id,
@@ -364,8 +486,15 @@ def decide(cfg: dict[str, Any], armed: bool,
         "book_before": {"cash_gbp": str(portfolio.cash_gbp),
                         "positions": {s: str(q)
                                       for s, q in portfolio.positions.items()}},
+        "attribution": (diagnostics.get("attribution") or {}).get("positions",
+                                                                  {}),
+        "rebalance": bool(((diagnostics.get("a1") or {}).get("rebalance")
+                           or {}).get("sessions_until_next") == 0),
+        "symbols_without_decision_bar": thin,
         "dry_run": cycle.dry_run or not armed,
     })
+
+    rebalance = _record_b0_streams(cycle, session_id, diagnostics, injected)
 
     state["last_decide_session"] = session_id
     state.setdefault("orders_by_session", {})[session_id] = \
@@ -373,6 +502,10 @@ def decide(cfg: dict[str, Any], armed: bool,
     cycle.save_cycle_state(state)
 
     return {"phase": "decide", "session": session_id,
+            "decide_finished_utc": str(pd.Timestamp.now(tz="UTC")),
+            "rebalance": rebalance,
+            "deferred": [i.symbol for i in deferred],
+            "diagnostics": diagnostics,
             "decision_key_utc": str(key),
             "submitted_at_utc": str(pd.Timestamp.now(tz="UTC")),
             "close_utc": str(session.close_utc),
@@ -384,30 +517,80 @@ def decide(cfg: dict[str, Any], armed: bool,
             "ambiguous": report.ambiguous.symbol if report.ambiguous else None}
 
 
-def _assemble_market(cycle: _Cycle, session, key: pd.Timestamp,
-                     trade_symbols: list[str], state_symbol: str,
-                     fx_symbol: str):
+def _assemble_market(cycle: _Cycle, session, key: pd.Timestamp, ledger,
+                     a1_book: dict):
     """Refresh, load and gate the market data for one decision.
+
+    Returns (view, injected, thin). `injected` is whatever this strategy's
+    factory binds: the adjusted daily rows for the A0 shim, the whole
+    injection object for B0. The caller passes it straight to
+    load_intraday_strategy, so the call site is the same either way.
 
     The daily series is refreshed too, not only the hourly one: adjustment is
     retroactive, so an ex-dividend date rewrites the whole history and with
     it the splice factor the shim applies to today's session.
     """
-    feed_symbols = trade_symbols + [state_symbol, fx_symbol]
-    market_data.refresh_bars(feed_symbols, _INTERVAL)
-    market_data.refresh_bars(trade_symbols + [state_symbol], "1d")
-
+    trade_symbols = list(cycle.params["trade_symbols"])
+    state_symbol = cycle.params["state_symbol"]
+    fx_symbol = cycle.params["fx_symbol"]
     end = str(session.date_ny)
     intraday_start = str((pd.Timestamp(session.date_ny)
                           - pd.Timedelta(days=market_data.INTRADAY_SESSIONS_LOADED
                                          * 2)).date())
-    frames = market_data.load_frames(feed_symbols, _INTERVAL, intraday_start, end)
-    thin = market_data.assert_intraday_ready(frames, key, trade_symbols,
-                                             state_symbol, fx_symbol)
+
+    if not cycle.is_b0:
+        feed_symbols = trade_symbols + [state_symbol, fx_symbol]
+        market_data.refresh_bars(feed_symbols, _INTERVAL)
+        market_data.refresh_bars(trade_symbols + [state_symbol], "1d")
+        frames = market_data.load_frames(feed_symbols, _INTERVAL,
+                                         intraday_start, end)
+        thin = market_data.assert_intraday_ready(frames, key, trade_symbols,
+                                                 state_symbol, fx_symbol)
+        view = market_data.build_view(frames, key)
+        history = market_data.daily_rows(trade_symbols + [state_symbol],
+                                         cycle.history_start, end)
+        return view, history, thin
+
+    # B0: the A1 half of the universe is whatever the last rotation chose plus
+    # whatever is still held, so the refresh list is built at decision time
+    # rather than configured.
+    a1_names = sorted((set(a1_book) | set(ledger.positions))
+                      - set(trade_symbols))
+    thin = list(market_data.refresh_for_decision(cycle.params, session, key,
+                                                 a1_names))
+    injection = market_data.load_b0_injection(
+        cycle.params, session.date_ny, held=list(ledger.positions),
+        records_root=cycle.records_root)
+    feed_symbols = injection["view_symbols"]
+    frames = market_data.load_frames(feed_symbols, _INTERVAL, intraday_start,
+                                     end)
+    thin += market_data.assert_intraday_ready(
+        frames, key, trade_symbols, state_symbol, fx_symbol,
+        soft_symbols=[s for s in a1_names if s in frames])
+    thin = sorted(set(thin))
+    injection["thin"] = thin
     view = market_data.build_view(frames, key)
-    history = market_data.daily_rows(trade_symbols + [state_symbol],
-                                     cycle.history_start, end)
-    return view, history, thin
+    return view, injection, thin
+
+
+def _signal_diagnostics(cycle: _Cycle, view, portfolio, injected) -> dict:
+    """Seam S6, computed BEFORE anything is submitted.
+
+    After submission the book already carries this session's pending
+    quantities, so every held/entering/exiting status and the whole
+    attribution would describe a state the decision never saw. Failures are
+    swallowed on purpose: a diagnostics panel must never be able to stop a
+    decision that has already passed every gate.
+    """
+    if not cycle.is_b0:
+        return {}
+    try:
+        module = load_module(cycle.shim_name, cycle.shim_version)
+        return module.signal_diagnostics(view, portfolio, cycle.params,
+                                         injected)
+    except Exception as exc:                       # noqa: BLE001
+        log.warning("[decide] diagnostics unavailable: %s", exc)
+        return {"error": str(exc)}
 
 
 def _wait_for_submit_instant(submit_at: pd.Timestamp, close_utc: pd.Timestamp,
@@ -525,8 +708,12 @@ def settle(cfg: dict[str, Any], stop_check=None) -> dict[str, Any]:
         poll_sec=float(execution.get("settle_poll_sec", 30)),
         stop_check=stop_check)
 
+    # Reconcile against every ticker the BOOK holds, not only the configured
+    # eighteen: a wide-universe strategy accumulates positions outside that
+    # list, and a table that omits them reports a clean book that is not.
     trade_symbols = list(cycle.params["trade_symbols"])
-    tickers = {s: instruments.order_ticker(s) for s in trade_symbols}
+    tickers = instruments.ticker_map_for(
+        sorted(set(trade_symbols) | set(ledger.positions)))
     verdict = reconciler.reconcile(cycle.client, ledger, tickers)
 
     # The authoritative timing fills at the decision session's close. A fill
@@ -541,7 +728,7 @@ def settle(cfg: dict[str, Any], stop_check=None) -> dict[str, Any]:
         cycle.halt_path.parent.mkdir(parents=True, exist_ok=True)
         cycle.halt_path.touch()
         log.critical("[settle] fill timing breach, halt raised: %s", breaches)
-        notify("A0 fill timing breach -- halted",
+        notify(f"{cycle.strategy_id} fill timing breach -- halted",
                f"{len(breaches)} fill(s) landed far after submission; "
                f"trading stops until the halt is cleared")
         ledger.record_note(str(pd.Timestamp.now(tz="UTC").value),
@@ -552,7 +739,7 @@ def settle(cfg: dict[str, Any], stop_check=None) -> dict[str, Any]:
         # truth and alarm, never block. Negative strategy cash means the
         # strategy has spent account money outside its allocation.
         log.critical("[settle] ledger cash is NEGATIVE: %s", ledger.cash_gbp)
-        notify("A0 strategy cash negative",
+        notify(f"{cycle.strategy_id} strategy cash negative",
                f"book cash {ledger.cash_gbp} GBP; the strategy overspent "
                f"its allocation -- review before the next session")
         ledger.record_note(str(pd.Timestamp.now(tz="UTC").value),
@@ -608,6 +795,85 @@ def status(cfg: dict[str, Any]) -> dict[str, Any]:
         out["book"] = f"unavailable: {exc}"
     out["cycle_state"] = cycle.cycle_state()
     return out
+
+
+def adopt_book(cfg: dict[str, Any], from_strategy_id: str,
+               confirm: bool = False) -> dict[str, Any]:
+    """Hand one strategy's cash and positions to the configured strategy.
+
+    A0's live book holds real shares. Starting B0 with init_ledger would leave
+    those shares owned by a retired book while B0 believed it held nothing,
+    and the first reconciliation would report venue positions no book claims.
+    This is the only supported path from one book to the other.
+
+    Every precondition below exists because violating it loses money or
+    truth, not because it is tidy:
+
+      confirm     The account owner has to say so in this invocation. Moving
+                  the ownership of live positions is not a routine command.
+      no daemon   A running daemon may be inside a decision at this instant;
+                  it would submit against the book it loaded before the
+                  handover.
+      quiet hour  Between the previous settle and the next decision key. Doing
+                  this mid-session means a fill can arrive for an order the
+                  old book owns while the new book already claims the shares.
+      settled     The source has no open orders and is not frozen, enforced by
+                  ShadowLedger.init_adopted.
+
+    The source book is retired, not deleted: it is the only record of what
+    that strategy did, and ledger_store.restore_ledger puts it back.
+    """
+    cycle = _Cycle(cfg)
+    if not confirm:
+        return _abort("adopt-book moves ownership of live positions; re-run "
+                      "with --confirm")
+    lock_path = cycle.state_dir / "daemon.lock"
+    if _lock_is_held(lock_path):
+        return _abort(f"the daemon holds {lock_path}; stop it before moving "
+                      f"the book, or it will trade the book it already loaded")
+    now = pd.Timestamp.now(tz="UTC")
+    sessions_ = cycle.session_list()
+    live = instruments.current_session(sessions_, now)
+    if live is not None:
+        return _abort(f"session {live.date_ny} is open; hand the book over "
+                      f"between the close and the next decision key")
+    try:
+        source = ShadowLedger.load(cycle.state_dir, from_strategy_id)
+    except (FileNotFoundError, LedgerFrozenError) as exc:
+        return _abort(f"source book unavailable: {exc}")
+    try:
+        adopted = ShadowLedger.init_adopted(cycle.state_dir,
+                                            cycle.strategy_id, source)
+    except (FileExistsError, LedgerFrozenError, ValueError) as exc:
+        return _abort(f"adoption refused: {exc}")
+
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    moved = ledger_store.retire_ledger(cycle.state_dir, from_strategy_id,
+                                       stamp)
+    tickers = instruments.ticker_map_for(sorted(adopted.positions))
+    verdict = reconciler.reconcile(cycle.client, adopted, tickers)
+    return {"phase": "adopt-book", "from": from_strategy_id,
+            "to": cycle.strategy_id,
+            "cash_gbp": str(adopted.cash_gbp),
+            "positions": {s: str(q) for s, q in adopted.positions.items()},
+            "retired": moved, "retired_stamp": stamp,
+            "reconcile_ok": verdict.ok, "reconcile": verdict.summary(),
+            "rollback": f"ledger_store.restore_ledger(state_dir, "
+                        f"{from_strategy_id!r}, {stamp!r}) after retiring "
+                        f"{cycle.strategy_id}"}
+
+
+def _lock_is_held(path) -> bool:
+    """Whether another process holds an exclusive flock on a lock file."""
+    if not path.exists():
+        return False
+    try:
+        with open(path, "a") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
 
 
 def init_ledger(cfg: dict[str, Any], cash_gbp: Decimal) -> dict[str, Any]:
@@ -667,6 +933,133 @@ def _diff_to_intents(cycle: _Cycle, targets: dict[str, Decimal], ledger,
             ref_price_usd=Decimal(str(bar.close)),
             fx_usd_per_gbp=Decimal(str(fx_bar.close))))
     return intents
+
+
+def _warn_if_buys_precede_sells(intents) -> bool:
+    """Warn, without reordering, when a purchase is queued before a sale.
+
+    The order comes from the strategy (decision A6) and the engine and the
+    venue both consume it as given, so silently re-sorting here would hide a
+    strategy defect and change which orders the cash check accepts relative to
+    the backtest. Reporting it is the honest response: the batch still goes as
+    the strategy asked, and the log says the ordering guarantee was not met.
+    """
+    first_buy = next((n for n, i in enumerate(intents) if i.quantity > 0), None)
+    if first_buy is None:
+        return False
+    late_sell = next((i.symbol for i in intents[first_buy:] if i.quantity < 0),
+                     None)
+    if late_sell is None:
+        return False
+    log.warning("[decide] target order puts a buy before the sell of %s; "
+                "the cash freed by that sell is not visible to the buys "
+                "ahead of it", late_sell)
+    return True
+
+
+def _fit_before_close(intents, session, safety_sec: int = 30):
+    """Split a batch into what fits before the close and what does not.
+
+    The venue accepts market orders at RATE_LIMITS["order_market"], and
+    common.net applies SAFETY_RATIO on top; 16 orders measured 26 seconds on
+    2026-08-31, which is the same 0.58 per second. The runway is measured
+    against the CLOSE, not against the submission lead, because that is the
+    instant a market order has to reach.
+    """
+    rate = RATE_LIMITS["order_market"] * SAFETY_RATIO
+    runway = (session.close_utc - pd.Timestamp.now(tz="UTC")).total_seconds()
+    capacity = int(max(0.0, runway - safety_sec) * rate)
+    if capacity >= len(intents):
+        return list(intents), []
+    return list(intents[:capacity]), list(intents[capacity:])
+
+
+def _record_b0_streams(cycle: _Cycle, session_id: str, diagnostics: dict,
+                       injected) -> bool:
+    """Write b0_allocation every session and a1_plan on a rotation.
+
+    Returns whether this session was a rotation. Both rows are keyed by their
+    date, so replaying a session cannot duplicate them. Written AFTER
+    submission but built from the diagnostics captured BEFORE it, because the
+    statuses describe the book the decision saw.
+    """
+    if not cycle.is_b0 or not diagnostics or "allocation" not in diagnostics:
+        return False
+    allocation = diagnostics.get("allocation") or {}
+    attribution = diagnostics.get("attribution") or {}
+    a1_tree = diagnostics.get("a1") or {}
+    rebalance_tree = a1_tree.get("rebalance") or {}
+    is_rebalance = rebalance_tree.get("sessions_until_next") == 0
+
+    archive.record_b0_allocation(cycle.records_root, {
+        "decision_date": session_id,
+        "strategy_id": cycle.strategy_id,
+        "equity_gbp": allocation.get("equity_gbp"),
+        "priority": diagnostics.get("priority"),
+        "a0_names": allocation.get("a0_names"),
+        "a1_names": allocation.get("a1_names"),
+        "overlap": allocation.get("overlap"),
+        "a0_target_gbp": allocation.get("a0_target_gbp"),
+        "a1_target_gbp": allocation.get("a1_target_gbp"),
+        "cash_target_gbp": allocation.get("cash_target_gbp"),
+        "attribution": attribution.get("positions", {}),
+        "a0_value_gbp": attribution.get("a0_value_gbp"),
+        "a1_value_gbp": attribution.get("a1_value_gbp"),
+        "cash_gbp": attribution.get("cash_gbp"),
+    })
+
+    if is_rebalance:
+        book = [row for row in (a1_tree.get("book") or [])
+                if row.get("status") != "exiting"]
+        names = {row["symbol"] for row in book}
+        previous = set((injected or {}).get("a1_book") or {})
+        archive.record_a1_plan(cycle.records_root, {
+            "rebalance_date": session_id,
+            "strategy_id": cycle.strategy_id,
+            "session_index": rebalance_tree.get("session_index"),
+            "eligible_count": a1_tree.get("eligible_count"),
+            "book": book,
+            "dropped": sorted(previous - names),
+            "added": sorted(names - previous),
+            "rank_as_of": rebalance_tree.get("rank_as_of"),
+            "universe_file": (cycle.params.get("a1_params") or {})
+            .get("universe_file"),
+            "code_version": f"{cycle.signal_name}_v"
+            + cycle.signal_version.replace(".", "_"),
+        })
+    _save_rebalance_state(cycle, rebalance_tree)
+    return bool(is_rebalance)
+
+
+def _save_rebalance_state(cycle: _Cycle, rebalance_tree: dict) -> None:
+    """Cache the rotation counters so the dashboard need not recompute them.
+
+    A CACHE, not the truth: the truth is the session list and the anchor, and
+    both are pure functions the decision recomputes every time. A session the
+    cycle aborted still advances the rotation, which is why nothing may be
+    derived from this file's presence or absence.
+    """
+    if not rebalance_tree:
+        return
+    path = cycle.state_dir / "a1_rebalance_state.json"
+    payload = {"anchor": rebalance_tree.get("anchor"),
+               "session_index": rebalance_tree.get("session_index"),
+               "every": rebalance_tree.get("every"),
+               "sessions_until_next": rebalance_tree.get(
+                   "sessions_until_next"),
+               "last_rebalance": rebalance_tree.get("last_rebalance"),
+               "rank_as_of": rebalance_tree.get("rank_as_of"),
+               "rank_stale_sessions": rebalance_tree.get(
+                   "rank_stale_sessions"),
+               "written_utc": str(pd.Timestamp.now(tz="UTC"))}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".writing")
+        tmp.write_text(json.dumps(payload, indent=1, default=str),
+                       encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("[decide] could not cache the rotation state: %s", exc)
 
 
 def _positions_ref_notional(ledger, view, params) -> Decimal:

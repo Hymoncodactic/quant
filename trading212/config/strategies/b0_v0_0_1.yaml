@@ -1,0 +1,21 @@
+# B0 v0.0.1 baseline parameters. Source for every value is
+# trading212/strategy/b0_spec.md, section noted per key. B0 combines A0 and A1
+# and introduces no signal, so it carries no signal parameters of its own:
+# a0_params and a1_params are assembled by the entry layer
+# (trading212/execution/session_cycle.py assemble_params, seam S1) from the two
+# other files in this directory, with live_from and rebalance_anchor overridden
+# to execution.b0_live_from. Writing them here as well would create a second
+# copy that drifts.
+priority: a1                  # spec 3.2; who sizes a name both legs want
+a1_band: 0.10                 # spec 3.4; no-churn band on an A1 leg
+slot_headroom: 0.99           # spec 3.3, 3.4
+signal_view_cash_gbp: 1000000 # spec 3.1; reads A0's signal set, sizes nothing
+# Live: emit every reduction before any purchase, so a sell's proceeds are
+# already visible when the cash check reaches the buys. The reference
+# implementation did the opposite and paid about 2,000 of its 2,901 rejections
+# for it (spec 5). Set false only to reproduce that reference.
+sells_first: true
+fx_symbol: GBPUSD=X
+# Overridden by the entry layer with execution.b0_live_from; the value here is
+# the reproduction arm's start.
+live_from: "2020-01-02"

@@ -60,7 +60,7 @@
 
 | 分组 | 含义 | 可交易性 |
 |---|---|---|
-| `us_equity` | 美股普通股 24 只 | Trading 212 可买 |
+| `us_equity` | 美股普通股：首轮 24 只，自 2026-08-23 起并入 B0 候选池，磁盘上 1,501 个目录、A1 有效池 1,498 只（见 §7） | Trading 212 可买 |
 | `us_etf` | 美国注册 ETF 17 只 | **英国零售不可买**，仅供研究对照。两道法律障碍：PRIIPs 无 KID + FSMA 2000 s238 |
 | `uk_tradable` | 伦敦上市 UCITS / ETC 10 只 + GBPUSD 汇率 | 可买（App 已确认有 Buy 按钮）。价差与执行成本见 `research/notes/20260819_t212_execution_and_liquidity.md` |
 
@@ -115,4 +115,43 @@ data/t212/curated/<分组>/<代码>/<周期>/
 
 ## 7. 缺口
 
-本轮 52 个标的全部成功（ORCL 首轮失败，单独重试后补齐）。无缺口登记项。
+首轮 52 个标的全部成功（ORCL 首轮失败，单独重试后补齐）。
+
+自 2026-08-23 起 `us_equity` 另含 B0 候选池的 1,498 只（见 §4），其缺口登记在
+本目录 `GAPS.csv`，2026-09-03 复核：
+
+| 类型 | 标的 | 说明 |
+|---|---|---|
+| 上游单日空洞 | AMAT、JNJ、KO、LRCX、NEM、PG、XOM | 2026-08-28 缺日线，上游后补则全量重取自然恢复 |
+| 尾部截断 | LEG、WBS | 自 2026-08-28 起无新 bar |
+| 拼写不匹配（设计使然） | BRK-B、BF-B | 候选池 JSON 写 `BRK.B` / `BF.B`，磁盘写连字符。研究面板按池内拼写查目录，两者都查不到而被跳过，故 A1 的有效池是 **1,498** 而非 1,500。全部已记录的 A1 与 B0 结果都建立在这 1,498 只上；补回这两只属口径变更，须先回测 |
+
+缺口对 A1 准入的影响是**放大的**：准入用 `rolling(252, min_periods=252)`，
+一天空洞会让该标的其后 252 个场次全部不可准入。这是研究口径的既有行为，
+本轮不改，只在此写明。
+
+## 8. `curated/a1/rank/` —— A1 排名表（2026-09-03 新增）
+
+一个已收盘美股场次一份 parquet：`data/t212/curated/a1/rank/<YYYY-MM-DD>.parquet`。
+生成脚本 `trading212/ingest/a1_rank.py`（由 `scripts/update_data.py` 的第四 pass 调用），
+准入与分数全部委托 `trading212/strategy/a1_v0_0_1.py::rank_table`。
+
+| 列 | 类型 | 含义 |
+|---|---|---|
+| `symbol` | str | 磁盘拼写（连字符） |
+| `ticker` | str \| null | 场所下单 ticker，取自 `data/reference/t212_universe_ticker_map_<date>.json` |
+| `close` | float | 该场次收盘（已复权） |
+| `score` | float \| null | 12-1 动量 `C[t-21]/C[t-252] - 1` |
+| `eligible` | bool | 五条准入全过 |
+| `elig_reason` | str | `ok`、`dollar_volume`、`zero_volume`、`history`、`participation`、`no_ticker`、`no_score` |
+| `rank` | int \| null | 仅对 `eligible` 且有分数者，1 起，按分数降序 |
+| `panel_as_of` | str | 面板最后场次，等于文件名日期 |
+| `generated_at_utc` | str | 生成时刻 |
+| `code_version` | str | 生成时的策略模块版本，如 `a1_v0_0_1` |
+
+口径：只对**已收盘**场次生成；面板起点固定 2010-01-04（准入 E3 从此起算）；
+同日重跑原子覆盖。当日覆盖率低于 95% 时**拒绝出表**（`MIN_SESSION_COVERAGE`），
+2026-09-03 实测未完成的日线 pass 只让 17/1498 只有当日 bar，照排会产出一份
+只含 15 只可选的表。
+
+2026-09-03 首份产出：`2026-08-31.parquet`，1,498 行，1,475 只准入并排名。

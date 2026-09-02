@@ -51,6 +51,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["LedgerFrozenError", "journal_path", "snapshot_path", "iter_journal",
+           "restore_ledger",
            "read_snapshot", "append_event", "write_snapshot", "retire_ledger"]
 
 import json
@@ -164,6 +165,37 @@ def retire_ledger(state_dir: Path, strategy_id: str, stamp: str) -> list[str]:
             path.rename(target)
             moved.append(target.name)
     return moved
+
+
+def restore_ledger(state_dir: Path, strategy_id: str, stamp: str) -> list[str]:
+    """Put a retired book back under its own name; the inverse of retire.
+
+    Refuses when a live book of that name already exists. Overwriting it would
+    destroy the only record of whatever has happened since the retirement, and
+    a rollback that loses the state it is rolling back from is not a rollback.
+
+    Returns the names restored.
+    """
+    restored: list[str] = []
+    pairs = []
+    for path in (journal_path(state_dir, strategy_id),
+                 snapshot_path(state_dir, strategy_id)):
+        retired = path.with_name(f"{path.name}.retired-{stamp}")
+        if retired.exists():
+            pairs.append((retired, path))
+    if not pairs:
+        raise FileNotFoundError(
+            f"no retired book for {strategy_id} with stamp {stamp} in "
+            f"{state_dir}")
+    for _retired, live in pairs:
+        if live.exists():
+            raise FileExistsError(
+                f"{live.name} already exists; restoring would overwrite the "
+                f"current book. Retire or move it first.")
+    for retired, live in pairs:
+        retired.rename(live)
+        restored.append(live.name)
+    return restored
 
 
 def _assert_journal_not_ahead(journal: Path, snap: dict[str, Any]) -> None:

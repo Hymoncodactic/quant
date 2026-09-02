@@ -114,21 +114,33 @@ T212 无行情接口也无推送通道，故「主循环」体现为**每个交�
 `decide` 在场次内 15:30（纽约）决策、收盘前 60 秒提交市价单，成交落在当日收盘价；
 `settle` 在收盘后从账单收割成交。入口 `python -m trading212.execution.run_a0 <phase>`。
 
+策略模块（`trading212/strategy/`，回测与实盘共用同一份）：
+
+| 模块 | 职责 |
+|---|---|
+| `a0_v0_0_1.py` | A0：18 只固定名单、TSMOM-252 信号、QQQ 双闸、等槽定量、免加仓带 |
+| `a0_intraday_v0_0_1.py` | A0 的时序适配层：15:30 决策、信息止于前一根 bar、合成日线视图（`daily_view()` 对外开放供 B0 复用），信号仍委托 `a0_v0_0_1` |
+| `a1_v0_0_1.py` | A1：约 1,500 只宽池、五条因果流动性准入、12-1 动量排名、前 20/前 40 缓冲带、等权定量。`rank_table` 是准入与分数的唯一实现 |
+| `b0_v0_0_1.py` | B0：A0 与 A1 共用一个账户的资金分配。读 A0 信号集（合成现金视图）、按 `priority` 划归属、A1 吸收剩余资金并套 10% 免动带；`signal_diagnostics` 是看板整棵诊断树的来源 |
+
+执行与传输模块：
+
 | 模块 | 职责 |
 |---|---|
 | `client.py` | REST 传输：legacy 单钥鉴权、逐端点令牌桶限频、GET 重试；下单 POST 永不重试（venue 无幂等键），200 但不可解析同样抛 `OrderSubmitAmbiguousError`。`follow_page` 修补 transactions 端点只回查询串的分页缺陷 |
 | `archive.py` | 记账归档：把券商的历史订单/流水/分红原样落 `trading212/records/`，按 venue 自身 id 去重，增量走到已知记录即停 |
 | `execution/instruments.py` | 标的映射（`META→FB_US_EQ`，S4 已验证）与场次日历：`Session` 记录、半日市判定、15:30 决策键（US 表无 `CLOSE` 事件，常规收盘由 `AFTER_HOURS_OPEN` 标记） |
-| `execution/market_data.py` | 1h/1d 刷新与读取、日内截止视图（`LiveMarketView`，与引擎 `MarketView` 同鸭型）、日内新鲜度闸（含 FX 必须落在决策键前 90 分钟） |
+| `execution/market_data.py` | 1h/1d 刷新与读取、日内截止视图（`LiveMarketView`，与引擎 `MarketView` 同鸭型）、日内新鲜度闸（含 FX 必须落在决策键前 90 分钟）；B0 的三个接缝：`us_sessions`（场次真值 = 本地 SPY 日线，半日市计入）、`load_b0_injection`（只读注入包，看板可调）、`refresh_for_decision`（决策前刷新，含 A1 短窗、120 秒时间盒与 thin 语义） |
 | `execution/strategy_loader.py` | 执行侧按路径加载策略模块并校验身份；支持日内壳的 `make_strategy()` 工厂注入日线历史 |
 | `execution/shadow_ledger.py` | 事件溯源影子账本：event_id 幂等（复发事件带尝试计数）、写前意向、歧义冻结、组合视图 |
 | `execution/ledger_store.py` | 账本持久化子层：JSONL fsync 追加、原子快照替换、装载完整性规则 |
-| `execution/risk_gate.py` | 只收紧风控闸：限额缺失或为零即整体失效关闭；必须处于提交窗口内；卖量钳到持仓；数量地板 4dp；拒单理由与回测同词表 |
+| `execution/risk_gate.py` | 只收紧风控闸：限额缺失或为零即整体失效关闭；必须处于提交窗口内；卖量钳到持仓；数量步进逐标的（`qty_steps.json`，从拒单中学）；单笔名义上限只约束买单；卖出残量低于最小值即放大为全平；拒单理由与回测同词表 |
 | `execution/order_router.py` | 唯一下单出口：意向先落账 → POST → 回执落账；DRY_RUN 短路；未带 `--allow-orders` 降级演练并 CRITICAL；`extendedHours` 恒为 false |
 | `execution/order_monitor.py` | 挂单轮询至离场 + 从 `history/orders` 账单收割成交（含逐笔税费），对齐量后退休订单 |
 | `execution/reconciler.py` | 账本与账户单向对账；歧义只凭正证据解除（ticker+方向+数量+建单时刻），不自动修账 |
-| `execution/session_cycle.py` | 相位编排与全部闸门顺序；按场次防重；决策后等到收盘前提交瞬间；`_diff_to_intents` 镜像引擎差分语义与提交顺序 |
-| `execution/run_a0.py` | CLI：decide / settle / status / init-ledger / halt，带 fcntl 单实例锁 |
+| `execution/session_cycle.py` | 相位编排与全部闸门顺序；按场次防重；决策后等到收盘前提交瞬间；`_diff_to_intents` 镜像引擎差分语义与提交顺序；`assemble_params` 是决策与看板共用的唯一参数装配处；`adopt_book` 把 A0 账本移交 B0 |
+| `execution/run_a0.py` | CLI：decide / settle / status / init-ledger / adopt-book / halt / daemon，带 fcntl 单实例锁。模块名保留 `run_a0` 不改：看板以子串 `run_a0` 识别进程 |
+| `ingest/a1_rank.py` | 盘前第四 pass：已收盘场次上把 1,500 只候选池排一次名，落 `data/t212/curated/a1/rank/<date>.parquet`。准入与分数全部委托 `strategy/a1_v0_0_1.py::rank_table`；覆盖率不足 95% 的场次拒绝出表 |
 
 状态落地：`common/paths.execution_state_dir("t212")` → `data/t212/execution_state/`
 （账本日志与快照、场次状态、halt 旗标、日历缓存；机器本地，不入库）。

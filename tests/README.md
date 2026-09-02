@@ -22,6 +22,10 @@
 | 子目录 | 说明文档 |
 |---|---|
 | `backtest/` | `tests/backtest/README.md` |
+| `execution/` | 执行层测试（`test_b0_execution.py` 等 14 个文件）；夹具在 `tests/execution/conftest.py` |
+| `strategy/` | `tests/strategy/README.md` —— A1 与 B0 策略模块的单元测试 |
+| `ingest/` | `tests/ingest/README.md` —— 半截 bar 守卫与 A1 排名 pass |
+| `dashboard/` | 看板测试（归对话 D，见 `fixplans/t212/b0/00_coordination.md` §4） |
 | `live/` | `tests/live/README.md` —— 交易时段的人工测试计划（文档，无代码） |
 
 ## 4. 依赖关系
@@ -59,3 +63,6 @@ demo 主机拒绝、本机 DNS 被劫持、CDN 边缘地址不同不得误判为
 2026-08-29 复审轮：`test_audit_defenses.py` 增至 25 项（时间锚回归、近失候选拒缺席、手工日志污点）；新增根 `conftest.py` 静音告警通道。
 2026-08-29 新增 `live/` 子目录：交易时段测试计划。发起网络请求的驱动脚本按 §一留在 `scripts/`。
 2026-08-31 新增 `execution/test_daemon_planner.py`（11 项）：常驻调度器纯规划函数的全分支。
+2026-09-03 新增 `strategy/` 与 `ingest/` 两个子目录（各配 README）与
+`tests/execution/test_b0_execution.py`。收集结果由 330 项增至 405 项
+（398 通过、7 跳过），既有 330 项行为未变。

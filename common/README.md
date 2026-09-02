@@ -76,3 +76,7 @@
 
 2026-08-22 建立本文件，登记现有文件。
 2026-08-29 新增 `alerts.py`：CRITICAL 交易事件的本机通知通道（审查发现 E5）。
+2026-09-03 `paths.py` 新增 `a1_rank_path(session_date)`：A1 盘前排名表的落点
+`data/t212/curated/a1/rank/<YYYY-MM-DD>.parquet`。它是全池的横截面派生件，
+不属于任何单个标的，故不走 `equity_interval_dir` 的按标的布局。
+写入方 `trading212/ingest/a1_rank.py`，读取方 `trading212/execution/market_data.py`。

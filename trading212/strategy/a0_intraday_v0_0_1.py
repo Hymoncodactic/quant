@@ -43,6 +43,9 @@ scripts/20260822_a0_minute_backtest.py; fills, costs and performance statistics,
 belong to backtest/.
 
 Public functions:
+    daily_view(view, params, daily_history, tz)  The synthetic daily view the
+                                   signal is computed on; B0 reads the same
+                                   one for its gates and its active set.
     make_strategy(daily_history)               Bind the daily history, return callable
     compute_targets(view, portfolio, params)   Plugin-contract entry point
 
@@ -86,7 +89,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["STRATEGY_NAME", "STRATEGY_VERSION", "make_strategy",
-           "compute_targets"]
+           "compute_targets", "daily_view"]
 
 import sys
 from decimal import Decimal
@@ -193,6 +196,20 @@ def _splice_scale(minute_bars, dates, today, daily_rows) -> float:
                 return float(row[4]) / float(last_minute_close)
             break
     return 1.0
+
+
+def daily_view(view, params, daily_history, tz: str | None = None):
+    """Public wrapper over the synthetic daily view.
+
+    B0 needs the SAME daily view A0's signal is computed on, both to read the
+    gates for the diagnostics panel and to decide which of the eighteen names
+    have enough daily history to hold a slot. Computing either from the hourly
+    view would be wrong -- 253 hourly bars span about thirty-six sessions, not
+    253 -- and re-deriving the splice here would be a second copy of it.
+    """
+    return _build_daily_view(view, params, daily_history,
+                             tz or params.get("exchange_tz",
+                                              DEFAULT_EXCHANGE_TZ))
 
 
 def _build_daily_view(view, params, daily_history, tz):

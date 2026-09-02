@@ -164,9 +164,14 @@ def make_merged(a0_params: dict, plan: dict, us_days: set,
         a0_sized = s0 - book_set if priority == "a1" else set(s0)
         a1_sized = book_set if priority == "a1" else book_set - s0
 
+        # sorted(): a0_sized and a1_sized are sets, and the engine submits
+        # in the target mapping's insertion order, so set iteration made the
+        # run depend on the process hash seed (fixplans/t212/b0/
+        # 02_strategy_b0.md fact 6). Sorting fixes the order without
+        # changing which names are sized.
         targets: dict[str, Decimal] = {}
         a0_value = D("0")
-        for s in a0_sized:
+        for s in sorted(a0_sized):
             px = price_of(s)
             held = held_of(s)
             q = held if held > 0 else _shares(slot, fx, px)
@@ -175,7 +180,7 @@ def make_merged(a0_params: dict, plan: dict, us_days: set,
 
         c1 = equity * headroom - a0_value
         per = c1 / D(max(len(a1_sized), 1)) if a1_sized else D("0")
-        for s in a1_sized:
+        for s in sorted(a1_sized):
             px = price_of(s)
             tgt = _shares(per, fx, px) if per > 0 else D("0")
             held = held_of(s)

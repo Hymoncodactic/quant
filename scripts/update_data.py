@@ -49,13 +49,28 @@ walk cannot see: a frozen member that has never been fetched, or one that has
 gone stale. On a healthy lake it makes no requests at all and simply reports
 that every frozen member is present.
 
+Four passes run in order: crypto, equity, the B0 membership check, and the A1
+ranking table. The last one ranks what the first three left on disk, so it must
+run after them and it refuses to rank a session the pool does not fully cover.
+
+Flags: --no-crypto, --no-equity, --no-b0 (skip the frozen-membership
+verification pass) and --no-a1 (skip the ranking pass).
+
 Public functions:
-    main()   Update crypto, equity and the B0 universe, then print the report.
+    main()   Update crypto, equity, the B0 universe and the A1 ranking table,
+             then print the report.
 
 Constants:
     B0_UNIVERSE_JSON  Path  Frozen B0 universe, 1500 names (S&P Composite 1500).
     B0_STALE_DAYS     int   A B0 name whose newest stored daily bar is younger
                             than this many calendar days is treated as current.
+    DAILY_WINDOW_DAYS int   Days fetched by the daily probe, 730.
+    FAILURE_CIRCUIT_BREAK int Consecutive failures that stop the equity pass.
+    US_CLOSE_LOCAL_HOUR int Exchange-local hour of the regular close, 16.
+    US_CLOSE_GRACE_MIN  int Minutes after it before a daily bar counts as
+                            final, 20. Below it the day's row is dropped, so a
+                            session in progress cannot be stored as a
+                            finished bar.
     CRYPTO_JOBS             list Tuples of (market, freq, dataset, period,
                                  symbols) for the crypto datasets that are still
                                  published.
@@ -94,6 +109,8 @@ from __future__ import annotations
 
 __all__ = ["main"]
 
+import contextlib
+import fcntl
 import json
 import sys
 import time
@@ -105,9 +122,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import pyarrow as pa
 
-from common.paths import DIR_DATA, binance_partition_dir, binance_partition_path
+from common.paths import (DIR_DATA, binance_partition_dir,
+                          binance_partition_path, equity_curated_root)
 from common.store import clear_stale_temps, write_table
 from crypto_trading.ingest import binance_archive as archive
+from trading212.ingest import a1_rank
 from trading212.ingest import yahoo_bars as yb
 
 # B0 pairs-trading universe: daily bars only. Frozen definition and provenance
@@ -159,6 +178,16 @@ DAILY_WINDOW_DAYS = 730
 # than that one symbol is bad. Grinding on past this point wastes hours and
 # hardens the throttle.
 FAILURE_CIRCUIT_BREAK = 25
+
+# US regular close, exchange-local, and how long after it a daily bar is
+# treated as final. Yahoo answers a mid-session request with a row for the
+# session in progress; stored, that half-formed bar is indistinguishable from a
+# finished one and the skip rule then never replaces it. 1,475 symbols carried
+# such a row from 2026-08-31. A half-day session closes at 13:00 and its bar is
+# therefore final well before this cut-off too.
+US_CLOSE_LOCAL_HOUR = 16
+US_CLOSE_GRACE_MIN = 20
+EXCHANGE_TZ = "America/New_York"
 
 
 def _crypto_out(market: str, dataset: str, symbol: str, period: str | None,
@@ -313,15 +342,110 @@ def _update_crypto() -> dict:
     return stats
 
 
+def _incomplete_from() -> date | None:
+    """The first exchange-local date whose daily bar may still be forming.
+
+    None means every date the source can return is final, so nothing is
+    dropped. Otherwise it is today's exchange-local date: today's bar is the
+    only one that can still be in progress, and the guard is a strict
+    inequality, so yesterday and everything before it are kept.
+
+    Deliberately conservative. Dropping a bar that was in fact final costs one
+    day of latency and the next run picks it up; storing one that was not
+    final silently corrupts every daily consumer of that symbol, and the skip
+    rule means it is never overwritten.
+    """
+    now = pd.Timestamp.now(tz=EXCHANGE_TZ)
+    final_at = now.normalize() + pd.Timedelta(hours=US_CLOSE_LOCAL_HOUR,
+                                              minutes=US_CLOSE_GRACE_MIN)
+    return None if now >= final_at else now.date()
+
+
+def _us_session_open() -> bool:
+    """Whether a regular US session is open right now, from the venue calendar.
+
+    Read-only and best effort: a missing or stale calendar cache answers
+    False, because the clock guard in _incomplete_from() already protects the
+    data and refusing to update on an unreadable cache would be worse than the
+    risk it removes.
+    """
+    try:
+        from common.paths import execution_state_dir
+        from trading212.execution import instruments as ins
+        cache = execution_state_dir("t212", "live") / "exchange_calendar.json"
+        if not cache.is_file():
+            return False
+        events = ins.session_events(ins.load_calendar(cache),
+                                    ins.US_SCHEDULE_ID_NASDAQ)
+        return ins.market_is_open(events, pd.Timestamp.now(tz="UTC"))
+    except Exception:
+        return False
+
+
+@contextlib.contextmanager
+def _store_lock():
+    """Hold the curated-store lock for ONE write.
+
+    trading212/execution/market_data.py refresh_bars takes the same lock and
+    blocks on it. Holding it for a whole three-hour pass would park the live
+    15:30 refresh until long after its submission instant and abort the
+    session; holding it per write costs the live process at most one symbol's
+    write while still serializing partition writes and stale-sibling deletes.
+    """
+    path = equity_curated_root() / ".refresh.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _update_a1_rank() -> dict:
+    """Fourth pass: the A1 ranking table for the session that just closed.
+
+    Runs after the daily bars are current, because it ranks what is on disk.
+    It refuses to rank a session the pool does not cover
+    (trading212/ingest/a1_rank.py MIN_SESSION_COVERAGE) rather than writing a
+    table built from whichever names happened to be refreshed.
+    """
+    print("\n" + "=" * 96)
+    print("A1 RANK  cross-sectional ranking of the frozen pool, one session")
+    print("=" * 96, flush=True)
+    try:
+        out = a1_rank.run()
+    except Exception as exc:
+        print(f"  not written: {exc}", flush=True)
+        return {"written": False, "error": str(exc)}
+    if out.get("written"):
+        print(f"  {out['session']}: {out['rows']} candidates, "
+              f"{out['eligible']} eligible, {out.get('ranked')} ranked",
+              flush=True)
+    else:
+        print(f"  {out['session']}: already present, nothing to do", flush=True)
+    return out
+
+
 def _update_equity() -> dict:
     """Refresh every stored equity symbol, maintaining only the intervals it has."""
     stats = {"updated": 0, "skipped": 0, "readjusted": 0, "files": 0, "rows": 0,
              "bytes": 0, "failed": [], "truncated": [], "full_fetch_failed": [],
              "aborted": False}
     consecutive_failures = 0
+    drop_from = _incomplete_from()
     print("\n" + "=" * 96)
     print("EQUITY  Yahoo, symbols discovered from disk")
     print("=" * 96, flush=True)
+    if _us_session_open():
+        print("  A regular US session is open; the daily pass would fetch "
+              "half-formed bars for every symbol. Run it after the close.",
+              flush=True)
+        stats["aborted"] = True
+        return stats
+    if drop_from is not None:
+        print(f"  Today ({drop_from}) is not final yet; its rows are dropped "
+              f"and picked up on the next run after the close.", flush=True)
 
     for group in yb.UNIVERSE:
         symbols = yb.discover_symbols(group)
@@ -341,7 +465,8 @@ def _update_equity() -> dict:
             # multi-day retry storm because every symbol burned its full back-off
             # ladder. Full history is now fetched only when it is actually needed:
             # for a symbol never stored, or one whose prices were restated.
-            frame = yb.fetch_interval(ticker, "1d", DAILY_WINDOW_DAYS, None)
+            frame = yb.fetch_interval(ticker, "1d", DAILY_WINDOW_DAYS, None,
+                                      drop_from=drop_from)
             time.sleep(yb.PACE_SEC)
             if frame.empty:
                 stats["failed"].append(f"{ticker}/1d")
@@ -384,7 +509,8 @@ def _update_equity() -> dict:
                 need_full, reason = False, ""
 
             if need_full:
-                full = yb.fetch_interval(ticker, "1d", None, None)
+                full = yb.fetch_interval(ticker, "1d", None, None,
+                                         drop_from=drop_from)
                 time.sleep(yb.PACE_SEC)
                 if full.empty:
                     # The window fetch succeeded, so the symbol is fine and only
@@ -400,7 +526,8 @@ def _update_equity() -> dict:
             else:
                 years = {int(frame["ts"].max().year)}
 
-            files, size = yb.write_daily(group, ticker, frame, years=years)
+            with _store_lock():
+                files, size = yb.write_daily(group, ticker, frame, years=years)
             stats["files"] += files
             stats["rows"] += len(frame)
             stats["bytes"] += size
@@ -417,7 +544,9 @@ def _update_equity() -> dict:
                 if part.empty:
                     stats["failed"].append(f"{ticker}/{interval}")
                     continue
-                files, size = yb.write_intraday(group, ticker, interval, part)
+                with _store_lock():
+                    files, size = yb.write_intraday(group, ticker, interval,
+                                                    part)
                 stats["files"] += files
                 stats["rows"] += len(part)
                 stats["bytes"] += size
@@ -468,6 +597,7 @@ def _update_b0_universe() -> dict:
         return stats
 
     tickers = _b0_tickers()
+    drop_from = _incomplete_from()
     cutoff = pd.Timestamp(date.today() - timedelta(days=B0_STALE_DAYS), tz="UTC")
     todo = []
     for ticker in tickers:
@@ -485,12 +615,14 @@ def _update_b0_universe() -> dict:
           f"({len(stats['missing_from_disk'])} never stored)", flush=True)
 
     for index, ticker in enumerate(todo, 1):
-        frame = yb.fetch_interval(ticker, "1d", None, None)
+        frame = yb.fetch_interval(ticker, "1d", None, None,
+                                  drop_from=drop_from)
         time.sleep(yb.PACE_SEC)
         if frame.empty:
             stats["failed"].append(ticker)
             continue
-        files, size = yb.write_daily("us_equity", ticker, frame)
+        with _store_lock():
+            files, size = yb.write_daily("us_equity", ticker, frame)
         stats["tickers"] += 1
         stats["files"] += files
         stats["rows"] += len(frame)
@@ -508,11 +640,16 @@ def main() -> None:
     if removed:
         print(f"Removed {len(removed)} temporary partition(s) from an interrupted run\n")
 
-    crypto = _update_crypto()
-    equity = _update_equity()
+    crypto = {"fetched": 0, "bytes": 0, "absent": 0, "errors": 0,
+              "superseded": 0} if "--no-crypto" in sys.argv else _update_crypto()
+    equity = _update_equity() if "--no-equity" not in sys.argv else \
+        {"updated": 0, "skipped": 0, "readjusted": 0, "files": 0, "rows": 0,
+         "bytes": 0, "failed": [], "truncated": []}
     b0 = _update_b0_universe() if "--no-b0" not in sys.argv else \
         {"tickers": 0, "skipped": 0, "files": 0, "rows": 0, "bytes": 0,
          "failed": [], "note": "skipped by --no-b0"}
+    a1 = _update_a1_rank() if "--no-a1" not in sys.argv else \
+        {"written": False, "note": "skipped by --no-a1"}
 
     print("\n" + "=" * 96)
     print("SUMMARY")
@@ -550,6 +687,13 @@ def main() -> None:
               f"({len(b0['missing_from_disk'])}): {b0['missing_from_disk'][:12]}")
     if b0.get("failed"):
         print(f"  b0 failures ({len(b0['failed'])}): {b0['failed'][:12]}")
+    if a1.get("written"):
+        print(f"  a1      ranking table for {a1['session']}: "
+              f"{a1['eligible']} of {a1['rows']} eligible")
+    elif a1.get("error"):
+        print(f"  a1      NOT written: {a1['error']}")
+    else:
+        print(f"  a1      {a1.get('note', 'already present')}")
     print(f"  elapsed {(time.time()-started)/60:.1f} min")
 
 

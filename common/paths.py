@@ -84,7 +84,8 @@ __all__ = [
     "venue_dir", "config_dir", "data_dir", "bar_path",
     "binance_partition_path", "binance_partition_dir",
     "equity_daily_path", "equity_intraday_path",
-    "equity_curated_root", "equity_interval_dir", "execution_state_dir",
+    "equity_curated_root", "equity_interval_dir", "a1_rank_path",
+    "execution_state_dir",
     "dashboard_state_dir", "records_dir",
     "month_bounds", "stamp_freq",
     "docs_data_dir", "data_spec_path", "manifest_path", "gaps_path",
@@ -337,6 +338,24 @@ def equity_interval_dir(group: str, symbol: str, interval: str,
     equity_daily_path / equity_intraday_path).
     """
     return equity_curated_root(data_root) / group / symbol / interval
+
+
+def a1_rank_path(session_date, data_root: Path | str | None = None) -> Path:
+    """Return the A1 ranking table for one already-closed US session.
+
+    Layout: <curated>/a1/rank/<YYYY-MM-DD>.parquet, one file per session,
+    written by trading212/ingest/a1_rank.py after that session's close and
+    read by the next session's decision. It sits under curated/ rather than
+    beside a symbol because it is a cross-sectional derivative of the whole
+    1,500-name panel and belongs to no single symbol.
+
+    Args:
+        session_date: The session the ranking describes. Accepts a date or
+            anything date-like; the file name is always the ISO date.
+    """
+    day = session_date if isinstance(session_date, date) \
+        else date.fromisoformat(str(session_date)[:10])
+    return equity_curated_root(data_root) / "a1" / "rank" / f"{day.isoformat()}.parquet"
 
 
 def month_bounds(period_start, latest) -> tuple[str, str]:

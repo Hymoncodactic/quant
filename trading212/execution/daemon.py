@@ -258,6 +258,10 @@ class _Daemon:
             "last_error": self.last_error,
             "updated_at_utc": str(pd.Timestamp.now(tz="UTC")),
         }
+        # The rotation counters, read from the cache the decision writes. They
+        # are shown, never used to decide: the truth is the session list and
+        # the anchor, both recomputed every session (04_execution.md 9).
+        payload.update(_rotation_fields(self.state_dir))
         path = _status_path(self.state_dir)
         tmp = path.with_suffix(".writing")
         tmp.write_text(json.dumps(payload, indent=1, default=str),
@@ -297,7 +301,7 @@ class _Daemon:
         except Exception as exc:
             self.last_error = f"decide raised: {exc!r}"[:300]
             log.critical("[daemon] %s", self.last_error)
-            notify("A0 daemon: decide failed",
+            notify(f"{_label(cfg)} daemon: decide failed",
                    f"{session_date}: {exc!r}"[:180])
             return
         finally:
@@ -315,7 +319,7 @@ class _Daemon:
             self._abort_streak += 1
             if armed:
                 self._notify_once(f"decide:{session_date}:{reason[:60]}",
-                                  "A0 daemon: decide aborted",
+                                  f"{_label(cfg)} daemon: decide aborted",
                                   f"{session_date}: {reason[:150]}")
             # The loop retries while the window is open; the streak widens
             # the retry below so a stuck condition does not hammer the
@@ -327,7 +331,7 @@ class _Daemon:
         submitted = str(result.get("submit", ""))
         log.info("[daemon] decide done for %s: %s", session_date, submitted)
         if armed:
-            notify("A0 orders submitted",
+            notify(f"{_label(cfg)} orders submitted",
                    f"{session_date}: {submitted[:150]}")
 
     def run_settle(self, cfg: dict[str, Any], session_date: str) -> None:
@@ -342,7 +346,7 @@ class _Daemon:
         except Exception as exc:
             self.last_error = f"settle raised: {exc!r}"[:300]
             log.critical("[daemon] %s", self.last_error)
-            notify("A0 daemon: settle failed",
+            notify(f"{_label(cfg)} daemon: settle failed",
                    f"{session_date}: {exc!r}"[:180])
             return
         finally:
@@ -359,7 +363,7 @@ class _Daemon:
             self.last_error = f"settle incomplete: {reason}"
             log.error("[daemon] %s", self.last_error)
             self._notify_once(f"settle:{session_date}",
-                              "A0 daemon: settle incomplete",
+                              f"{_label(cfg)} daemon: settle incomplete",
                               f"{session_date}: {reason[:150]}")
             return
         self.settled_sessions.add(session_date)
@@ -394,8 +398,39 @@ class _Daemon:
             return True
 
 
+def _rotation_fields(state_dir) -> dict[str, Any]:
+    """A1 rotation counters for the status file, or nulls when absent."""
+    blank = {"a1_session_index": None, "a1_next_rebalance": None,
+             "rank_as_of": None, "rank_stale_sessions": None}
+    path = Path(state_dir) / "a1_rebalance_state.json"
+    if not path.is_file():
+        return blank
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return blank
+    return {"a1_session_index": cached.get("session_index"),
+            "a1_next_rebalance": cached.get("sessions_until_next"),
+            "rank_as_of": cached.get("rank_as_of"),
+            "rank_stale_sessions": cached.get("rank_stale_sessions")}
+
+
+def _label(cfg: dict[str, Any]) -> str:
+    """The strategy id, for alert titles.
+
+    Alerts used to say "A0" whatever was running. With two strategies capable
+    of holding the same account, an alert that does not name its book cannot
+    be acted on.
+    """
+    strategy = ((cfg.get("execution") or {}).get("strategy") or {})
+    name = str(strategy.get("name", "a0"))
+    version = str(strategy.get("version", "0.0.1")).replace(".", "_")
+    return f"{name}_v{version}"
+
+
 def _notify_missed_sessions(daemon: "_Daemon", sessions: list,
-                            now: pd.Timestamp, lead_sec: int) -> None:
+                            now: pd.Timestamp, lead_sec: int,
+                            cfg: dict[str, Any] | None = None) -> None:
     """Tell an armed owner, once per session, that a window went untraded.
 
     Covers every way a window can slip past on this daemon's watch: the
@@ -416,7 +451,7 @@ def _notify_missed_sessions(daemon: "_Daemon", sessions: list,
         if instruments.decision_key(sess) < daemon.started_at:
             continue
         daemon._notify_once(f"missed:{sid}",
-                            "A0 daemon: session not decided",
+                            f"{_label(cfg or {})} daemon: session not decided",
                             f"{sid}: the decision window passed without "
                             f"a submission")
 
@@ -496,7 +531,7 @@ def run(venue: str = "t212") -> int:
                 continue
 
             if not dry_run:
-                _notify_missed_sessions(daemon, sessions, now, lead)
+                _notify_missed_sessions(daemon, sessions, now, lead, cfg)
             detail = {"wait_decide": "sleeping until the decision window",
                       "wait_settle": "awaiting the close",
                       "settle": "harvesting and reconciling",
@@ -507,7 +542,7 @@ def run(venue: str = "t212") -> int:
         except Exception as exc:
             daemon.last_error = f"loop error: {exc!r}"[:300]
             log.critical("[daemon] %s", daemon.last_error)
-            notify("A0 daemon error", repr(exc)[:180])
+            notify(f"{_label(cfg)} daemon error", repr(exc)[:180])
             daemon.write_status("error", daemon.last_error, None, None, None)
             daemon.stop.wait(RETRY_SEC)
 

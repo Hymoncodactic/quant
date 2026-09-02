@@ -37,6 +37,7 @@ from __future__ import annotations
 __all__ = ["SubmitReport", "intent_id_for", "submit_intents"]
 
 import contextlib
+import re
 import signal
 import threading
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ from common.alerts import notify
 from common.logging_setup import get_logger
 from common.net import PermanentError
 from trading212.client import OrderSubmitAmbiguousError, T212Client
+from trading212.execution import risk_gate
 from trading212.execution.risk_gate import OrderIntent
 
 log = get_logger("t212.execution")
@@ -103,9 +105,53 @@ def intent_id_for(strategy_id: str, decision_day, symbol: str,
     return f"{strategy_id}|{decision_day.date()}|{symbol}|{quantity}"
 
 
+_PRECISION_MARKER = "quantity-precision-mismatch"
+_PRECISION_DECIMALS = re.compile(r"(?:precision|decimal[s]?)\D{0,20}?(\d+)",
+                                 re.IGNORECASE)
+_PRECISION_STEP = re.compile(r"0\.0*1\b")
+
+
+def _learn_quantity_step(state_dir: Path | None, intent: OrderIntent,
+                         exc: Exception) -> Decimal | None:
+    """Turn a quantity-precision rejection into a stored per-symbol step.
+
+    The venue publishes no precision field -- the OpenAPI spec dropped
+    minTradeQuantity -- so the only way this system can learn that a name
+    trades in thousandths rather than ten-thousandths is to be told off for
+    getting it wrong. Recording the answer makes that a one-off cost; without
+    it the same order is rejected every session for as long as the strategy
+    wants the name.
+
+    Returns the learned step, or None when the rejection was about something
+    else or the response carried no readable precision.
+    """
+    if state_dir is None:
+        return None
+    detail = f"{getattr(exc, 'detail', '')} {exc}"
+    if _PRECISION_MARKER not in detail.lower().replace("_", "-"):
+        return None
+    step = None
+    found = _PRECISION_DECIMALS.search(detail)
+    if found:
+        places = int(found.group(1))
+        if 0 <= places <= 8:
+            step = Decimal(1).scaleb(-places)
+    if step is None:
+        literal = _PRECISION_STEP.search(detail)
+        if literal:
+            step = Decimal(literal.group(0))
+    if step is None or step <= 0:
+        log.error("[router] %s was rejected for quantity precision but the "
+                  "response carried no readable step: %s",
+                  intent.symbol, detail[:200])
+        return None
+    return risk_gate.record_qty_step(state_dir, intent.symbol, step)
+
+
 def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None,
                    decision_day, dry_run: bool, armed: bool,
-                   halt_path: Path | None = None) -> SubmitReport:
+                   halt_path: Path | None = None,
+                   state_dir: Path | None = None) -> SubmitReport:
     """Submit approved intents in sequence, honoring the ambiguity contract.
 
     Args:
@@ -117,6 +163,11 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
         armed: The per-run --allow-orders flag.
         halt_path: Halt flag file; when it appears mid-batch the remaining
             intents are not attempted. None disables the per-intent check.
+        state_dir: Where the learned quantity steps are stored. When given, a
+            quantity-precision rejection is parsed and the step it implies is
+            written there, so the next session sizes that name correctly
+            instead of paying the same rejection again. None keeps the old
+            behaviour of simply recording the rejection.
     """
     report = SubmitReport()
     effective_dry = dry_run or not armed
@@ -188,9 +239,12 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
                                         intent.ref_notional_gbp,
                                         str(order.get("status", "NEW")))
             except PermanentError as exc:
-                ledger.record_submit_rejected(intent.intent_id, repr(exc))
-                log.error("[router] rejected %s: %r", intent.ticker, exc)
-                report.rejected.append((intent, repr(exc)))
+                learned = _learn_quantity_step(state_dir, intent, exc)
+                reason = repr(exc) if learned is None else \
+                    f"precision_learned step={learned}: {exc!r}"
+                ledger.record_submit_rejected(intent.intent_id, reason)
+                log.error("[router] rejected %s: %s", intent.ticker, reason)
+                report.rejected.append((intent, reason))
                 continue
             except Exception as exc:
                 detail = exc.detail \
@@ -203,7 +257,7 @@ def submit_intents(intents: list[OrderIntent], ledger, client: T212Client | None
                 log.critical("[router] AMBIGUOUS submit for %s: %s -- book "
                              "frozen, remaining %d intents not attempted",
                              intent.ticker, detail, len(intents) - index - 1)
-                notify("A0 order AMBIGUOUS -- book frozen",
+                notify(f"{getattr(ledger, 'strategy_id', 'strategy')} order AMBIGUOUS -- book frozen",
                        f"{intent.ticker}: {detail[:120]}; check the venue "
                        f"and run settle")
                 report.ambiguous = intent

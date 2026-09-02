@@ -22,6 +22,7 @@ Public functions:
     earliest_bar(group, ticker)                        Oldest stored daily (date, close), for adjustment checks
     stored_close_at(group, ticker, ts)                 Stored daily close on one date, for anchor checks
     quote_currency(ticker)                             Exchange quote currency, cached
+    exchange_tz(ticker)                                IANA zone of the listing
 
 Constants:
     RETRY_BASE_SEC   float  Seconds to wait before retrying an empty or failed history
@@ -85,7 +86,7 @@ from __future__ import annotations
 
 __all__ = ["fetch_interval", "write_daily", "write_intraday", "latest_stored",
            "discover_symbols", "stored_intervals", "earliest_bar", "stored_close_at",
-           "quote_currency", "INTERVALS", "UNIVERSE",
+           "quote_currency", "exchange_tz", "INTERVALS", "UNIVERSE",
            "RETRY_BASE_SEC", "RETRY_ATTEMPTS", "PACE_SEC"]
 
 import time
@@ -110,6 +111,9 @@ warnings.filterwarnings("ignore")
 RETRY_BASE_SEC = 8.0
 RETRY_ATTEMPTS = 6
 PACE_SEC = 0.6
+
+_TZ_LONDON = "Europe/London"
+_TZ_NEW_YORK = "America/New_York"
 
 # (interval, lookback days or None for full history, days per request or None).
 # The per-request cap only binds on 1m. 15m, 30m and 90m are omitted because they
@@ -187,15 +191,45 @@ def quote_currency(ticker: str) -> str:
     return ccy
 
 
-def _tidy(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """Reduce a yfinance frame to the project schema."""
+def exchange_tz(ticker: str) -> str:
+    """IANA zone of a ticker's exchange.
+
+    London listings and the Yahoo FX series carry London-local stamps;
+    everything else in this universe is US. Same rule as
+    trading212/execution/market_data.py and backtest/t212/instruments.py.
+    """
+    return _TZ_LONDON if ticker.endswith(".L") or ticker.endswith("=X") \
+        else _TZ_NEW_YORK
+
+
+def _tidy(frame: pd.DataFrame, ticker: str,
+          drop_from: date | None = None) -> pd.DataFrame:
+    """Reduce a yfinance frame to the project schema.
+
+    Args:
+        drop_from: Discard every row whose EXCHANGE-LOCAL date is at or after
+            this date. Queried during a trading session, Yahoo returns a row
+            for the session in progress: an open, a running high and low, and
+            the last print as the close. Stored, that half-formed bar looks
+            exactly like a finished one, and because the updater skips a
+            symbol whose newest stored timestamp already covers the fetch, it
+            is never replaced -- 1,475 symbols carried such a row from
+            2026-08-31. Every daily consumer then reads a close that is not a
+            close: A1's admission, its 12-1 score and its ranking all shift.
+            The guard is the caller's decision, so a run made after the close
+            passes None and keeps the finished bar.
+    """
     out = frame[["Open", "High", "Low", "Close", "Volume"]].copy()
     out.columns = ["open", "high", "low", "close", "volume"]
     out.index.name = "ts"
     out = out.reset_index()
     out["ts"] = pd.to_datetime(out["ts"], utc=True)
     out["quote_ccy"] = quote_currency(ticker)
-    return out.dropna(subset=["close"])
+    out = out.dropna(subset=["close"])
+    if drop_from is not None:
+        local_day = out["ts"].dt.tz_convert(exchange_tz(ticker)).dt.date
+        out = out.loc[local_day < drop_from].reset_index(drop=True)
+    return out
 
 
 def _history(ticker: str, **kwargs) -> pd.DataFrame:
@@ -220,7 +254,8 @@ def _history(ticker: str, **kwargs) -> pd.DataFrame:
 
 
 def fetch_interval(ticker: str, interval: str, lookback: int | None,
-                   chunk: int | None) -> pd.DataFrame:
+                   chunk: int | None,
+                   drop_from: date | None = None) -> pd.DataFrame:
     """Fetch one interval for one ticker, stitching windows where required.
 
     The whole available window is refetched rather than only the new tail.
@@ -231,12 +266,14 @@ def fetch_interval(ticker: str, interval: str, lookback: int | None,
     """
     if lookback is None:
         raw = _history(ticker, period="max", interval=interval, auto_adjust=True)
-        return _tidy(raw, ticker) if not raw.empty else pd.DataFrame()
+        return _tidy(raw, ticker, drop_from) if not raw.empty \
+            else pd.DataFrame()
 
     if chunk is None:
         raw = _history(ticker, period=f"{lookback}d", interval=interval,
                        auto_adjust=True)
-        return _tidy(raw, ticker) if not raw.empty else pd.DataFrame()
+        return _tidy(raw, ticker, drop_from) if not raw.empty \
+            else pd.DataFrame()
 
     # 1m only: a single request is capped at 8 days, so the 30-day window is
     # covered by consecutive requests and concatenated.
@@ -247,7 +284,7 @@ def fetch_interval(ticker: str, interval: str, lookback: int | None,
         raw = _history(ticker, start=start.isoformat(), end=cursor.isoformat(),
                        interval=interval, auto_adjust=True)
         if not raw.empty:
-            parts.append(_tidy(raw, ticker))
+            parts.append(_tidy(raw, ticker, drop_from))
         cursor = start
         time.sleep(PACE_SEC)
         if start <= today - timedelta(days=lookback):

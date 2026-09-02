@@ -17,8 +17,8 @@ Trading 212 一侧的**执行层**：把 `trading212/strategy/` 算出的目标�
 | 文件 | 作用 | 存在必要性 |
 |---|---|---|
 | `__init__.py` | 声明为常规 Python 包 | 使 `from trading212.execution import ...` 可解析 |
-| `instruments.py` | 标的映射与场次日历（`Session`、半日市、15:30 决策键） | 决策时刻必须由交易所日历判定，不能靠 bar 缺失反推 |
-| `market_data.py` | 1h/1d 刷新与读取、日内截止视图、新鲜度闸 | T212 无行情接口，行情须另接且口径必须与回测一致 |
+| `instruments.py` | 标的映射与场次日历（`Session`、半日市、15:30 决策键）。映射自 2026-09-03 起是**合并表**：宽池映射文件加 A0 的 18 条手工核验条目（接缝 S5 `ticker_map_for`）；`divergent_schedule_ids` 返回分歧的 schedule id 供逐标的处置 | 决策时刻必须由交易所日历判定，不能靠 bar 缺失反推；B0 交易 A0 从未见过的名字，18 条静态映射覆盖不了 |
+| `market_data.py` | 1h/1d 刷新与读取、日内截止视图、新鲜度闸；接缝 S2 `us_sessions`（场次真值 = 本地 SPY 日线）、S3 `load_b0_injection`（只读注入包）、S4 `refresh_for_decision`（决策前刷新，含 A1 短窗与时间盒） | T212 无行情接口，行情须另接且口径必须与回测一致；S3 只读是看板可以调用它的前提，S4 取锁发网络故只有 `decide` 可调 |
 | `strategy_loader.py` | 按路径加载策略模块并校验身份；支持日内壳的工厂注入 | 策略包被裁定为不导出符号，注册表不能放在那里 |
 | `shadow_ledger.py` | 事件溯源影子账本（现金、持仓、在途、幂等事件） | 账户与手工交易共用，且 API 无 client order id，归因必须本地保存 |
 | `ledger_store.py` | 账本落盘与装载完整性规则 | 把「怎么写盘」与「记什么账」分开，二者的失效模式不同 |
@@ -26,8 +26,8 @@ Trading 212 一侧的**执行层**：把 `trading212/strategy/` 算出的目标�
 | `order_router.py` | 唯一下单出口，写前意向与歧义冻结 | 下单接口非幂等，任何重试都可能产生重复单 |
 | `order_monitor.py` | 挂单轮询与账单收割 | 成交与税费的权威来源是账单，不是下单回执 |
 | `reconciler.py` | 账本与账户对账、歧义裁定 | 对不上必须停手，且绝不自动改账 |
-| `session_cycle.py` | 两相位编排与全部闸门顺序 | 闸门顺序本身就是口径的一部分 |
-| `run_a0.py` | CLI 入口，含单实例锁 | 配置只在入口层读一次；并发实例会重复下单 |
+| `session_cycle.py` | 两相位编排与全部闸门顺序；接缝 S1 `assemble_params`（决策与看板共用的一份参数）、`adopt_book`（A0 账本移交 B0）、提交前诊断、吞吐截断、三条记录流 | 闸门顺序本身就是口径的一部分；参数若由两处各拼一份，看板会解释一个不同数字上的决策 |
+| `run_a0.py` | CLI 入口，含单实例锁。子命令：`decide`、`settle`、`status`、`init-ledger`、`adopt-book`、`halt`、`daemon`。模块名保留 `run_a0` 不改：看板以子串 `run_a0` 识别进程 | 配置只在入口层读一次；并发实例会重复下单 |
 | `daemon.py` | 常驻调度器：随时启动，自动等每场决策窗口跑 decide、收盘后跑 settle，日复一日 | 用户裁定（2026-08-31）盯钟是机器的事；是否武装由配置的 dry_run 每周期现读，看板开关即刻生效 |
 | `README.md` | 本文件 | |
 
@@ -82,3 +82,4 @@ FX 前 90 分钟断言；新增 `strategy_loader.py`（策略包不再导出符�
 2026-08-29 实盘前批次一测试发现标的池跨两张交易所日历（DELL/ORCL/TSM 为 56=NYSE，其余 71=NASDAQ），而执行层只按 71 推导决策键与收盘时刻。两张日历在缓存的 29 个会话上逐字段一致，故当前行为正确；新增 `instruments.schedule_divergences()` 并在 decide 中调用，分歧即中止，把这一隐式假设变为受检约束。
 2026-08-29 执行状态与记账归档按环境物理隔离：`execution_state_dir`/`records_dir` 增加 env 参数（live 路径不变，paper 走 `execution_state_paper/` 与 `records/paper/`），run_a0 的实例锁、halt、账本、手工单日志、信号归档、看板采样全部随环境分离；run_a0 改为先读配置后取锁（锁按环境命名）。模拟盘账本已初始化 £1,000。新增根目录 `dashboard_demo.command`（paper 看板，端口 8788）。
 2026-08-31 新增 `daemon.py` 常驻调度器（run_a0 daemon 子命令）：纯函数 plan_next 规划下一动作（11 项分支测试），daemon.lock 全程持有、执行锁仅在 decide/settle 期间短持（看板账本操作不再被闲置的调度器挡住）；启动时自恢复（有未结订单或冻结先 settle）；状态落 daemon_status.json 供看板读取。武装口径变更（用户裁定）：守护进程按 execution.dry_run 决定是否真实提交，不再需要 --allow-orders——该旗标仅保留于一次性 CLI 调用。
+2026-09-03 B0 接入：新增接缝 S1 至 S6 的实现（`assemble_params`、`us_sessions`、`load_b0_injection`、`refresh_for_decision`、`ticker_map_for`、提交前 `signal_diagnostics`）；风控闸新增卖单豁免单笔上限、残量放大为全平、逐环境 `qty_steps.json` 精度学习；`order_router` 解析精度拒单并写回步进；新增 `adopt_book` 与 `ledger_store.restore_ledger`（账本移交与回滚）；`decide` 的映射、对账与日历分歧改按「在场名字」而非固定 18 只；告警文案由字面 `A0` 改为 `strategy_id`。

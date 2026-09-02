@@ -116,7 +116,13 @@ def make_wide_strategy(plan: dict, gate: pd.Series | None,
         if iso in plan:
             strategy.last_book = plan[iso]
             strategy.dirty = True
-        current = {s for s, q in portfolio.positions.items() if q > 0}
+        # Insertion order of the target mapping decides submission order, and
+        # the engine iterates it as given. A set comprehension here ordered
+        # the zeros by the process hash seed, which moved sells relative to
+        # buys and changed which buys the cash check accepted: two seeds
+        # measured GBP 118,221.80 and GBP 116,595.49 on the same data
+        # (2026-09-03). Iterating the ledger's own dict is deterministic.
+        current = [s for s, q in portfolio.positions.items() if q > 0]
         g_open = True if gate is None else bool(gate.get(day, 0.0) > 0)
         if not g_open:
             strategy.dirty = True          # rebuy when the gate reopens

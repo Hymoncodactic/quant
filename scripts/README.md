@@ -36,6 +36,9 @@
 | `update_data.py` | 常驻工具，日常数据更新的主入口。股票走「全窗口重取」（复权是追溯性的，追加会在拆股日造成序列断裂），实取逻辑调 `trading212/ingest/yahoo_bars.py`，并先用一次 5 日探针跳过无变动的标的；加密走真增量（归档一经发布即不可变），月档到位后删除被其覆盖的日档；bookTicker 不更新（已停止发布）。开跑前先清理中断残留的临时分区。可反复运行、可随时中断 | 根目录 `update_data.command:9` 双击入口直接调它，是数据保鲜的唯一路径。删除后日常更新无入口 | `update_data.command:9`；`WORKING_MEMORY.md:28` |
 | `20260902_xsmom_a0_headtohead.py` | A1 赢家配置与 A0 在真实引擎上的正面对比（1d、same_close、worst 档、2020-01~2026-08） | A1 裁定 §2 的数字来源；合并回测脚本 import 其 `winner_plan`/`make_wide_strategy`/`session_curve`/`stats` | 人工执行；`20260902_a0_a1_merge_backtest.py` |
 | `20260902_a0_a1_merge_backtest.py` | A0+A1 合并一池 £1,000 每日打满（A1 吸收 A0 未开仓资金）与 A0/A1 各 £1,000 独立，六臂真实引擎回测 | 合并报告 `reports/a0_a1_merge_20260902.html` 的全部结果件来源 | 人工执行；`research/xsmom_wide/report/make_merge_report_data.py` 读其产物 |
+| `20260903_a1_module_backtest.py` | A1 模块与其参考实现在同一面板上的对照臂（1d、same_close、worst 档、£10,000、引擎起 2019-06-03） | A1 模块的验收：`fixplans/t212/b0/01_strategy_a1.md` §5 步 4 的复现步骤。判据不是某个历史数字而是「模块与参考逐位一致」——参考实现原本依赖 `PYTHONHASHSEED`（同一份数据两个种子实测 £118,221.80 与 £116,595.49），且日线复权是回溯的，隔日不可复现 | 人工执行；产物 `backtest/results/a1_module_vs_reference_20260903.csv` |
+| `20260903_b0_module_backtest.py` | B0 模块、其参考实现、以及打开 `sells_first` 的实盘顺序三臂对照（£1,000、引擎起 2010-01-04） | B0 模块的验收（`02_strategy_b0.md` §5），并量出「先卖后买」这一改动的代价 | 人工执行；产物 `backtest/results/b0_module_vs_reference_20260903.csv` |
+| `20260903_build_universe_ticker_map.py` | 用场所 instrument 元数据为 1,500 只候选池逐个求证下单 ticker，先按 `<SYMBOL>_US_EQ` 前缀、未命中再按 `shortName`，两者都要求 `STOCK` 且 `USD`；A0 的 18 条以 `A0_ORDER_TICKERS` 覆盖 | A1 准入第五条要求「无已验证 ticker 不准入」；`instruments.order_ticker` 对未映射标的抛异常，一次误映射就是把单发到另一家交易所 | 人工执行；产物 `data/reference/t212_universe_ticker_map_<date>.json`，读取方 `instruments.universe_ticker_map()` |
 
 ## 3. 子目录索引
 
@@ -89,3 +92,5 @@ import 本仓库：`common.paths`、`common.store`、`crypto_trading.ingest.bina
 2026-08-22 删除 `.gitkeep` 占位件，本目录已有实体文件与本说明，占位不再起作用（`CLAUDE.md` §4.2 第 6、8 条）。
 2026-08-29 新增 `20260829_live_probe.py`（只读探针，登记保留）。
 | 2026-09-02 | 新增 `20260902_xsmom_a0_headtohead.py` 与 `20260902_a0_a1_merge_backtest.py`（A1 对比与 A0+A1 合并回测入口） |
+| 2026-09-03 | 新增 `20260903_a1_module_backtest.py`、`20260903_b0_module_backtest.py`、`20260903_build_universe_ticker_map.py`。同日把两份 2026-09-02 参考脚本的集合迭代改为确定序（前者用账本持仓顺序、后者用 `sorted()`）：二者原本随 `PYTHONHASHSEED` 变，提交顺序变则拒单构成变、结果变，「逐位一致」的判据对任何实现都不可达 |
+| 2026-09-03 | `update_data.py`：新增第四 pass（A1 排名表）与 `--no-a1`/`--no-crypto`/`--no-equity` 开关；日线两 pass 加半截 bar 守卫、开市时拒跑、逐写持 `.refresh.lock`（原整 pass 不持锁，与实盘 15:30 刷新争写） |

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Double-click to bring every dataset up to date.
+# Double-click to bring every dataset up to date: crypto, equity, the B0
+# membership check and the A1 ranking table.
 #
 # Safe to run repeatedly and safe to interrupt: only the gap between what is
 # stored and what is available gets fetched, and partitions are written
@@ -24,7 +25,10 @@ fi
 echo $$ > "$LOCK.pid"
 trap 'rm -f "$LOCK.pid"' EXIT
 
-caffeinate -i ./.venv/bin/python -u scripts/update_data.py
+# "$@" forwards the pass switches (--no-crypto, --no-equity, --no-b0,
+# --no-a1) when the file is run from a terminal; a double-click passes
+# nothing and every pass runs.
+caffeinate -i ./.venv/bin/python -u scripts/update_data.py "$@"
 status=$?
 echo
 echo "-------------------------------------------------------------"

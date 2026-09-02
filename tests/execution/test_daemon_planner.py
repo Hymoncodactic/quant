@@ -214,7 +214,7 @@ def test_slept_through_window_notifies_once(tmp_path, monkeypatch):
     for _ in range(3):
         daemon_mod._notify_missed_sessions(d, table, wake, LEAD)
     # 08-28 predates the daemon; 09-01 is still ahead; only 08-31 fires.
-    assert calls == ["A0 daemon: session not decided"]
+    assert calls == ["a0_v0_0_1 daemon: session not decided"]
 
 
 def test_decided_or_settled_sessions_are_not_reported(tmp_path, monkeypatch):

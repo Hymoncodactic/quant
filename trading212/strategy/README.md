@@ -25,7 +25,14 @@
 | `a0_spec.md` | **A0 策略的完整规格**，面向无背景的程序化读者：固定名单、TSMOM-252 信号、两道 QQQ 市场闸（含 Yang-Zhang 公式、扩展分位、历史起点硬性条款）、等槽定量与免加仓、日线与小时频两种决策时序、已验证表现、风险限定、现有模块对照与参数表 | 删除后 A0 逻辑只剩代码与分散的裁定片段，无面向新读者的单一权威说明 | 新接手的实现者与审阅者；`b0_spec.md` 依赖它 |
 | `b0_spec.md` | **B0 策略（A0 与 A1 共用一个账户的融合）的完整规格**：信号集读取（合成现金视图）、归属划分与 `priority`、A0 名下/A1 名下定量、10% 免动带、结构性拒单、六臂回测结果与限定、未来 `b0_v0_0_1.py` 的契约 | 删除后融合规则只存在于回测脚本里，无可对照的规格 | 未来实现者；`reports/a0_a1_merge_20260902.html` 的读者 |
 | `a1_spec.md` | **A1 策略（宽池横截面动量选股）的完整规格**，面向无背景的程序化读者：候选池与因果流动性准入、12-1 动量信号、21 日重排日历、前 20/前 40 缓冲带选股、等权定量、执行口径、已验证表现与采纳判定、风险限定、未来 `a1_v0_0_1.py` 的实现契约与参数表。策略状态为研究定稿、未实现模块、未采纳为低风险配置 | 删除后 A1 的权威表述只剩分散在预注册、裁定与研究代码里的片段，未来实现模块时无单一对照件；§13 的契约（模块名、参数键、复现判据 111,348 GBP）是实现验收的依据 | 未来实现 `a1_v0_0_1.py` 的实现者；`research/decisions/20260902_xsmom_wide_ruling.md` 的读者 |
+| `a1_v0_0_1.py` | **A1 信号的唯一副本**。`STRATEGY_NAME = "a1"`、`STRATEGY_VERSION = "0.0.1"`。公开面六项：`rank_table(closes, volumes, as_of, params)`（准入五条与 12-1 动量的唯一实现，盘前 pass、回测脚本与单测都调它）、`select(rank_df, book, params)`（前 20 / 前 40 缓冲带）、`size(pick, equity, fx, prices, params)`（等权、0.0001 股步进）、`make_strategy(injection)`、`compute_targets`、`signal_diagnostics`。注入包两种形态互斥：实盘 `a1_rank`（盘前算好的排名表），研究 `panel`（closes/volumes 两张面板）。场次序列、上期名单与排名口径全部由注入包给出，模块内不嵌日历、不读盘 | 删除后 `load_module("a1","0.0.1")` 抛 `FileNotFoundError`，B0 在 import 处即失败，盘前排名 pass 失去准入与分数的实现。它同时是 A1 逻辑的唯一权威表述 | `trading212/strategy/b0_v0_0_1.py`（import 为 `_a1`）；`trading212/ingest/a1_rank.py`；`scripts/20260903_a1_module_backtest.py`；`tests/strategy/test_a1_v0_0_1.py` |
+| `b0_v0_0_1.py` | **B0 资金分配规则的唯一副本**。`STRATEGY_NAME = "b0"`、`STRATEGY_VERSION = "0.0.1"`。不引入新信号：读 A0 的信号集（经合成现金视图，只取集合不取股数）、按 `priority` 划分归属、A0 名下按等槽定量、A1 名下吸收剩余资金并套 10% 免动带，最后清零并按 `sells_first` 排序。公开面：`make_strategy(injection)`（接缝 S7）、`compute_targets`、`signal_diagnostics`（接缝 S6，看板的整棵诊断树） | 删除后执行层按 `intraday_name: b0` 装载即失败，B0 无法运行；它是「A0 与 A1 如何共用一个账户」的唯一可执行表述 | `trading212/execution/session_cycle.py::decide`（经 `load_intraday_strategy`）与 `_signal_diagnostics`；`scripts/20260903_b0_module_backtest.py`；`tests/strategy/test_b0_v0_0_1.py` |
 | `__init__.py` | 空文件（0 字节），把本目录声明为常规 Python 包 | `scripts/20260822_a0_minute_backtest.py:42` 与 `a0_intraday_v0_0_1.py:56` 的 `from trading212.strategy import ...` 以此为包锚点。注意 `a0_v0_0_1.py` 走的是 `strategy_loader` 的按路径加载（`importlib.util.spec_from_file_location`），不经包机制 | 上述两处 import |
+
+`a0_intraday_v0_0_1.py` 于 2026-09-03 新增公开函数 `daily_view(view, params, daily_history, tz)`，
+把原私有的合成日线视图开放给 B0：B0 需要与 A0 信号完全相同的那一份日线视图，
+既用于读闸，也用于判定 18 只中哪些有足够日线历史占槽位。在 1h 视图上数 253 根 bar
+只覆盖约 36 个场次，活跃集会算错。
 
 待处理事项两项：
 
@@ -82,3 +89,4 @@ import：
 2026-08-31 a0_v0_0_1 新增只读 `signal_diagnostics`（阈值距离诊断，供看板），双闸公式抽为 `_trend_gate_values`/`_vol_gate_values` 两个取值助手，`_gates_open` 改为调用它们；`compute_targets` 行为未变（等价性测试守卫）。
 | 2026-09-02 | 新增 `a1_spec.md`：宽池横截面动量策略正式命名 A1，规格文档落本目录（代码模块尚未实现） |
 | 2026-09-02 | 规格文件名去版本号（`a1_v0_0_1_spec.md` → `a1_spec.md`）；新增 `a0_spec.md`、`b0_spec.md`；融合策略正式命名 B0 |
+| 2026-09-03 | 新增 `a1_v0_0_1.py` 与 `b0_v0_0_1.py`（A1 与 B0 的实现），二者与各自的参考实现在全窗口逐位一致（`backtest/results/a1_module_vs_reference_20260903.csv`、`b0_module_vs_reference_20260903.csv`）；`a0_intraday_v0_0_1.py` 新增公开 `daily_view()`，`a0_v0_0_1.py` 未改 |

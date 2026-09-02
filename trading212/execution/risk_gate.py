@@ -62,8 +62,11 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["OrderIntent", "GateReport", "check_intents", "halt_active",
-           "T212_QTY_STEP", "QTY_STEP_OVERRIDES", "qty_step", "REQUIRED_RISK_KEYS"]
+           "T212_QTY_STEP", "QTY_STEP_OVERRIDES", "QTY_STEP_DEFAULTS",
+           "QTY_STEP_FILE", "qty_step", "qty_steps_path", "load_qty_steps",
+           "record_qty_step", "REQUIRED_RISK_KEYS"]
 
+import json
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
@@ -90,14 +93,84 @@ T212_QTY_STEP = Decimal("0.0001")
 # INTC order of 0.8326 rejected with "quantity-precision-mismatch: invalid
 # quantity precision 3" (traceId 695304f478dbe5e5fe98f642539baa6b) while
 # fifteen 4-decimal siblings were accepted -- precision is per instrument.
+# Steps learned the hard way, from a venue rejection. INTC is the one the
+# first live night produced (2026-08-31). The table is persisted per
+# environment so a rejection is paid for ONCE: without that, the same order is
+# rejected every session forever, because nothing else in the system knows the
+# venue's per-instrument precision -- the OpenAPI spec carries no such field.
+QTY_STEP_FILE = "qty_steps.json"
+QTY_STEP_DEFAULTS: dict[str, str] = {"INTC": "0.001"}
 QTY_STEP_OVERRIDES: dict[str, Decimal] = {
-    "INTC": Decimal("0.001"),
-}
+    symbol: Decimal(step) for symbol, step in QTY_STEP_DEFAULTS.items()}
 
 
 def qty_step(symbol: str) -> Decimal:
     """The order-quantity step for one symbol (override or default)."""
     return QTY_STEP_OVERRIDES.get(symbol, T212_QTY_STEP)
+
+
+def qty_steps_path(state_dir: Path) -> Path:
+    """Where one environment's learned quantity steps are stored."""
+    return Path(state_dir) / QTY_STEP_FILE
+
+
+def load_qty_steps(state_dir: Path) -> dict[str, Decimal]:
+    """Install the learned steps for one environment and return the table.
+
+    Called once per cycle, before any intent is priced. The defaults are the
+    floor: a stored file may add names or widen a step, never drop one, so a
+    corrupted or truncated file cannot quietly restore a precision that was
+    already proven wrong.
+    """
+    merged = {symbol: Decimal(step)
+              for symbol, step in QTY_STEP_DEFAULTS.items()}
+    path = qty_steps_path(state_dir)
+    if path.is_file():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.error("[risk] %s is unreadable (%s); using defaults only",
+                      path, exc)
+            stored = {}
+        for symbol, step in (stored or {}).items():
+            try:
+                value = Decimal(str(step))
+            except Exception:                      # noqa: BLE001
+                continue
+            if value > 0:
+                merged[str(symbol)] = max(value, merged.get(str(symbol),
+                                                            value))
+    QTY_STEP_OVERRIDES.clear()
+    QTY_STEP_OVERRIDES.update(merged)
+    return dict(merged)
+
+
+def record_qty_step(state_dir: Path, symbol: str, step: Decimal) -> Decimal:
+    """Persist one learned step atomically and install it immediately.
+
+    Widening only. A venue that rejected 0.0001 will reject it again, so a
+    later reading that suggests a finer step is not evidence and is ignored.
+    """
+    path = qty_steps_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stored: dict[str, str] = {}
+    if path.is_file():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError):
+            stored = {}
+    previous = Decimal(str(stored.get(symbol, "0")))
+    widened = max(previous, Decimal(str(step)))
+    stored[symbol] = str(widened)
+    tmp = path.with_suffix(".writing")
+    tmp.write_text(json.dumps(stored, indent=1, sort_keys=True),
+                   encoding="utf-8")
+    tmp.replace(path)
+    QTY_STEP_OVERRIDES[symbol] = max(QTY_STEP_OVERRIDES.get(symbol, widened),
+                                     widened)
+    log.warning("[risk] learned quantity step for %s: %s (was %s)",
+                symbol, widened, previous or T212_QTY_STEP)
+    return widened
 
 # Every one of these must be present and positive in cfg["risk"]; the gate
 # fails closed otherwise. Values are the user's call, not code defaults.
@@ -286,6 +359,21 @@ def _check_one(intent: OrderIntent, ledger_view, max_order: Decimal,
                                           rounding=ROUND_DOWN)
             if magnitude == 0:
                 return "held quantity rounds to zero at the venue step"
+        # Residual below the minimum: a partial sell that would leave a stub
+        # worth less than one order is enlarged into a full exit instead. The
+        # stub could never be sold afterwards -- every future order for it
+        # falls under the same floor -- so the position would be stranded at
+        # the venue while the strategy believed it had left. Enlarging a SELL
+        # only reduces exposure, which is the direction the gate is allowed to
+        # move in.
+        residual = sellable - magnitude
+        residual_gbp = residual * intent.ref_price_usd / intent.fx_usd_per_gbp
+        if residual > 0 and residual_gbp < min_value:
+            magnitude = sellable.quantize(qty_step(intent.symbol),
+                                          rounding=ROUND_DOWN)
+            log.info("[risk] %s sell enlarged to a full exit: the residual "
+                     "would have been %.2f GBP, under min_order_value_gbp %s",
+                     intent.symbol, residual_gbp, min_value)
 
     trimmed = replace(intent, quantity=magnitude.copy_sign(quantity))
     if trimmed.ref_notional_gbp < min_value:
@@ -294,7 +382,12 @@ def _check_one(intent: OrderIntent, ledger_view, max_order: Decimal,
         # conservative, user-owned floor (unverified venue fact).
         return f"notional {trimmed.ref_notional_gbp:.2f} below " \
                f"min_order_value_gbp {min_value}"
-    if trimmed.ref_notional_gbp > max_order:
+    if trimmed.quantity > 0 and trimmed.ref_notional_gbp > max_order:
+        # The per-order ceiling applies to BUYS only. It exists to cap how
+        # much new exposure one order may add; applied to a sell it does the
+        # opposite of its purpose -- a position that grew past the ceiling
+        # could never be exited, and the strategy's zero targets would be
+        # rejected every session forever while the position stayed on.
         return f"notional {trimmed.ref_notional_gbp:.2f} exceeds " \
                f"max_order_notional_gbp {max_order}"
     return trimmed

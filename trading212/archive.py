@@ -49,15 +49,23 @@ Outputs:
     trading212/records/positions.jsonl
     trading212/records/account_summary.jsonl
     trading212/records/signals.jsonl
+    trading212/records/a1_plan.jsonl
+    trading212/records/b0_allocation.jsonl
 
 Change log:
     2026-08-23  Created. The account owner asked for every record the API
                 exposes to be kept, in full, beside the venue's code.
+    2026-09-03  Two decision-side streams for B0: a1_plan (one row per A1
+                rotation) and b0_allocation (one row per decided session).
+                Landed ahead of the rest of B0 so the dashboard's
+                /api/records whitelist accepts them before the execution
+                layer starts writing them.
 """
 
 from __future__ import annotations
 
 __all__ = ["harvest_orders", "harvest_transactions", "harvest_dividends",
+           "record_a1_plan", "record_b0_allocation",
            "snapshot_positions", "snapshot_account", "record_signals",
            "harvest_all", "stream_path", "read_stream", "stream_stats",
            "STREAMS", "HISTORY_PAGES"]
@@ -84,6 +92,13 @@ STREAMS: tuple[tuple[str, str | None], ...] = (
     ("positions", None),
     ("account_summary", None),
     ("signals", None),
+    # B0 adds two decision-side streams. a1_plan is keyed by the rebalance
+    # date because a rotation is decided once and must not double-record if
+    # the session is replayed; b0_allocation is keyed by the decision date for
+    # the same reason. Both are written by the execution layer, never
+    # harvested from the venue (fixplans/t212/b0/00_coordination.md 5.1).
+    ("a1_plan", "rebalance_date"),
+    ("b0_allocation", "decision_date"),
 )
 
 
@@ -299,6 +314,32 @@ def record_signals(root: Path | None, payload: dict[str, Any]) -> int:
     """
     row = {"at_utc": _now(), **payload}
     return _append(stream_path(root, "signals"), [row])
+
+
+def record_a1_plan(root: Path | None, payload: dict[str, Any]) -> int:
+    """Append one A1 rotation: the book that was decided and what changed.
+
+    Keyed by rebalance_date, so replaying a session cannot duplicate the row.
+    This stream is the ONLY memory of the previous book: the buffer band is
+    defined against it, and positions are not a substitute because a rejected
+    order leaves them disagreeing with the plan.
+    """
+    row = {"at_utc": _now(), **payload}
+    return _append_keyed(stream_path(root, "a1_plan"), [row], "rebalance_date")
+
+
+def record_b0_allocation(root: Path | None, payload: dict[str, Any]) -> int:
+    """Append one session's capital split between the A0 and A1 legs."""
+    row = {"at_utc": _now(), **payload}
+    return _append_keyed(stream_path(root, "b0_allocation"), [row],
+                         "decision_date")
+
+
+def _append_keyed(path: Path, rows: list[dict[str, Any]], key: str) -> int:
+    """Append rows whose key is not already present in the file."""
+    known = _known_keys(path, key)
+    fresh = [r for r in rows if r.get(key) not in known]
+    return _append(path, fresh)
 
 
 def harvest_all(client, root: Path | None = None,

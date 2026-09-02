@@ -177,7 +177,7 @@ def reconcile(client: T212Client, ledger,
     level = log.info if verdict.ok else log.critical
     level("[reconcile] %s", verdict.summary())
     if not verdict.ok:
-        notify("A0 reconcile MISMATCH",
+        notify(f"{getattr(ledger, 'strategy_id', 'strategy')} reconcile MISMATCH",
                f"{len(problems)} problem(s); trading is blocked until ruled: "
                f"{problems[0]}")
     ledger.record_note(_note_id(), "RECONCILE",

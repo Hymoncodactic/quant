@@ -35,7 +35,17 @@ execution:
   max_wait_sec: 2400        # 决策算完后等待提交时刻的上限（秒），覆盖 15:30 → 15:59
   settle_max_wait_min: 90   # settle 阶段等待成交的上限（分钟）；超时只告警不撤单
   settle_poll_sec: 30       # 轮询挂单间隔（秒）；下限 5 秒由限频决定
+  # B0 起用日：既是 B0 的第一个决策日，也是 A1 轮动的锚点（重排序号 0）。
+  # 二者必须同日：起用日若不是重排日，A1 首日无名单可建，整池会全部落到 A0。
+  # 仅在 strategy.name 为 b0 时读取。
+  b0_live_from: "2026-09-15"
   strategy:
+    # A0 单策略（现行）：
+    #   name: a0 / intraday_name: a0_intraday
+    # B0（A0 与 A1 共用一个账户）：
+    #   name: b0 / intraday_name: b0
+    #   B0 模块自身就是执行层按 intraday_name 装载的那一个，它内部再调
+    #   a0_intraday 与 a1；调用点不变（fixplans/t212/b0/00_coordination.md A1）。
     name: a0                # 信号唯一副本
     version: "0.0.1"
     intraday_name: a0_intraday    # 日内时序适配层，不含信号

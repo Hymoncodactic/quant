@@ -18,8 +18,11 @@ trading212/execution/session_cycle.py.
 
 Public functions:
     order_ticker(symbol)                     Venue ticker for one strategy symbol.
+    ticker_map_for(symbols)                  Seam S5: verified tickers for a set.
+    universe_ticker_map()                    The whole merged mapping table.
     validate_mapping(client, symbols)         Prove every mapping against metadata.
     schedule_divergences(cal, ids, date_ny)   Whether the universe's schedules agree.
+    divergent_schedule_ids(cal, ids, date_ny) The ids that disagree, as ids.
     refresh_calendar(client, cache_path)     Fetch working schedules, cache them.
     load_calendar(cache_path)                Load the cached schedules.
     session_events(calendar, schedule_id)    Sorted (ts_utc, type) event list.
@@ -65,6 +68,11 @@ Outputs:
 
 Change log:
     2026-08-21  Created for the daily A0 cycle.
+    2026-09-03  order_ticker now reads a MERGED table: the wide-universe map
+                built from the venue's metadata, with A0's eighteen
+                hand-verified names layered on top. B0 trades names A0 never
+                saw, and eighteen static entries cannot cover them. Signature
+                and KeyError behaviour are unchanged.
     2026-08-22  Rewritten for the hourly arm: Session records, decision_key(),
                 full-session detection from the venue calendar. The daily
                 helpers last_completed_trading_day() and next_event() were
@@ -73,11 +81,13 @@ Change log:
 
 from __future__ import annotations
 
-__all__ = ["order_ticker", "validate_mapping", "refresh_calendar",
+__all__ = ["order_ticker", "ticker_map_for", "universe_ticker_map",
+           "validate_mapping", "divergent_schedule_ids", "refresh_calendar",
            "load_calendar", "session_events", "sessions", "session_on",
            "current_session", "last_full_session", "decision_key",
            "market_is_open", "Session",
-           "A0_ORDER_TICKERS", "US_SCHEDULE_ID_NASDAQ", "CALENDAR_STALE_DAYS",
+           "A0_ORDER_TICKERS", "TICKER_MAP_GLOB", "US_SCHEDULE_ID_NASDAQ",
+           "CALENDAR_STALE_DAYS",
            "DECISION_TIME_NY", "FULL_SESSION_CLOSE_NY", "REGULAR_CLOSE_KINDS"]
 
 import json
@@ -136,6 +146,61 @@ class Session:
 # [1] Mapping
 # ============================================================================
 
+TICKER_MAP_GLOB = "t212_universe_ticker_map_*.json"
+
+_universe_cache: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def universe_ticker_map() -> dict[str, str]:
+    """The whole verified symbol -> venue ticker table, A0's 18 winning.
+
+    The wide-universe half is built offline by
+    scripts/20260903_build_universe_ticker_map.py against the venue's own
+    instrument metadata; the newest file matching TICKER_MAP_GLOB in
+    data/reference/ is the one in force. A0's eighteen names are layered on
+    top because they were verified by hand and one of them (META, which trades
+    as FB_US_EQ) is not derivable from the symbol at all.
+
+    A symbol whose entry has no ticker -- an ambiguous or unmatched candidate
+    -- is absent from the result rather than present with None, so callers
+    cannot mistake "not decided" for "decided to be nothing". Cached on the
+    file's modification time, because a decision reads it once per name.
+    """
+    from common.paths import DIR_REFERENCE
+    files = sorted(Path(DIR_REFERENCE).glob(TICKER_MAP_GLOB))
+    merged: dict[str, str] = {}
+    if files:
+        newest = files[-1]
+        stamp = newest.stat().st_mtime
+        cached = _universe_cache.get(str(newest))
+        if cached is not None and cached[0] == stamp:
+            merged = dict(cached[1])
+        else:
+            payload = json.loads(newest.read_text(encoding="utf-8"))
+            entries = payload.get("map", payload)
+            for symbol, entry in entries.items():
+                ticker = entry.get("ticker") if isinstance(entry, dict) \
+                    else entry
+                if ticker:
+                    merged[str(symbol)] = str(ticker)
+            _universe_cache[str(newest)] = (stamp, dict(merged))
+    merged.update(A0_ORDER_TICKERS)
+    return merged
+
+
+def ticker_map_for(symbols) -> dict[str, str]:
+    """Seam S5: the venue tickers for the symbols asked about.
+
+    Only symbols that HAVE a verified ticker appear in the result. A caller
+    that needs every symbol mapped compares the key sets and decides for
+    itself; silently substituting a derived ticker is what this whole table
+    exists to prevent, because several US symbols have same-named foreign
+    listings that would route the order to another exchange.
+    """
+    table = universe_ticker_map()
+    return {s: table[s] for s in symbols if s in table}
+
+
 def order_ticker(symbol: str) -> str:
     """Return the venue order ticker for one strategy symbol.
 
@@ -143,10 +208,13 @@ def order_ticker(symbol: str) -> str:
     the symbol name, because several strategy symbols have same-named foreign
     listings that would silently route the order elsewhere.
     """
-    if symbol not in A0_ORDER_TICKERS:
+    table = universe_ticker_map()
+    if symbol not in table:
         raise KeyError(f"no verified T212 ticker mapping for {symbol!r}; add it "
-                       f"to A0_ORDER_TICKERS after checking the metadata endpoint")
-    return A0_ORDER_TICKERS[symbol]
+                       f"to A0_ORDER_TICKERS, or rebuild the universe map with "
+                       f"scripts/20260903_build_universe_ticker_map.py, after "
+                       f"checking the metadata endpoint")
+    return table[symbol]
 
 
 def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
@@ -175,6 +243,32 @@ def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
                            + "; ".join(problems))
     log.info("[instruments] mapping validated for %d symbols", len(result))
     return result
+
+
+def divergent_schedule_ids(calendar: list[dict], schedule_ids: set[int],
+                           session_date) -> set[int]:
+    """The working-schedule ids that disagree with the reference for a session.
+
+    Same comparison as schedule_divergences, returning ids instead of prose so
+    a caller can act per symbol. B0 trades a wide universe: one NYSE-listed
+    name on an odd schedule should cost that name its order, not the whole
+    session's decision, whereas a divergence among A0's eighteen still aborts
+    (fixplans/t212/b0/04_execution.md section 7 step 3).
+    """
+    reference = None
+    divergent: set[int] = set()
+    for schedule_id in sorted(schedule_ids):
+        found = session_on(sessions(session_events(calendar, schedule_id)),
+                           session_date)
+        if found is None:
+            divergent.add(int(schedule_id))
+            continue
+        shape = (found.open_utc, found.close_utc, found.is_full)
+        if reference is None:
+            reference = shape
+        elif shape != reference:
+            divergent.add(int(schedule_id))
+    return divergent
 
 
 def schedule_divergences(calendar: list[dict], schedule_ids: set[int],

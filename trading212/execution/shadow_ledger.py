@@ -42,6 +42,9 @@ Public functions (methods):
     record_intent / record_submitted / record_submit_rejected
     record_submit_ambiguous / resolve_ambiguity
     record_fill / record_order_terminal / record_note
+    init_adopted(state_dir, id, source)      Create a book that takes over
+                                             another one's cash and positions
+                                             (BOOK_ADOPTED)
     record_allocation_change(change_id, delta_gbp, reason)
                                              Resize the strategy's own cash
     portfolio_view(fee_buffer)               Strategy-facing PortfolioView duck type
@@ -123,6 +126,11 @@ class ShadowLedger:
     # ------------------------------------------------------------------
     # [2.1] Construction
     # ------------------------------------------------------------------
+
+    @property
+    def strategy_id(self) -> str:
+        """The book this ledger belongs to; alerts name it."""
+        return self._strategy_id
 
     @classmethod
     def load(cls, state_dir: Path, strategy_id: str) -> "ShadowLedger":
@@ -489,6 +497,58 @@ class ShadowLedger:
             log.critical("[ledger] dangling live intent %s frozen as "
                          "ambiguous", intent_id)
         return frozen
+
+    @classmethod
+    def init_adopted(cls, state_dir: Path, strategy_id: str,
+                     source: "ShadowLedger") -> "ShadowLedger":
+        """Create a book that takes over another one's cash and positions.
+
+        The account is one account. When B0 replaces A0, the shares A0 holds do
+        not move at the venue and neither does the cash; what has to move is
+        the RECORD of which strategy owns them. init_fresh cannot express that
+        -- it starts from cash alone, so the positions would be left unowned
+        and reconciliation would report venue holdings that no book claims.
+
+        Cash may legitimately be zero here, which is why this is a separate
+        constructor rather than a flag on init_fresh: a fully invested book has
+        no cash, and that is a normal state to inherit, whereas a book created
+        from nothing with zero cash is a configuration mistake.
+
+        Refuses when the source still has open orders or is frozen. A fill
+        landing after the handover would be applied to a book that no longer
+        owns the intent, and no later reconciliation could untangle it.
+
+        The whole thing is ONE journaled event, so a crash midway leaves either
+        no new book or a complete one.
+        """
+        if source.is_frozen:
+            raise LedgerFrozenError(
+                f"{source.strategy_id} is frozen by ambiguous intents "
+                f"{sorted(source.ambiguous_intents)}; resolve them before "
+                f"handing the book over")
+        if source.open_orders:
+            raise ValueError(
+                f"{source.strategy_id} still has open orders "
+                f"{sorted(source.open_orders)}; settle them first, or their "
+                f"fills would land in a book that no longer owns the intent")
+        if snapshot_path(state_dir, strategy_id).exists() \
+                or journal_path(state_dir, strategy_id).exists():
+            raise FileExistsError(f"ledger for {strategy_id} already exists "
+                                  f"under {state_dir}")
+        positions = {symbol: str(qty) for symbol, qty in
+                     source.positions.items() if qty != ZERO}
+        cash = source.cash_gbp
+        state_dir.mkdir(parents=True, exist_ok=True)
+        snap = {"schema_version": _SCHEMA_VERSION, "strategy_id": strategy_id,
+                "updated_at_utc": None, "cash_gbp": str(cash),
+                "positions": dict(positions), "open_orders": {},
+                "ambiguous_intents": {}, "applied_event_ids": {}}
+        ledger = cls(state_dir, strategy_id, snap)
+        ledger._apply(f"ADOPT|{source.strategy_id}", "BOOK_ADOPTED",
+                      {"from_strategy_id": source.strategy_id,
+                       "positions": positions, "cash_gbp": str(cash),
+                       "at_utc": _now_iso()})
+        return ledger
 
     def record_note(self, note_id: str, kind: str, payload: dict[str, Any]) -> None:
         """Journal a bookkeeping note (cycle markers, reconcile verdicts)."""

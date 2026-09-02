@@ -62,8 +62,35 @@ def test_meta_maps_to_the_us_listing_not_the_european_twin():
 
 
 def test_unmapped_symbol_raises_rather_than_guessing():
+    # A symbol absent from BOTH tables. KO used to serve here and no longer
+    # can: the wide universe map covers the whole S&P 1500 candidate pool now,
+    # which is the point of it.
     with pytest.raises(KeyError):
-        order_ticker("KO")
+        order_ticker("NOT_A_REAL_SYMBOL")
+
+
+def test_the_wide_map_is_read_from_the_reference_file(tmp_path, monkeypatch):
+    """The pool half of the mapping comes from the built file, A0's from code."""
+    import json
+
+    import common.paths
+    from trading212.execution import instruments as ins
+
+    monkeypatch.setattr(common.paths, "DIR_REFERENCE", tmp_path)
+    ins._universe_cache.clear()
+    (tmp_path / "t212_universe_ticker_map_20260903.json").write_text(json.dumps(
+        {"map": {"ZTS": {"ticker": "ZTS_US_EQ"},
+                 "AMBIG": {"ticker": None},
+                 # A file entry may never override a hand-verified A0 name:
+                 # META trades as FB_US_EQ and nothing derives that.
+                 "META": {"ticker": "META_US_EQ"}}}))
+    table = ins.universe_ticker_map()
+    assert table["ZTS"] == "ZTS_US_EQ"
+    assert table["META"] == "FB_US_EQ"
+    assert "AMBIG" not in table
+    assert ins.ticker_map_for(["ZTS", "AMBIG", "META"]) == {
+        "ZTS": "ZTS_US_EQ", "META": "FB_US_EQ"}
+    ins._universe_cache.clear()
 
 
 def test_sessions_are_folded_from_open_to_regular_close():

@@ -88,7 +88,11 @@ def _acquire_instance_lock(env: str):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="run_a0", description="A0 live execution cycle on Trading 212")
+        prog="run_a0",
+        description="Live execution cycle on Trading 212. The module name is\n"
+                    "kept as run_a0 because the dashboard identifies the\n"
+                    "process by that substring; the strategy it runs comes\n"
+                    "from execution.strategy in the configuration.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_decide = sub.add_parser("decide", help="compute targets on the 15:30 bar "
@@ -101,6 +105,14 @@ def main(argv: list[str] | None = None) -> int:
     p_init = sub.add_parser("init-ledger", help="create the strategy book")
     p_init.add_argument("--cash-gbp", required=True, type=Decimal,
                         help="explicit GBP cash allocation for the strategy")
+    p_adopt = sub.add_parser("adopt-book",
+                             help="move cash and positions from another "
+                                  "strategy's book into the configured one")
+    p_adopt.add_argument("--from", dest="from_strategy_id", required=True,
+                         help="the source strategy id, e.g. a0_v0_0_1")
+    p_adopt.add_argument("--confirm", action="store_true",
+                         help="required: this moves ownership of live "
+                              "positions")
     sub.add_parser("halt", help="set the halt flag (removal is manual only)")
     sub.add_parser("daemon", help="run unattended: wait for each session's "
                    "decision window, decide, settle, repeat; arming follows "
@@ -129,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
         result = session_cycle.status(cfg)
     elif args.command == "init-ledger":
         result = session_cycle.init_ledger(cfg, args.cash_gbp)
+    elif args.command == "adopt-book":
+        result = session_cycle.adopt_book(cfg, args.from_strategy_id,
+                                          confirm=args.confirm)
     elif args.command == "halt":
         halt = execution_state_dir("t212", cfg["_env"]) / "halt"
         halt.parent.mkdir(parents=True, exist_ok=True)

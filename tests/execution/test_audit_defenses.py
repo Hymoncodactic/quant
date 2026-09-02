@@ -254,7 +254,7 @@ def test_settle_raises_the_halt_flag_on_a_fill_timing_breach(cycle_env,
     result = session_cycle.settle(cfg)
     assert result["halted"] is True
     assert (state_dir / "halt").exists()
-    assert "A0 fill timing breach -- halted" in fired
+    assert "a0_v0_0_1 fill timing breach -- halted" in fired
     journal = (state_dir / f"{STRATEGY_ID}_journal.jsonl").read_text()
     assert "FILL_TIMING_BREACH" in journal
 
@@ -271,7 +271,7 @@ def test_settle_alarms_on_negative_book_cash(cycle_env):
     book.record_order_terminal(111, "FILLED", D("2"))
     result = session_cycle.settle(cfg)
     assert Decimal(result["cash_gbp"]) < 0
-    assert "A0 strategy cash negative" in fired
+    assert "a0_v0_0_1 strategy cash negative" in fired
     journal = (state_dir / f"{STRATEGY_ID}_journal.jsonl").read_text()
     assert "NEGATIVE_CASH" in journal
 
