@@ -25,7 +25,11 @@ and ranking rules (trading212/strategy/a1_v0_0_1.py), when to run
 (trading212/execution/market_data.py load_b0_injection).
 
 Public functions:
-    load_panels(members, start)       Close and volume panels from the lake.
+    load_panels(members, start)       Close and volume panels from the lake,
+                                      with PANEL_EXCLUDED_SESSIONS removed.
+    drop_excluded_sessions(c, v)      The same removal, for panels built
+                                      elsewhere (the reproduction arms).
+    excluded_sessions()               The exclusion list, as dates.
     verified_tickers(symbols)         symbol -> venue ticker, from seam S5.
     latest_complete_session(closes)   Newest session the pool actually covers.
     build_table(session, params)      The ranking frame for one session.
@@ -63,16 +67,21 @@ Outputs:
 
 Change log:
     2026-09-03  Created as the fourth pass of the daily update.
+    2026-09-03  PANEL_EXCLUDED_SESSIONS after Yahoo withdrew 2026-08-28 from
+                1,427 of 1,498 pool members and the overwriting daily pass
+                propagated the withdrawal into the lake, collapsing admission
+                from 1,475 to 70.
 """
 
 from __future__ import annotations
 
 __all__ = ["load_panels", "verified_tickers", "build_table", "write_table",
-           "run", "latest_complete_session", "PANEL_START", "RANK_COLUMNS",
-           "MIN_SESSION_COVERAGE"]
+           "run", "latest_complete_session", "excluded_sessions",
+           "PANEL_START", "RANK_COLUMNS", "MIN_SESSION_COVERAGE",
+           "PANEL_EXCLUDED_SESSIONS"]
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -88,6 +97,39 @@ log = get_logger("t212.ingest")
 
 PANEL_START = "2010-01-04"
 MIN_SESSION_COVERAGE = 0.95
+
+# Sessions dropped from the panel outright, newest last. This is an EXPLICIT,
+# auditable list, deliberately not a coverage heuristic: before roughly 2015 a
+# large part of the pool had not listed yet, so those rows are legitimately
+# sparse, and a "drop any thin row" rule would delete real early history and
+# silently move the 252/21 momentum offsets for every name.
+#
+# 2026-08-28: Yahoo WITHDREW this session. It served the day when the pool was
+# first ingested, then stopped: on 2026-09-03 a refetch returned no 2026-08-28
+# row for 1,427 of the 1,498 pool members, under every query shape tried
+# (730-day window, full history, narrow start/end, monthly). SPY, QQQ and the
+# mega caps kept it, so the session calendar and A0's gates are untouched.
+#
+# What made a vendor regression destructive is yahoo_bars.write_daily: it
+# overwrites a year partition with the fetched frame instead of merging it into
+# what is stored, so the daily pass propagated the withdrawal into the lake.
+# See WORKING_MEMORY open item 30; fixing that stops the next occurrence, it
+# does not undo this one.
+#
+# Why the row has to go rather than be tolerated: admission E1 requires 252
+# sessions with NO gap in the window (the min_periods rule in
+# a1_v0_0_1._tail_admission, which is deliberate and stays). One missing
+# session therefore disqualifies a name for the following 252 sessions.
+# Measured on the 2026-09-02 ranking before this list existed: 70 of 1,498
+# admitted instead of 1,475, and the top twenty collapsed into what is
+# essentially A0's own name list.
+#
+# This is the handling of an upstream hole, NOT a loosening of admission.
+# Dropping the row shifts the positional offsets by one for the dates after
+# it, so the scores it feeds are marginally different from the ones a complete
+# panel would have produced; that is the cost of the vendor's withdrawal and
+# it is preferred to ranking on 70 names.
+PANEL_EXCLUDED_SESSIONS: tuple[str, ...] = ("2026-08-28",)
 _TZ_NEW_YORK = "America/New_York"
 _GROUP = "us_equity"
 
@@ -129,8 +171,38 @@ def _load_frame(symbol: str) -> pd.DataFrame | None:
     return frame if len(frame) else None
 
 
+def excluded_sessions() -> set:
+    """PANEL_EXCLUDED_SESSIONS as dates."""
+    return {date.fromisoformat(day) for day in PANEL_EXCLUDED_SESSIONS}
+
+
+def drop_excluded_sessions(closes: pd.DataFrame, volumes: pd.DataFrame
+                           ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Remove PANEL_EXCLUDED_SESSIONS rows from a close/volume panel pair.
+
+    Applied to the WHOLE panel before any window is taken, so a 252-session
+    admission window still holds 252 real sessions -- it simply reaches one
+    session further back.
+
+    Exposed separately because the reproduction arms build their panels through
+    research/xsmom_wide/run_study.load_panels and must drop the same rows, or
+    the live ranking and the backtested one stop being comparable.
+    """
+    drop = excluded_sessions() & set(closes.index)
+    if not drop:
+        return closes, volumes
+    log.warning("[a1_rank] dropping %d excluded session(s) from the panel: %s",
+                len(drop), sorted(str(d) for d in drop))
+    keep = [d for d in closes.index if d not in drop]
+    return closes.loc[keep], volumes.reindex(keep)
+
+
 def load_panels(members: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, list]:
-    """(closes, volumes, skipped) for the members that have stored bars."""
+    """(closes, volumes, skipped) for the members that have stored bars.
+
+    PANEL_EXCLUDED_SESSIONS rows are removed here, so every consumer of this
+    function sees the same panel the ranking was computed on.
+    """
     closes, volumes, skipped = {}, {}, []
     for symbol in members:
         frame = _load_frame(symbol)
@@ -141,7 +213,10 @@ def load_panels(members: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, list]:
         closes[symbol] = series["close"]
         volumes[symbol] = series["volume"]
     close_panel = pd.DataFrame(closes).sort_index()
-    return close_panel, pd.DataFrame(volumes).reindex(close_panel.index), skipped
+    volume_panel = pd.DataFrame(volumes).reindex(close_panel.index)
+    close_panel, volume_panel = drop_excluded_sessions(close_panel,
+                                                       volume_panel)
+    return close_panel, volume_panel, skipped
 
 
 def verified_tickers(symbols: list[str]) -> dict[str, str]:

@@ -110,3 +110,44 @@ def test_the_written_table_round_trips(tmp_path, monkeypatch):
     path = a1_rank.write_table(days[300], frame)
     assert path.is_file()
     assert list(pd.read_parquet(path).columns) == list(a1_rank.RANK_COLUMNS)
+
+
+# --- session exclusions (the 2026-08-28 upstream withdrawal) ---------------
+
+def test_an_excluded_session_is_dropped_from_the_whole_panel(monkeypatch):
+    """Catches: a withdrawn vendor session disqualifying the whole universe.
+
+    Admission E1 wants 252 sessions with no gap, so one hole knocks a name out
+    for the next 252 sessions. When the vendor withdrew 2026-08-28 from 1,427
+    of 1,498 members, admission fell from 1,475 to 70 and the top twenty
+    collapsed into A0's own name list.
+    """
+    days, (closes, volumes) = _panel()
+    victim = days[-30]
+    holed = closes.copy()
+    holed.loc[victim, holed.columns[1:]] = float("nan")
+    monkeypatch.setattr(a1_rank, "PANEL_EXCLUDED_SESSIONS",
+                        (victim.isoformat(),))
+    kept_c, kept_v = a1_rank.drop_excluded_sessions(holed, volumes)
+    assert victim not in set(kept_c.index)
+    assert victim not in set(kept_v.index)
+    assert len(kept_c) == len(holed) - 1
+    assert list(kept_c.columns) == list(holed.columns)
+
+
+def test_an_empty_exclusion_list_leaves_the_panel_untouched(monkeypatch):
+    days, (closes, volumes) = _panel()
+    monkeypatch.setattr(a1_rank, "PANEL_EXCLUDED_SESSIONS", ())
+    kept_c, kept_v = a1_rank.drop_excluded_sessions(closes, volumes)
+    assert kept_c.equals(closes) and kept_v.equals(volumes)
+
+
+def test_the_exclusion_is_a_list_not_a_coverage_heuristic():
+    """Early panel rows are legitimately sparse (names not yet listed); a
+    'drop thin rows' rule would delete real history and move the 252/21
+    momentum offsets."""
+    assert isinstance(a1_rank.PANEL_EXCLUDED_SESSIONS, tuple)
+    for day in a1_rank.PANEL_EXCLUDED_SESSIONS:
+        pd.Timestamp(day)                      # every entry is a real date
+    assert a1_rank.excluded_sessions() == {
+        pd.Timestamp(d).date() for d in a1_rank.PANEL_EXCLUDED_SESSIONS}

@@ -75,7 +75,8 @@ from backtest.engine.types import EngineConfig                     # noqa: E402
 from backtest.t212.runner import run_t212_backtest                 # noqa: E402
 from research.xsmom_wide.run_study import (load_panels,            # noqa: E402
                                            eligibility)
-from trading212.execution.market_data import us_sessions           # noqa: E402
+from trading212.execution.market_data import us_sessions       # noqa: E402
+from trading212.ingest.a1_rank import drop_excluded_sessions           # noqa: E402
 from trading212.execution.strategy_loader import load_module       # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
@@ -137,6 +138,10 @@ def main() -> int:
     closes, volumes = load_panels(payload["members"])
     closes = closes[closes.index >= pd.Timestamp(PANEL_START).date()]
     volumes = volumes.reindex(closes.index)
+    # The same session exclusions the live ranking pass applies. Without this
+    # the reproduction arm ranks a panel the live pass never sees, and the two
+    # stop being comparable -- which is the whole point of these arms.
+    closes, volumes = drop_excluded_sessions(closes, volumes)
     elig = eligibility(closes, volumes)
     plan, _gate = h2h.winner_plan(closes, elig, int(params["n_hold"]), "EW",
                                   True, False)
