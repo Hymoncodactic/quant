@@ -190,6 +190,7 @@ def assemble_params(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("execution.b0_live_from must be set for strategy b0; "
                          "it is B0's start date AND A1's rebalance anchor, "
                          "and the two have to be the same day")
+    _assert_anchor_is_a_session(live_from)
     a0_params = _strategy_params("a0_v0_0_1")
     a0_params.update(DECISION_PARAM_OVERRIDES)
     a0_params["live_from"] = live_from
@@ -199,12 +200,56 @@ def assemble_params(cfg: dict[str, Any]) -> dict[str, Any]:
     a1_params["rebalance_anchor"] = live_from
 
     params["live_from"] = live_from
+    # history_start is load bearing: the volatility gate's expanding
+    # percentile moves with the daily start date. Under A0 it reaches the
+    # strategy through _Cycle.history_start; under B0 the daily rows are built
+    # inside load_b0_injection, so it has to travel in params or the live gate
+    # would quietly differ from the configured one.
+    params["history_start"] = str(execution.get("history_start", "2010-01-04"))
     params["a0_params"] = a0_params
     params["a1_params"] = a1_params
     params["trade_symbols"] = list(a0_params["trade_symbols"])
     params["state_symbol"] = a0_params["state_symbol"]
     params.setdefault("fx_symbol", a0_params["fx_symbol"])
     return params
+
+
+def _assert_anchor_is_a_session(live_from: str) -> None:
+    """Refuse a rotation anchor that cannot be session 0.
+
+    The anchor is index 0 of the rotation by construction, so whatever date is
+    written here becomes the first rebalance. A date that is not a session
+    shifts every rebalance after it, and a date a few sessions in the PAST
+    makes the go-live day land mid-cycle -- no rotation for up to 21 sessions,
+    with an A1 leg that contributes nothing while looking healthy.
+
+    Only two things are checkable here. A go-live date is today or later, and
+    the stored calendar cannot confirm a session whose own daily bar is not
+    published yet, so such a date is only rejected when it falls on a weekend.
+    A date strictly in the PAST must be a stored session. The decisive check --
+    that today really is rotation 0 -- happens in decide(), where the session
+    list and the book are both known.
+    """
+    day = pd.Timestamp(live_from).date()
+    if day.weekday() >= 5:
+        raise ValueError(
+            f"execution.b0_live_from {live_from!r} is a weekend. It is "
+            f"rotation session 0, so it must be the session B0 actually "
+            f"starts trading on.")
+    # Today is the normal go-live date, and its own daily bar is not published
+    # until after the close, so the stored calendar cannot confirm it either.
+    # Only a date strictly in the past is checkable here.
+    if day >= pd.Timestamp.now(tz=instruments.EXCHANGE_TZ).date():
+        return
+    try:
+        sessions_ = market_data.us_sessions(live_from, live_from)
+    except FileNotFoundError:                      # no lake: nothing to check
+        return
+    if day not in sessions_:
+        raise ValueError(
+            f"execution.b0_live_from {live_from!r} is not a US trading "
+            f"session in the stored calendar. It is rotation session 0, so a "
+            f"non-session date shifts every rebalance after it.")
 
 
 class _Cycle:
@@ -374,7 +419,14 @@ def decide(cfg: dict[str, Any], armed: bool,
     a1_book = (market_data.a1_book_from_records(cycle.records_root)
                if cycle.is_b0 else {})
     in_play = sorted(set(trade_symbols) | set(a1_book) | set(ledger.positions))
-    mapped = instruments.validate_mapping(cycle.client, in_play)
+    # A0's eighteen must validate or the session stops; a wide-universe name
+    # that fails only loses its own orders.
+    mapped = instruments.validate_mapping(cycle.client, in_play,
+                                          required=trade_symbols)
+    unmapped = sorted(set(in_play) - set(mapped))
+    if unmapped:
+        log.warning("[decide] %d name(s) failed instrument validation and are "
+                    "dropped from this session: %s", len(unmapped), unmapped)
     schedule_ids = {meta.get("workingScheduleId") for meta in mapped.values()
                     if meta.get("workingScheduleId") is not None}
     divergent_ids = instruments.divergent_schedule_ids(
@@ -408,9 +460,46 @@ def decide(cfg: dict[str, Any], armed: bool,
     strategy = load_intraday_strategy(cycle.shim_name, cycle.shim_version,
                                       injected)
     targets = strategy(view, portfolio, cycle.params)
-    for symbol in schedule_divergent:
+    for symbol in set(schedule_divergent) | set(unmapped):
         targets.pop(symbol, None)
+    stranded = _stranded_holdings(cycle, ledger, view)
+    if stranded:
+        # A held name with no bar at all is frozen by the sizing rule, counts
+        # as zero in equity and in the gross check, and never produces an
+        # order -- so it can sit at the venue indefinitely while looking like
+        # nothing. Freezing is still the right target (there is no price to
+        # sell at), but it must not be silent.
+        log.critical("[decide] %d held name(s) have no bar in the loaded "
+                     "window and cannot be priced or sold: %s",
+                     len(stranded), stranded)
+        notify(f"{cycle.strategy_id} holdings cannot be priced",
+               f"{', '.join(stranded[:6])}: no bar in the loaded window; "
+               f"they are frozen and invisible to the risk gate until the "
+               f"feed returns or you sell them manually")
+
     diagnostics = _signal_diagnostics(cycle, view, portfolio, injected)
+    # Persist the rotation NOW, before any of the abort paths below. Session
+    # zero is consumed by being reached; a book decided and then not recorded
+    # is a book the next session will liquidate.
+    rebalance = _record_rotation(cycle, session_id, diagnostics, injected)
+    if cycle.is_b0 and isinstance(injected, dict):
+        if injected.get("session_calendar_stale"):
+            return _abort(
+                f"the stored session list ends {injected.get('sessions')[-2] if len(injected.get('sessions') or []) > 1 else None} "
+                f"and trails {session.date_ny} by "
+                f"{injected.get('session_lag_days')} calendar days; the A1 "
+                f"rotation counter would be wrong. Run the daily update "
+                f"(scripts/update_data.py) and retry")
+        a1_tree = (diagnostics or {}).get("a1") or {}
+        tree = a1_tree.get("rebalance") or {}
+        if not injected.get("a1_book") and not rebalance \
+                and not injected.get("a1_frozen"):
+            return _abort(
+                f"the A1 book is empty and {session.date_ny} is not rotation "
+                f"session 0 (index {tree.get('session_index')} of every "
+                f"{tree.get('every')}); the A1 half would contribute nothing "
+                f"for {tree.get('sessions_until_next')} more sessions. Check "
+                f"execution.b0_live_from -- it must be the session B0 starts")
     if not targets:
         return _abort(f"strategy returned no targets at key {key}; the shim's "
                       f"own decision gate did not fire")
@@ -440,21 +529,34 @@ def decide(cfg: dict[str, Any], armed: bool,
             "targets": {s: str(q) for s, q in targets.items()},
             "intents": len(intents)}
 
-    # Throughput, measured at the moment orders actually go out rather than
-    # assumed at decision time: market orders clear at about 0.58 per second
-    # after the client's own headroom, so a rebalance-day batch can be longer
-    # than the runway that is left. Orders that cannot fit before the close
-    # are deferred rather than sent late -- a market order that misses the
-    # close fills at the next open and silently swaps the caliber. Deferred
-    # names come back the next session by ordinary re-sizing.
-    submit_now, deferred = _fit_before_close(gate.approved, session)
-    if deferred:
-        log.warning("[decide] %d intent(s) deferred: the remaining runway to "
-                    "%s does not fit them at the venue's order rate: %s",
-                    len(deferred), session.close_utc,
-                    ", ".join(i.symbol for i in deferred[:10]))
+    # Throughput, measured at the instant orders actually go out. Market
+    # orders clear at about 0.58 per second after the client's own headroom,
+    # so a rotation batch can be longer than the runway that is left.
+    #
+    # A partial batch is NOT an option here. Reductions are ordered first, so
+    # truncating sends every sell and none of the buys: the account is
+    # liquidated and not re-entered, and the strategy re-enters next session at
+    # a different price having paid the spread twice. The whole batch is
+    # therefore abandoned, which leaves the book exactly as it was and costs
+    # one session. Nothing has been submitted at this point -- the ledger is
+    # untouched -- so the abort is clean.
+    capacity, needed = _fit_before_close(gate.approved, session)
+    if len(gate.approved) > capacity:
+        notify(f"{cycle.strategy_id} session abandoned -- batch too large",
+               f"{len(gate.approved)} orders need {needed:.0f}s but only "
+               f"{capacity} fit before the close; nothing was sent")
+        return _abort(
+            f"{len(gate.approved)} approved order(s) need about {needed:.0f}s "
+            f"at the venue's market-order rate, but only {capacity} fit "
+            f"before {session.close_utc}. Sending part of the batch would "
+            f"submit every sell and no buy, so nothing was sent. Raise "
+            f"execution.submit_lead_sec (currently {cycle.submit_lead_sec}s) "
+            f"if this batch size is expected -- that is a caliber change") | {
+            "targets": {s: str(q) for s, q in targets.items()},
+            "intents": len(intents), "orders_needed_sec": round(needed, 1),
+            "orders_capacity": capacity}
 
-    report = order_router.submit_intents(submit_now, ledger, cycle.client,
+    report = order_router.submit_intents(gate.approved, ledger, cycle.client,
                                          pd.Timestamp(session.date_ny),
                                          dry_run=cycle.dry_run, armed=armed,
                                          halt_path=cycle.halt_path,
@@ -494,7 +596,7 @@ def decide(cfg: dict[str, Any], armed: bool,
         "dry_run": cycle.dry_run or not armed,
     })
 
-    rebalance = _record_b0_streams(cycle, session_id, diagnostics, injected)
+    _record_b0_streams(cycle, session_id, diagnostics, injected)
 
     state["last_decide_session"] = session_id
     state.setdefault("orders_by_session", {})[session_id] = \
@@ -504,7 +606,6 @@ def decide(cfg: dict[str, Any], armed: bool,
     return {"phase": "decide", "session": session_id,
             "decide_finished_utc": str(pd.Timestamp.now(tz="UTC")),
             "rebalance": rebalance,
-            "deferred": [i.symbol for i in deferred],
             "diagnostics": diagnostics,
             "decision_key_utc": str(key),
             "submitted_at_utc": str(pd.Timestamp.now(tz="UTC")),
@@ -512,6 +613,7 @@ def decide(cfg: dict[str, Any], armed: bool,
             "targets": {s: str(q) for s, q in targets.items()},
             "intents": len(intents), "gate": gate.summary(),
             "symbols_without_decision_bar": thin,
+            "stranded_holdings": stranded,
             "submit": report.summary(),
             "dry_run": cycle.dry_run or not armed,
             "ambiguous": report.ambiguous.symbol if report.ambiguous else None}
@@ -551,19 +653,37 @@ def _assemble_market(cycle: _Cycle, session, key: pd.Timestamp, ledger,
                                          cycle.history_start, end)
         return view, history, thin
 
-    # B0: the A1 half of the universe is whatever the last rotation chose plus
-    # whatever is still held, so the refresh list is built at decision time
-    # rather than configured.
-    a1_names = sorted((set(a1_book) | set(ledger.positions))
-                      - set(trade_symbols))
+    # B0: the A1 half of the universe is decided at decision time, and it is
+    # the names this session is ABOUT TO PICK, not only the ones the last
+    # rotation chose. Resolving the pick first is what makes the refresh fetch
+    # them; building the list from the previous book alone left every new name
+    # priceless, and a priceless name is sized to zero, so the first rotation
+    # would have sold and bought nothing.
+    universe = market_data.a1_universe_for(
+        cycle.params, session.date_ny, held=list(ledger.positions),
+        records_root=cycle.records_root)
+    a1_names = sorted(set(universe["names"]) - set(trade_symbols)
+                      - {state_symbol, fx_symbol})
     thin = list(market_data.refresh_for_decision(cycle.params, session, key,
                                                  a1_names))
     injection = market_data.load_b0_injection(
         cycle.params, session.date_ny, held=list(ledger.positions),
         records_root=cycle.records_root)
     feed_symbols = injection["view_symbols"]
+    # missing="skip": 1,477 of the 1,501 stored equities have no 1h partition
+    # at all, so a name entering the book for the first time, or one whose
+    # short-window fetch failed, has nothing on disk. Raising there would kill
+    # the session over exactly the case `thin` exists to tolerate.
     frames = market_data.load_frames(feed_symbols, _INTERVAL, intraday_start,
-                                     end)
+                                     end, missing="skip")
+    absent = [s for s in feed_symbols if s not in frames]
+    hard_absent = [s for s in absent
+                   if s in set(trade_symbols) | {state_symbol, fx_symbol}]
+    if hard_absent:
+        raise FileNotFoundError(
+            f"no {_INTERVAL} partitions for {hard_absent}; these are the "
+            f"caliber symbols and the session cannot be priced without them")
+    thin += absent
     thin += market_data.assert_intraday_ready(
         frames, key, trade_symbols, state_symbol, fx_symbol,
         soft_symbols=[s for s in a1_names if s in frames])
@@ -876,9 +996,37 @@ def _lock_is_held(path) -> bool:
         return True
 
 
-def init_ledger(cfg: dict[str, Any], cash_gbp: Decimal) -> dict[str, Any]:
-    """Create the strategy's book with an explicit cash allocation."""
+def init_ledger(cfg: dict[str, Any], cash_gbp: Decimal,
+                force: bool = False) -> dict[str, Any]:
+    """Create the strategy's book with an explicit cash allocation.
+
+    Refuses when the account already holds shares. A fresh book starts with no
+    positions, so those shares end up owned by nothing: reconciliation would
+    not catch it, because the position check is deliberately one-way (the
+    account must hold AT LEAST what the book claims; excess is presumed manual
+    and ignored). The strategy would then size fresh slots against cash alone,
+    buy names it already owns, and never issue a sell for the orphaned ones.
+
+    The supported path from one strategy's book to another is adopt_book,
+    which carries the positions across. force is the deliberate override for
+    the case where the venue holdings genuinely are not this strategy's.
+    """
     cycle = _Cycle(cfg)
+    if not force:
+        try:
+            held = [p for p in (cycle.client.positions() or [])
+                    if Decimal(str(p.get("quantity", 0))) != 0]
+        except Exception as exc:                   # noqa: BLE001
+            return _abort(f"cannot read venue positions to check for orphans: "
+                          f"{exc}; pass force=True only if you are sure")
+        if held:
+            return _abort(
+                f"the account holds {len(held)} position(s) "
+                f"({', '.join(sorted(str(p.get('ticker')) for p in held)[:6])}"
+                f"...) and a fresh book would own none of them. Use "
+                f"`run_a0 adopt-book --from <old_strategy_id> --confirm` to "
+                f"carry them across, or pass force to create an empty book "
+                f"anyway.")
     ShadowLedger.init_fresh(cycle.state_dir, cycle.strategy_id, cash_gbp)
     return {"phase": "init-ledger", "strategy_id": cycle.strategy_id,
             "allocated_cash_gbp": str(cash_gbp),
@@ -935,6 +1083,21 @@ def _diff_to_intents(cycle: _Cycle, targets: dict[str, Decimal], ledger,
     return intents
 
 
+def _stranded_holdings(cycle: _Cycle, ledger, view) -> list[str]:
+    """Held names with no bar at all in the loaded window.
+
+    Different from `thin`, which is "no bar at THIS session's decision key" and
+    is an ordinary, recoverable condition. This is "no bar in eighty calendar
+    days", which is what a delisting, a halt or a ticker change looks like. The
+    position cannot be priced, so it cannot be sized, valued or sold, and
+    nothing downstream will ever mention it again.
+    """
+    if not cycle.is_b0:
+        return []
+    return sorted(symbol for symbol, qty in ledger.positions.items()
+                  if qty > 0 and view.bar(symbol) is None)
+
+
 def _warn_if_buys_precede_sells(intents) -> bool:
     """Warn, without reordering, when a purchase is queued before a sale.
 
@@ -957,30 +1120,81 @@ def _warn_if_buys_precede_sells(intents) -> bool:
     return True
 
 
-def _fit_before_close(intents, session, safety_sec: int = 30):
-    """Split a batch into what fits before the close and what does not.
+SUBMIT_SAFETY_SEC = 10
 
-    The venue accepts market orders at RATE_LIMITS["order_market"], and
+
+def _fit_before_close(intents, session, safety_sec: int = SUBMIT_SAFETY_SEC):
+    """(capacity, seconds needed) for a batch against the runway to the close.
+
+    The venue accepts market orders at RATE_LIMITS["order_market"] and
     common.net applies SAFETY_RATIO on top; 16 orders measured 26 seconds on
-    2026-08-31, which is the same 0.58 per second. The runway is measured
-    against the CLOSE, not against the submission lead, because that is the
-    instant a market order has to reach.
+    2026-08-31, the same 0.58 per second. The runway is measured against the
+    CLOSE, because that is the instant a market order has to reach; the margin
+    is small on purpose, since SAFETY_RATIO already discounts the published
+    ceiling by 30%.
     """
     rate = RATE_LIMITS["order_market"] * SAFETY_RATIO
     runway = (session.close_utc - pd.Timestamp.now(tz="UTC")).total_seconds()
     capacity = int(max(0.0, runway - safety_sec) * rate)
-    if capacity >= len(intents):
-        return list(intents), []
-    return list(intents[:capacity]), list(intents[capacity:])
+    needed = len(intents) / rate if rate > 0 else float("inf")
+    return capacity, needed
+
+
+def _record_rotation(cycle: _Cycle, session_id: str, diagnostics: dict,
+                     injected) -> bool:
+    """Persist the rotation the moment it is decided, before anything can abort.
+
+    The a1_plan row is the ONLY memory of the A1 book: the buffer band is
+    defined against it and positions are not a substitute. The rotation
+    counter, meanwhile, is a pure function of the session list -- session zero
+    is consumed by being reached, whether or not an order goes out.
+
+    Writing both after submission therefore loses a rotation on every abort
+    between the decision and the send: a closed risk gate, a passed submission
+    instant, a halt raised while parked, an operator stopping the daemon
+    inside the twenty-nine minute wait. The next session would then find no
+    book, size the A1 half to nothing, and liquidate the names it had just
+    chosen. Recording a rotation the session failed to execute is strictly
+    safer than executing one it failed to record, and the row is keyed by date
+    so a replay cannot duplicate it.
+
+    Returns whether this session is a rotation.
+    """
+    if not cycle.is_b0 or not diagnostics:
+        return False
+    a1_tree = diagnostics.get("a1") or {}
+    rebalance_tree = a1_tree.get("rebalance") or {}
+    is_rebalance = rebalance_tree.get("sessions_until_next") == 0
+    _save_rebalance_state(cycle, rebalance_tree)
+    if not is_rebalance:
+        return False
+    book = [row for row in (a1_tree.get("book") or [])
+            if row.get("status") != "exiting"]
+    names = {row["symbol"] for row in book}
+    previous = set((injected or {}).get("a1_book") or {})
+    archive.record_a1_plan(cycle.records_root, {
+        "rebalance_date": session_id,
+        "strategy_id": cycle.strategy_id,
+        "session_index": rebalance_tree.get("session_index"),
+        "eligible_count": a1_tree.get("eligible_count"),
+        "book": book,
+        "dropped": sorted(previous - names),
+        "added": sorted(names - previous),
+        "rank_as_of": rebalance_tree.get("rank_as_of"),
+        "universe_file": (cycle.params.get("a1_params") or {})
+        .get("universe_file"),
+        "code_version": f"{cycle.signal_name}_v"
+        + cycle.signal_version.replace(".", "_"),
+    })
+    return True
 
 
 def _record_b0_streams(cycle: _Cycle, session_id: str, diagnostics: dict,
                        injected) -> bool:
-    """Write b0_allocation every session and a1_plan on a rotation.
+    """Write b0_allocation after submission; the rotation is already recorded.
 
-    Returns whether this session was a rotation. Both rows are keyed by their
-    date, so replaying a session cannot duplicate them. Written AFTER
-    submission but built from the diagnostics captured BEFORE it, because the
+    Keyed by decision_date, so replaying a session cannot duplicate the row.
+    Built from the diagnostics captured BEFORE submission, because the
     statuses describe the book the decision saw.
     """
     if not cycle.is_b0 or not diagnostics or "allocation" not in diagnostics:
@@ -1008,26 +1222,6 @@ def _record_b0_streams(cycle: _Cycle, session_id: str, diagnostics: dict,
         "cash_gbp": attribution.get("cash_gbp"),
     })
 
-    if is_rebalance:
-        book = [row for row in (a1_tree.get("book") or [])
-                if row.get("status") != "exiting"]
-        names = {row["symbol"] for row in book}
-        previous = set((injected or {}).get("a1_book") or {})
-        archive.record_a1_plan(cycle.records_root, {
-            "rebalance_date": session_id,
-            "strategy_id": cycle.strategy_id,
-            "session_index": rebalance_tree.get("session_index"),
-            "eligible_count": a1_tree.get("eligible_count"),
-            "book": book,
-            "dropped": sorted(previous - names),
-            "added": sorted(names - previous),
-            "rank_as_of": rebalance_tree.get("rank_as_of"),
-            "universe_file": (cycle.params.get("a1_params") or {})
-            .get("universe_file"),
-            "code_version": f"{cycle.signal_name}_v"
-            + cycle.signal_version.replace(".", "_"),
-        })
-    _save_rebalance_state(cycle, rebalance_tree)
     return bool(is_rebalance)
 
 

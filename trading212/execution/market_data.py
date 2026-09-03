@@ -43,6 +43,9 @@ Public functions:
                                             object B0 and the dashboard share.
     a1_book_from_records(records_root)      The previous A1 book, from the
                                             a1_plan stream.
+    a1_universe_for(params, as_of, held)    The A1 names one session may
+                                            touch, previous book AND the
+                                            pick it is about to make.
 
 Public classes:
     LiveBar          One OHLCV bar; field-compatible with the engine's Bar.
@@ -81,6 +84,21 @@ Constants:
     RANK_STALE_FREEZE_SESSIONS int  3. Beyond this many sessions of ranking
                             staleness the A1 leg is frozen rather than traded
                             on an old ranking.
+    RANK_STALE_FREEZE_DAYS int  7. The same freeze in CALENDAR days. Session
+                            staleness alone is circular: it is counted on the
+                            SPY series, and the pass that stalls the ranking
+                            table is the same pass that stalls SPY, so the two
+                            drift together and the session counter can read
+                            zero while the table is genuinely old. Measured
+                            2026-09-03: a table from 2026-08-31 reported
+                            rank_stale_sessions = 0. Either threshold freezes.
+    MAX_SESSION_CALENDAR_LAG_DAYS int  5. How far the stored session list may
+                            trail the day being decided before the rotation
+                            counter is no longer trustworthy. Beyond it the
+                            injection reports session_calendar_stale and the
+                            cycle refuses to decide, because a session missing
+                            from the middle of the list shifts every index
+                            after it and silently moves the rotation.
     SESSION_SYMBOL   str    "SPY". The session calendar's single source of
                             truth: its stored daily bars ARE the US trading
                             days, half days included. The venue calendar is
@@ -119,6 +137,7 @@ from __future__ import annotations
 __all__ = ["group_for", "refresh_bars", "load_frames", "daily_rows",
            "build_view", "assert_intraday_ready", "us_sessions",
            "refresh_for_decision", "load_b0_injection", "a1_book_from_records",
+           "a1_universe_for",
            "LiveBar", "LiveMarketView",
            "GROUPS", "FX_SYMBOL", "FX_LAG_MINUTES", "FX_CURRENT_LAG_MINUTES",
            "INTRADAY_SESSIONS_LOADED", "SESSION_SYMBOL"]
@@ -134,6 +153,7 @@ from common.logging_setup import get_logger
 from common.paths import (a1_rank_path, equity_curated_root,
                           equity_interval_dir)
 from trading212 import archive
+from trading212.execution.strategy_loader import load_module
 from trading212.ingest.yahoo_bars import (UNIVERSE, fetch_interval, write_daily,
                                           write_intraday)
 
@@ -150,6 +170,8 @@ A1_REFRESH_ATTEMPTS = 2
 A1_REFRESH_BACKOFF_SEC = 4
 A1_INTRADAY_DAYS = 7
 RANK_STALE_FREEZE_SESSIONS = 3
+RANK_STALE_FREEZE_DAYS = 7
+MAX_SESSION_CALENDAR_LAG_DAYS = 5
 
 _TZ_LONDON = "Europe/London"
 _TZ_NEW_YORK = "America/New_York"
@@ -268,19 +290,39 @@ def _symbol_dir(symbol: str, interval: str):
 
 
 def load_frames(symbols: list[str], interval: str, start: str,
-                end: str) -> dict[str, pd.DataFrame]:
+                end: str, missing: str = "raise"
+                ) -> dict[str, pd.DataFrame]:
     """Read stored bars per symbol, sliced by exchange-local day.
 
     The window is interpreted in the exchange's local calendar, not raw UTC,
     because a London bar stamps 23:00 UTC of the previous day during BST.
-    A missing symbol raises rather than vanishing from the result: silently
-    dropping a symbol would change the strategy's slot count.
+
+    Args:
+        missing: "raise" (default) keeps the original contract -- a symbol with
+            no stored partition raises, because silently dropping one of A0's
+            eighteen would change the slot count and every quantity with it.
+            "skip" omits such a symbol from the result instead, and is used
+            ONLY for the wide A1 half of a B0 universe: 1,477 of the 1,501
+            stored equities have no 1h partition at all, so a name entering the
+            book for the first time, or one whose short-window fetch failed,
+            has an empty directory. Raising there would kill the whole session
+            over a name the `thin` mechanism exists to tolerate. The caller
+            compares the key sets and treats what is absent as thin.
     """
+    if missing not in ("raise", "skip"):
+        raise ValueError(f"missing must be 'raise' or 'skip', got {missing!r}")
     out: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
-        folder = _symbol_dir(symbol, interval)
+        try:
+            folder = _symbol_dir(symbol, interval)
+        except FileNotFoundError:
+            if missing == "skip":
+                continue
+            raise
         parts = sorted(folder.glob("*.parquet"))
         if not parts:
+            if missing == "skip":
+                continue
             raise FileNotFoundError(f"{folder} holds no parquet files")
         frame = pd.concat([pd.read_parquet(p) for p in parts],
                           ignore_index=True)
@@ -413,7 +455,13 @@ def refresh_for_decision(params: dict, session, key: pd.Timestamp,
     state_symbol = params["state_symbol"]
     fx_symbol = params["fx_symbol"]
     refresh_bars(trade_symbols + [state_symbol, fx_symbol], _LIVE_INTERVAL)
-    refresh_bars(trade_symbols + [state_symbol], "1d")
+    # SESSION_SYMBOL is in the daily list because the session calendar -- and
+    # with it the whole A1 rotation counter -- is derived from its stored bars.
+    # Left out, the list stops at the last pre-market update: measured
+    # 2026-09-03, SPY's lake ended 2026-08-31 while two sessions had passed,
+    # which collapsed the session list and made every session read as
+    # rotation zero.
+    refresh_bars(trade_symbols + [state_symbol, SESSION_SYMBOL], "1d")
 
     thin: list[str] = []
     extra = [s for s in (a1_symbols or []) if s not in set(trade_symbols)]
@@ -478,6 +526,53 @@ def _latest_rank_table(target, sessions_before: list):
     return None, None, None
 
 
+def a1_universe_for(params: dict, as_of, held=None, records_root=None) -> dict:
+    """The A1 names one session may touch, without loading any daily history.
+
+    Split out of load_b0_injection because of an ordering problem that cost
+    the first rotation everything: the refresh has to know which names to
+    fetch BEFORE the injection is built, and the names it must fetch include
+    the ones this session is about to PICK -- not just the ones the last
+    rotation chose. Building the view from the previous book alone left every
+    newly selected name without a bar, priced at zero, and therefore targeted
+    to zero: the first B0 night would have sold the two names A0 and A1 share
+    and bought none of the eighteen new ones.
+
+    Read-only: rank parquet and the a1_plan record, nothing else.
+
+    Returns the previous book, the prospective pick, their union, and the
+    ranking table with its staleness, so the caller refreshes and the
+    injection is built from the same set.
+    """
+    as_of = pd.Timestamp(str(as_of)).date()
+    a1_params = params.get("a1_params") or {}
+    all_sessions = us_sessions("2000-01-01", str(as_of))
+    before = [d for d in all_sessions if d < as_of]
+    frame, rank_as_of, stale = _latest_rank_table(as_of, before)
+    stale_days = None if rank_as_of is None else (as_of - rank_as_of).days
+    frozen = frame is None or (
+        (stale is not None and stale > RANK_STALE_FREEZE_SESSIONS)
+        or (stale_days is not None and stale_days > RANK_STALE_FREEZE_DAYS))
+
+    book = a1_book_from_records(records_root)
+    pick: list[str] = []
+    if frame is not None and not frozen and a1_params:
+        try:
+            module = load_module("a1", "0.0.1")
+            pick = module.select(frame, book, a1_params)
+        except Exception as exc:                   # noqa: BLE001
+            # A ranking that cannot be read is a frozen leg, not a crash: the
+            # A0 half of the session is still worth taking.
+            log.error("[bars] could not derive the prospective A1 book: %s",
+                      exc)
+            frozen = True
+    names = sorted(set(book) | set(pick) | set(held or []))
+    return {"book": book, "pick": pick, "names": names, "rank": frame,
+            "rank_as_of": rank_as_of, "rank_stale_sessions": stale,
+            "rank_stale_days": stale_days, "a1_frozen": frozen,
+            "sessions_all": all_sessions}
+
+
 def load_b0_injection(params: dict, as_of, held=None,
                       records_root=None) -> dict:
     """Seam S3: the read-only injection B0 and the dashboard both consume.
@@ -502,9 +597,12 @@ def load_b0_injection(params: dict, as_of, held=None,
     as_of = pd.Timestamp(str(as_of)).date()
     a0_params = params.get("a0_params") or params
     a1_params = params.get("a1_params") or {}
+    universe = a1_universe_for(params, as_of, held=held,
+                               records_root=records_root)
     anchor = str(a1_params.get("rebalance_anchor")
                  or params.get("live_from"))
-    sessions_list = us_sessions(anchor, as_of)
+    sessions_list = [d for d in universe["sessions_all"]
+                     if d >= pd.Timestamp(anchor).date()]
     if as_of not in sessions_list and (not sessions_list
                                        or as_of > sessions_list[-1]):
         # The decision runs at 15:30, INSIDE the session it trades. SPY's own
@@ -517,34 +615,55 @@ def load_b0_injection(params: dict, as_of, held=None,
         # so today is appended rather than inferred from price data that has
         # not been published yet.
         sessions_list = list(sessions_list) + [as_of]
-    history_start = str(params.get("history_start", "2010-01-04"))
+    if "history_start" not in params:
+        raise KeyError(
+            "params['history_start'] is required: the volatility gate's "
+            "expanding percentile is sensitive to the daily start date, so a "
+            "silent default would let the live gate differ from the "
+            "configured one")
+    history_start = str(params["history_start"])
 
     a0_symbols = list(a0_params["trade_symbols"]) + [a0_params["state_symbol"]]
     a0_rows = daily_rows(a0_symbols, history_start, str(as_of))
 
-    all_sessions = us_sessions("2000-01-01", str(as_of))
-    before = [d for d in all_sessions if d < as_of]
-    frame, rank_as_of, stale = _latest_rank_table(as_of, before)
+    frame = universe["rank"]
     if frame is None:
         log.error("[bars] no A1 ranking table at or before %s; the A1 leg "
                   "has nothing to rotate on", as_of)
-        stale = None
 
-    book = a1_book_from_records(records_root)
+    # The session list drives the rotation counter, and a session missing from
+    # the middle of it shifts every index after it. The lag is measured on the
+    # STORED list, before today is appended -- measuring it afterwards always
+    # reads zero, because the appended day is today by construction.
+    stored = universe["sessions_all"]
+    newest = stored[-1] if stored else None
+    lag_days = None if newest is None else (as_of - newest).days
+    calendar_stale = bool(lag_days is not None
+                          and lag_days > MAX_SESSION_CALENDAR_LAG_DAYS)
+    if calendar_stale:
+        log.error("[bars] the stored session list ends %s, %d calendar days "
+                  "before %s; the rotation counter is not trustworthy",
+                  newest, lag_days, as_of)
 
     held_names = sorted(set(held or []))
-    view_symbols = sorted(set(a0_symbols) | set(book) | set(held_names)
+    a1_names = sorted(set(universe["names"]) - set(a0_symbols))
+    view_symbols = sorted(set(a0_symbols) | set(universe["names"])
                           | {params["fx_symbol"]})
     return {
         "a0_rows": a0_rows,
         "a0_mode": "rows",
         "a1_rank": frame,
-        "rank_as_of": rank_as_of,
-        "rank_stale_sessions": int(stale) if stale is not None else None,
-        "a1_frozen": frame is None
-        or (stale is not None and stale > RANK_STALE_FREEZE_SESSIONS),
-        "a1_book": book,
+        "rank_as_of": universe["rank_as_of"],
+        "rank_stale_sessions": (None if universe["rank_stale_sessions"] is None
+                                else int(universe["rank_stale_sessions"])),
+        "rank_stale_days": universe["rank_stale_days"],
+        "a1_frozen": universe["a1_frozen"],
+        "a1_book": universe["book"],
+        "a1_pick": universe["pick"],
+        "a1_names": a1_names,
         "sessions": sessions_list,
+        "session_calendar_stale": calendar_stale,
+        "session_lag_days": lag_days,
         "as_of": as_of,
         "thin": [],
         "held": held_names,

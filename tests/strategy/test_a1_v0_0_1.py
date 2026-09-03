@@ -341,3 +341,31 @@ def test_diagnostics_report_a_thin_name_as_frozen():
                                  params, injection)
     statuses = {row["symbol"]: row["status"] for row in tree["book"]}
     assert statuses.get("AAA") == "frozen"
+
+
+def test_exiting_rows_come_from_the_book_not_from_the_shared_account():
+    """Catches: reporting A0's holdings as A1 names being exited.
+
+    Under B0 the account is shared, so deriving the exit list from positions
+    made the pre-arming panel read "A1 is exiting thirteen names" on a night
+    A1 had never held anything.
+    """
+    days, (closes, volumes) = _panel()
+    all_sessions = list(closes.index)[300:]
+    injection = {"panel": {"closes": closes, "volumes": volumes},
+                 "sessions": all_sessions, "a1_book": {"EEE": 1.0},
+                 "thin": [], "rank_as_of": str(all_sessions[0]),
+                 "rank_stale_sessions": 0}
+    params = dict(PARAMS, live_from=str(all_sessions[0]),
+                  rebalance_anchor=str(all_sessions[0]))
+    # DDD and CCC are held but were never in the A1 book: they are A0's.
+    portfolio = FakePortfolio(cash_gbp=Decimal("1000"),
+                              positions={"EEE": Decimal("1"),
+                                         "DDD": Decimal("1"),
+                                         "CCC": Decimal("1")})
+    tree = a1.signal_diagnostics(_view(days, closes, 300), portfolio, params,
+                                 injection)
+    exiting = {row["symbol"] for row in tree["book"]
+               if row["status"] == "exiting"}
+    assert "DDD" not in exiting and "CCC" not in exiting
+    assert exiting <= {"EEE"}

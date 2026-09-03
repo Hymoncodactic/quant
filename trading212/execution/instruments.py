@@ -217,30 +217,56 @@ def order_ticker(symbol: str) -> str:
     return table[symbol]
 
 
-def validate_mapping(client, symbols: list[str]) -> dict[str, dict]:
-    """Prove the static mapping against the venue's live instrument metadata.
+def validate_mapping(client, symbols: list[str],
+                     required: list[str] | None = None
+                     ) -> dict[str, dict]:
+    """Prove the mapping against the venue's live instrument metadata.
 
-    Per symbol: the mapped ticker exists, quotes in USD and is a STOCK. Any
-    failure raises, because trading a universe whose identity cannot be
-    proven is worse than not trading.
+    Per symbol: the mapped ticker exists, quotes in USD and is a STOCK.
+
+    Args:
+        required: Symbols whose failure is fatal. Default (None) means all of
+            them, which is the original contract and what A0 needs.
+
+            B0 passes A0's eighteen here and lets the rest degrade. The
+            wide half of the universe rotates through roughly 1,500 names,
+            and one stale venue instrument among them would otherwise stop
+            every session -- including the sells needed to exit the very
+            position that went stale. A non-required symbol that fails is
+            simply absent from the result, and the caller drops it from this
+            session the same way it drops a schedule divergence.
     """
     index = {inst.get("ticker"): inst for inst in client.instruments()}
+    required_set = set(symbols if required is None else required)
     result: dict[str, dict] = {}
     problems: list[str] = []
+    degraded: list[str] = []
+
+    def _fail(symbol: str, why: str) -> None:
+        (problems if symbol in required_set else degraded).append(why)
+
     for symbol in symbols:
-        ticker = order_ticker(symbol)
+        try:
+            ticker = order_ticker(symbol)
+        except KeyError as exc:
+            _fail(symbol, f"{symbol}: {exc}")
+            continue
         meta = index.get(ticker)
         if meta is None:
-            problems.append(f"{symbol}: ticker {ticker} absent from metadata")
+            _fail(symbol, f"{symbol}: ticker {ticker} absent from metadata")
             continue
         if meta.get("currencyCode") != "USD" or meta.get("type") != "STOCK":
-            problems.append(f"{symbol}: {ticker} is {meta.get('currencyCode')}"
-                            f"/{meta.get('type')}, expected USD/STOCK")
+            _fail(symbol, f"{symbol}: {ticker} is {meta.get('currencyCode')}"
+                          f"/{meta.get('type')}, expected USD/STOCK")
             continue
         result[symbol] = meta
     if problems:
         raise RuntimeError("instrument mapping validation failed: "
                            + "; ".join(problems))
+    if degraded:
+        log.warning("[instruments] %d non-required symbol(s) failed "
+                    "validation and are dropped from this session: %s",
+                    len(degraded), "; ".join(degraded[:10]))
     log.info("[instruments] mapping validated for %d symbols", len(result))
     return result
 

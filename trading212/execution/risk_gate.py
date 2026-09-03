@@ -282,6 +282,16 @@ def check_intents(intents: list[OrderIntent], ledger_view,
             # Proceeds are credited NET of the same buffer rather than gross,
             # so the estimate stays on the conservative side of the real fill.
             budget += intent.ref_notional_gbp * (Decimal("1") - fee_buffer)
+            # Gross exposure falls by exactly what is sold. Without this the
+            # running total only ever rises, so a session that rotates a book
+            # -- sell twenty, buy twenty -- is measured as if it had bought
+            # forty. Starting from the full held value, a ceiling set at
+            # roughly the account size then rejects the second half of every
+            # rotation while the real post-session exposure sits well inside
+            # the limit.
+            gross -= intent.ref_notional_gbp
+            if gross < 0:
+                gross = Decimal("0")
         if intent.quantity > 0:
             if cost > budget:
                 # Same reason string the backtest's admission layer records

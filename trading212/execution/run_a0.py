@@ -105,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
     p_init = sub.add_parser("init-ledger", help="create the strategy book")
     p_init.add_argument("--cash-gbp", required=True, type=Decimal,
                         help="explicit GBP cash allocation for the strategy")
+    p_init.add_argument("--force", action="store_true",
+                        help="create the book even though the account holds "
+                             "positions it will not own; use adopt-book "
+                             "instead unless those shares really are not this "
+                             "strategy's")
     p_adopt = sub.add_parser("adopt-book",
                              help="move cash and positions from another "
                                   "strategy's book into the configured one")
@@ -140,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "status":
         result = session_cycle.status(cfg)
     elif args.command == "init-ledger":
-        result = session_cycle.init_ledger(cfg, args.cash_gbp)
+        result = session_cycle.init_ledger(cfg, args.cash_gbp,
+                                           force=args.force)
     elif args.command == "adopt-book":
         result = session_cycle.adopt_book(cfg, args.from_strategy_id,
                                           confirm=args.confirm)

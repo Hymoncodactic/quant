@@ -17,6 +17,7 @@ from trading212 import archive
 from trading212.execution import (instruments, ledger_store, market_data,
                                   order_router, risk_gate, session_cycle)
 from trading212.execution.risk_gate import OrderIntent
+from trading212.execution.strategy_loader import load_module
 from trading212.execution.shadow_ledger import (LedgerPortfolioView,
                                                 ShadowLedger)
 
@@ -121,7 +122,10 @@ def test_a_stale_ranking_falls_back_and_freezes_past_the_limit(monkeypatch,
                         lambda symbols, start, end: {s: [] for s in symbols})
     monkeypatch.setattr(market_data, "a1_rank_path",
                         lambda day: tmp_path / f"{day}.parquet")
-    pd.DataFrame({"symbol": ["AAA"]}).to_parquet(tmp_path / "2026-09-02.parquet")
+    pd.DataFrame({"symbol": ["AAA"], "ticker": ["AAA_US_EQ"],
+                  "close": [10.0], "score": [0.5], "eligible": [True],
+                  "elig_reason": ["ok"], "rank": [1]}
+                 ).to_parquet(tmp_path / "2026-09-02.parquet")
     params = session_cycle.assemble_params(_cfg("b0"))
 
     near = market_data.load_b0_injection(params, days[2], records_root=tmp_path)
@@ -132,6 +136,58 @@ def test_a_stale_ranking_falls_back_and_freezes_past_the_limit(monkeypatch,
     assert far["rank_as_of"] == days[1]
     assert far["rank_stale_sessions"] > market_data.RANK_STALE_FREEZE_SESSIONS
     assert far["a1_frozen"] is True
+
+
+def test_calendar_day_staleness_freezes_even_when_the_session_count_cannot(
+        monkeypatch, tmp_path):
+    """Catches: the circular guard that measured staleness on the same stalled
+    series that produced the stale table, so it read zero and never fired."""
+    stalled = [pd.Timestamp("2026-08-31").date()]
+    monkeypatch.setattr(market_data, "us_sessions", lambda start, end: stalled)
+    monkeypatch.setattr(market_data, "daily_rows",
+                        lambda symbols, start, end: {s: [] for s in symbols})
+    monkeypatch.setattr(market_data, "a1_rank_path",
+                        lambda day: tmp_path / f"{day}.parquet")
+    pd.DataFrame({"symbol": ["AAA"], "ticker": ["AAA_US_EQ"], "close": [10.0],
+                  "score": [0.5], "eligible": [True], "elig_reason": ["ok"],
+                  "rank": [1]}).to_parquet(tmp_path / "2026-08-31.parquet")
+    params = session_cycle.assemble_params(_cfg("b0"))
+    out = market_data.load_b0_injection(params,
+                                        pd.Timestamp("2026-09-30").date(),
+                                        records_root=tmp_path)
+    # The session count cannot see the gap: the list itself stopped moving.
+    assert out["rank_stale_sessions"] == 0
+    assert out["rank_stale_days"] > market_data.RANK_STALE_FREEZE_DAYS
+    assert out["a1_frozen"] is True
+    assert out["session_calendar_stale"] is True
+
+
+def test_the_prospective_pick_is_in_the_view_symbols(monkeypatch, tmp_path):
+    """Catches the first-night blocker: the names about to be BOUGHT were
+    absent from the view, priced at zero, and therefore targeted to zero."""
+    prev = pd.Timestamp("2026-09-14").date()
+    day = pd.Timestamp("2026-09-15").date()
+    monkeypatch.setattr(market_data, "us_sessions",
+                        lambda start, end: [prev, day])
+    monkeypatch.setattr(market_data, "daily_rows",
+                        lambda symbols, start, end: {s: [] for s in symbols})
+    monkeypatch.setattr(market_data, "a1_rank_path",
+                        lambda d: tmp_path / f"{d}.parquet")
+    picks = [f"NEW{i}" for i in range(1, 4)]
+    pd.DataFrame({"symbol": picks, "ticker": [f"{p}_US_EQ" for p in picks],
+                  "close": [10.0] * 3, "score": [0.9, 0.8, 0.7],
+                  "eligible": [True] * 3, "elig_reason": ["ok"] * 3,
+                  "rank": [1, 2, 3]}).to_parquet(tmp_path / f"{prev}.parquet")
+    params = session_cycle.assemble_params(_cfg("b0"))
+    params["a1_params"] = dict(params["a1_params"], n_hold=3)
+    # No previous rotation: the book is empty, so ONLY the prospective pick
+    # can put these names in the view.
+    universe = market_data.a1_universe_for(params, day, records_root=tmp_path)
+    assert universe["book"] == {}
+    assert set(universe["pick"]) == set(picks)
+    out = market_data.load_b0_injection(params, day, records_root=tmp_path)
+    assert set(picks) <= set(out["view_symbols"])
+    assert set(picks) <= set(out["a1_names"])
 
 
 def test_the_decision_session_is_appended_when_its_own_bar_is_unwritten(
@@ -277,22 +333,26 @@ def test_the_per_order_ceiling_binds_buys_but_never_sells():
     assert sell.quantity == Decimal("-5")
 
 
-def test_the_batch_is_cut_to_what_fits_before_the_close():
-    """Catches: sending orders that fill at the next open instead."""
-    class _Session:
+def test_capacity_and_time_needed_are_reported_against_the_close():
+    """Catches: a partial batch that sends every sell and no buy.
+
+    Ordering puts reductions first, so truncation liquidates without
+    re-entering. The caller abandons the batch instead; this checks the
+    arithmetic it decides on.
+    """
+    class _Tight:
         close_utc = pd.Timestamp.now(tz="UTC") + pd.Timedelta(seconds=40)
 
     intents = [_intent(f"S{i}", "1") for i in range(20)]
-    send, deferred = session_cycle._fit_before_close(intents, _Session())
-    # ~0.58 orders per second over the 10 seconds left after the safety margin.
-    assert 0 < len(send) < len(intents)
-    assert len(send) + len(deferred) == len(intents)
+    capacity, needed = session_cycle._fit_before_close(intents, _Tight())
+    assert capacity < len(intents)          # does not fit -> caller aborts
+    assert needed == pytest.approx(20 / (50 / 60 * 0.7), rel=1e-6)
 
     class _Roomy:
         close_utc = pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=1)
 
-    send, deferred = session_cycle._fit_before_close(intents, _Roomy())
-    assert deferred == [] and len(send) == len(intents)
+    capacity, _needed = session_cycle._fit_before_close(intents, _Roomy())
+    assert capacity >= len(intents)
 
 
 # --- 6 and 7. mapping and precision ---------------------------------------
@@ -447,3 +507,157 @@ class _StubCycle:
 
     def session_list(self):
         return []
+
+
+# --- fixes from the 2026-09-03 independent review --------------------------
+
+def test_gross_exposure_is_credited_with_approved_sells():
+    """Catches: a rotation measured as buy-forty instead of sell-twenty
+    buy-twenty, which rejects the second half of every rebalance."""
+    view = LedgerPortfolioView(cash_gbp=Decimal("1000"),
+                               available_cash_gbp=Decimal("1000"),
+                               positions={"OLD": Decimal("10")},
+                               pending_signed_qty={})
+    cfg = {"max_order_notional_gbp": "10000", "max_gross_notional_gbp": "900",
+           "max_daily_orders": "50", "min_order_value_gbp": "1",
+           "fee_buffer": "0"}
+    # Held value 800; sell it all, then buy 800 of something else. Without the
+    # credit the buy is measured against 800 + 800 = 1600 and is rejected.
+    sell = _intent("OLD", "-10", "100")
+    buy = _intent("NEW", "8", "100")
+    report = risk_gate.check_intents([sell, buy], view, Decimal("800"), cfg,
+                                     orders_today=0, in_submit_window=True,
+                                     halt_path=Path("/nonexistent-halt"))
+    assert [i.symbol for i in report.approved] == ["OLD", "NEW"]
+    assert report.rejected == []
+
+
+def test_a_shut_gate_with_an_empty_book_still_liquidates():
+    """Catches the A7 violation: {} reads as abort, so A0's own exit orders
+    were never sent and the whole book rode through a closed gate."""
+    b0 = load_module("b0", "0.0.1")
+    a0_params = {"trade_symbols": ["NVDA", "AMD"], "state_symbol": "QQQ",
+                 "fx_symbol": "GBPUSD=X", "signal_mode": "ma200",
+                 "trend_ma": 999, "tsmom_lookback": 3, "warmup_bars": 4,
+                 "use_vol_gate": False, "use_trend_gate": False,
+                 "live_from": "2020-01-02", "slot_headroom": 0.99}
+    a1_params = {"n_hold": 3, "band_multiple": 2, "rebalance_every": 21,
+                 "mom_long": 3, "mom_skip": 1, "liq_window": 3,
+                 "min_dollar_volume_usd": 1.0, "max_zero_volume_share": 0.99,
+                 "min_history_bars": 1, "order_usd_for_participation": 1e-9,
+                 "require_verified_ticker": False, "slot_headroom": 0.99,
+                 "fx_symbol": "GBPUSD=X", "rebalance_anchor": "2020-01-02",
+                 "live_from": "2020-01-02"}
+    params = {"priority": "a1", "a1_band": 0.10, "slot_headroom": 0.99,
+              "signal_view_cash_gbp": 1000000, "sells_first": True,
+              "fx_symbol": "GBPUSD=X", "live_from": "2020-01-02",
+              "a0_params": a0_params, "a1_params": a1_params}
+
+    from tests.strategy.conftest import (FakeBar, FakePortfolio, FakeView,
+                                         ny_ts, sessions)
+    days = sessions("2020-01-02", 3)
+    history = {s: [FakeBar(ts=ny_ts(d), close=100.0) for d in days]
+               for s in ("NVDA", "AMD", "QQQ")}
+    history["GBPUSD=X"] = [FakeBar(ts=ny_ts(days[-1]), close=1.25)]
+    view = FakeView(history, ny_ts(days[-1]))
+    portfolio = FakePortfolio(cash_gbp=Decimal("10"),
+                              available_cash_gbp=Decimal("10"),
+                              positions={"NVDA": Decimal("5")})
+    injection = {"a1_rank": None, "rank_as_of": None, "a1_frozen": True,
+                 "a1_book": {}, "sessions": list(days), "thin": [],
+                 "a0_mode": "view"}
+    targets = b0.make_strategy(injection)(view, portfolio, params)
+    assert targets, "an empty mapping is read as an abort by decide()"
+    assert targets["NVDA"] == Decimal("0")     # the exit A0 would have made
+
+
+def test_init_ledger_refuses_to_orphan_venue_positions():
+    """Catches: a fresh book owning none of the shares the account holds,
+    which reconcile cannot see because its position check is one-way."""
+    class _Client:
+        def positions(self):
+            return [{"ticker": "NVDA_US_EQ", "quantity": "2"}]
+
+    class _Stub:
+        def __init__(self, tmp):
+            self.state_dir = Path(tmp)
+            self.strategy_id = "b0_v0_0_1"
+            self.client = _Client()
+
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    original = session_cycle._Cycle
+    try:
+        session_cycle._Cycle = lambda cfg: _Stub(tmp)
+        out = session_cycle.init_ledger({"_env": "paper"}, Decimal("100"))
+        assert out["aborted"] and "adopt-book" in out["reason"]
+    finally:
+        session_cycle._Cycle = original
+
+
+def test_validate_mapping_is_fatal_only_for_the_required_names():
+    """Catches: one stale wide-universe instrument stopping every session,
+    including the sells needed to exit it."""
+    class _Client:
+        def instruments(self):
+            return [{"ticker": "NVDA_US_EQ", "currencyCode": "USD",
+                     "type": "STOCK", "shortName": "NVDA"}]
+
+    ok = instruments.validate_mapping(_Client(), ["NVDA"], required=["NVDA"])
+    assert set(ok) == {"NVDA"}
+    # An unmapped wide-universe name degrades instead of raising.
+    degraded = instruments.validate_mapping(_Client(),
+                                            ["NVDA", "NOT_A_REAL_SYMBOL"],
+                                            required=["NVDA"])
+    assert set(degraded) == {"NVDA"}
+    with pytest.raises(RuntimeError):
+        instruments.validate_mapping(_Client(), ["NVDA", "NOT_A_REAL_SYMBOL"])
+
+
+def test_the_rotation_is_recorded_before_any_abort_can_discard_it(tmp_path):
+    """Catches: losing rotation zero to an abort in the 29-minute submit wait.
+
+    The a1_plan row is the only memory of the A1 book, and the rotation
+    counter is a pure function of the session list -- session zero is spent by
+    being reached. Recording after submission meant a halt, a stop or a passed
+    submission instant left the next session with no book, which liquidates
+    the names just chosen.
+    """
+    class _Stub:
+        is_b0 = True
+        strategy_id = "b0_v0_0_1"
+        signal_name = "b0"
+        signal_version = "0.0.1"
+        params = {"a1_params": {"universe_file": "u.json"}}
+
+        def __init__(self, path):
+            self.records_root = path
+            self.state_dir = path
+
+    cycle = _Stub(tmp_path)
+    diagnostics = {"a1": {"eligible_count": 1475,
+                          "rebalance": {"session_index": 0, "every": 21,
+                                        "sessions_until_next": 0,
+                                        "anchor": "2026-09-15",
+                                        "last_rebalance": "2026-09-15",
+                                        "rank_as_of": "2026-09-12",
+                                        "rank_stale_sessions": 0},
+                          "book": [{"symbol": "SNDK", "status": "entering"},
+                                   {"symbol": "OLD", "status": "exiting"}]}}
+    assert session_cycle._record_rotation(cycle, "2026-09-15", diagnostics,
+                                          {"a1_book": {"OLD": 0.05}}) is True
+    rows = archive.read_stream(tmp_path, "a1_plan", limit=5)
+    assert len(rows) == 1
+    assert [r["symbol"] for r in rows[0]["book"]] == ["SNDK"]
+    assert rows[0]["dropped"] == ["OLD"] and rows[0]["added"] == ["SNDK"]
+    # The rotation cache is written on every session, rebalance or not.
+    cached = json.loads((tmp_path / "a1_rebalance_state.json").read_text())
+    assert cached["session_index"] == 0
+
+    quiet = {"a1": {"rebalance": {"session_index": 5, "every": 21,
+                                  "sessions_until_next": 16}}}
+    assert session_cycle._record_rotation(cycle, "2026-09-22", quiet,
+                                          {}) is False
+    assert len(archive.read_stream(tmp_path, "a1_plan", limit=5)) == 1
+    assert json.loads(
+        (tmp_path / "a1_rebalance_state.json").read_text())["session_index"] == 5

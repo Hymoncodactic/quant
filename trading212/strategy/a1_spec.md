@@ -71,10 +71,29 @@ A1 与 B0 数字都建立在这 1,498 只上，实盘的排名 pass 因此沿用
 **E5 只在实盘臂生效**（参数 `require_verified_ticker`，研究臂置 false）。
 理由是执行侧的硬约束而非研究判断：`trading212/execution/instruments.py::order_ticker`
 对未映射标的抛 `KeyError`，一只未映射的候选一旦进入名单，整个决策会在下单时崩掉。
-映射由 `scripts/20260903_build_universe_ticker_map.py` 逐个对场所元数据求证
-（先按 `<SYMBOL>_US_EQ` 前缀、未命中再按 `shortName`，两者都要求 `STOCK` 且 `USD`）；
-2026-09-03 实测 1,501 条全部匹配（前缀 1,357、shortName 126、A0 手工核验 18），
-无歧义、无未匹配。多候选与未匹配者 `ticker` 记 null，经 E5 自然不准入。
+映射由 `scripts/20260903_build_universe_ticker_map.py` 逐个对场所元数据求证。
+**匹配顺序是 `shortName` 优先，`<SYMBOL>_US_EQ` 前缀只作兜底**，两者都要求
+`STOCK` 且 `USD`。顺序反过来会买错公司：Trading 212 在公司改名后**保留原 ticker id**，
+把光杆 symbol id 给了现在持有该 symbol 的那家。2026-08-21 元数据实测——
+
+| 场所 ticker | shortName | 公司 |
+|---|---|---|
+| `CNX_US_EQ` | CNR | Core Natural Resources |
+| `CNX1_US_EQ` | CNX | CNX Resources |
+| `CR_US_EQ` | CXT | Crane NXT |
+| `RBC_US_EQ` | RRX | Regal Rexnord |
+| `UA_US_EQ` | UAA | Under Armour A 类 |
+| `GEN_US_EQ` | GENNQ | Genesis Healthcare |
+
+前缀优先的旧规则把池内 CNX 映到 `CNX_US_EQ`（Core Natural Resources，另一家公司），
+且池内 CNR 也映到同一条，五只标的映错、四个场所 ticker 被两个池标的同时占用。
+2026-09-03 独立审查查出，已改为 shortName 优先并加三道拒绝闸：
+前缀命中但其 `shortName` 是另一个池成员时拒绝、一符多配时拒绝、
+一个场所 ticker 被两个池标的占用时**双方都拒绝**。
+双重挂牌（同一 shortName 同时有美国线与伦敦线，如 DAR、FIVE）取唯一的 `_US_EQ` 线。
+
+改后实测 1,501 条全部匹配（shortName 1,483、A0 手工核验 18），无歧义、无未匹配、
+无重复占用。多候选与未匹配者 `ticker` 记 null，经 E5 自然不准入。
 
 滚动窗口不足 252 个交易日时视为不满足。
 实现：`research/xsmom_wide/run_study.py::eligibility`（L95–112）。

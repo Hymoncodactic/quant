@@ -10,15 +10,50 @@ and routing an order to one of those is not a recoverable mistake.
 
 Matching, in this fixed order:
 
-    1. Prefix. The venue's ticker for a US equity is "<SYMBOL>_US_EQ", so the
-       candidate's own symbol is tried directly.
-    2. shortName. Some listings carry a venue ticker that does not embed the
-       symbol; the venue's own shortName field is then the tie.
+    1. shortName. The venue's shortName is the instrument's CURRENT market
+       symbol, and it is the only field that tracks a rename. When a dual
+       listing puts the same shortName on a US line and a USD-quoted London
+       line, the single "_US_EQ" among them is taken.
+    2. Ticker prefix, "<SYMBOL>_US_EQ", and only when no other pool member
+       already owns that instrument by shortName.
 
-Both require type == STOCK and currencyCode == USD. A symbol matching more
-than one instrument is left undecided rather than resolved by any rule: the
-whole point of the table is that identity was PROVEN, and two candidates mean
-it was not. A0's eighteen names are written from
+Both require type == STOCK and currencyCode == USD.
+
+Why shortName comes first, and why getting this backwards is not a cosmetic
+error. Trading 212 keeps the ORIGINAL ticker id after a company renames, and
+gives the plain symbol id to whoever holds that symbol now. Measured against
+data/reference/t212_instruments_20260821.json on 2026-09-03:
+
+    CNX_US_EQ  shortName CNR   Core Natural Resources
+    CNX1_US_EQ shortName CNX   CNX Resources
+    CR_US_EQ   shortName CXT   Crane NXT
+    CR1_US_EQ  shortName CR    Crane Company
+    RBC_US_EQ  shortName RRX   Regal Rexnord
+    UA_US_EQ   shortName UAA   Under Armour Class A
+    GEN_US_EQ  shortName GENNQ Genesis Healthcare
+
+A prefix-first rule mapped pool CNX to CNX_US_EQ -- Core Natural Resources,
+a different company -- and the same rule pointed pool CNR at the same
+instrument, so one venue instrument was claimed by two pool symbols while one
+of them was plain wrong. Five symbols were affected (CNX, CR, GEN, RBC, UA);
+all five were eligible and ranked in the 2026-08-31 table, so a later rotation
+would have bought the wrong company with real money. shortName-first resolves
+every one of them correctly.
+
+Three guards on top, each refusing rather than guessing:
+
+    - A prefix match whose instrument's shortName is a DIFFERENT pool symbol is
+      rejected: that is the rename signature above.
+    - A symbol matching more than one instrument is left undecided. The whole
+      point of the table is that identity was PROVEN, and two candidates mean
+      it was not.
+    - A venue ticker claimed by two pool symbols is dropped from BOTH.
+
+A1 admits a candidate only when it has a verified ticker (decision A5), so an
+undecided name simply never enters the book; that is why "leave it null" is a
+safe answer here and "guess a ticker" is not.
+
+A0's eighteen names are written from
 trading212/execution/instruments.py A0_ORDER_TICKERS, which were verified by
 hand and include META trading as FB_US_EQ, a mapping neither rule finds.
 
@@ -44,6 +79,10 @@ Outputs:
 
 Change log:
     2026-09-03  Created for fixplans/t212/b0/03_data_pipeline.md section 6.
+    2026-09-03  Rule order inverted to shortName-first, plus the rename and
+                double-claim guards, after review found five pool symbols
+                mapped to another company's instrument and four venue tickers
+                claimed twice.
 """
 
 from __future__ import annotations
@@ -87,38 +126,75 @@ def build_map(members: list[dict], instruments: list[dict]) -> dict[str, dict]:
         by_ticker[str(item.get("ticker"))].append(item)
         by_short[str(item.get("shortName"))].append(item)
 
+    pool_symbols = {_disk_symbol(str(m["ticker"])) for m in members}
+    pool_symbols |= {str(m["ticker"]) for m in members}
+
     out: dict[str, dict] = {}
     for member in members:
         pool_ticker = str(member["ticker"])
         symbol = _disk_symbol(pool_ticker)
         entry = {"ticker": None, "isin": None, "workingScheduleId": None,
                  "matched_by": None, "pool_ticker": pool_ticker,
-                 "candidates": []}
-        for rule, index, key in (("prefix", by_ticker, f"{symbol}_US_EQ"),
-                                 ("prefix", by_ticker, f"{pool_ticker}_US_EQ"),
-                                 ("short_name", by_short, symbol),
-                                 ("short_name", by_short, pool_ticker)):
+                 "candidates": [], "rejected": None}
+        for rule, index, key in (("short_name", by_short, symbol),
+                                 ("short_name", by_short, pool_ticker),
+                                 ("prefix", by_ticker, f"{symbol}_US_EQ"),
+                                 ("prefix", by_ticker, f"{pool_ticker}_US_EQ")):
             found = index.get(key) or []
-            if len(found) == 1:
-                meta = found[0]
-                entry.update({"ticker": meta.get("ticker"),
-                              "isin": meta.get("isin"),
-                              "workingScheduleId": meta.get(
-                                  "workingScheduleId"),
-                              "matched_by": rule})
-                break
             if len(found) > 1:
-                entry["candidates"] = sorted(str(m.get("ticker"))
-                                             for m in found)
+                # A dual listing: the same shortName on the US line and on a
+                # USD-quoted London line (DARl_EQ, FIVEl_EQ). Exactly one
+                # "_US_EQ" among them IS the US listing, which is the one the
+                # strategy prices from Yahoo and means to trade. More than one
+                # is a genuine ambiguity and stays undecided.
+                us_lines = [m for m in found
+                            if str(m.get("ticker", "")).endswith("_US_EQ")]
+                if len(us_lines) == 1:
+                    found = us_lines
+                else:
+                    entry["candidates"] = sorted(str(m.get("ticker"))
+                                                 for m in found)
+                    break
+            if len(found) != 1:
+                continue
+            meta = found[0]
+            short = str(meta.get("shortName"))
+            if rule == "prefix" and short != symbol and short in pool_symbols:
+                # The rename signature: this legacy ticker id now belongs to
+                # another pool member, which owns it by shortName.
+                entry["rejected"] = (f"{meta.get('ticker')} is {short} "
+                                     f"({meta.get('name')}), a different pool "
+                                     f"member")
                 break
+            entry.update({"ticker": meta.get("ticker"),
+                          "isin": meta.get("isin"),
+                          "workingScheduleId": meta.get("workingScheduleId"),
+                          "matched_by": rule, "venue_short_name": short,
+                          "venue_name": meta.get("name")})
+            break
         out[symbol] = entry
+
+    # No venue instrument may be claimed by two pool symbols. One of the two
+    # is necessarily wrong and nothing here can say which.
+    claims: dict[str, list[str]] = defaultdict(list)
+    for symbol, entry in out.items():
+        if entry["ticker"]:
+            claims[entry["ticker"]].append(symbol)
+    for ticker, owners in claims.items():
+        if len(owners) > 1:
+            for symbol in owners:
+                out[symbol].update({"ticker": None, "matched_by": None,
+                                    "rejected": f"{ticker} is also claimed by "
+                                                f"{sorted(set(owners) - {symbol})}"})
 
     for symbol, ticker in A0_ORDER_TICKERS.items():
         meta = (by_ticker.get(ticker) or [{}])[0]
         out[symbol] = {"ticker": ticker, "isin": meta.get("isin"),
                        "workingScheduleId": meta.get("workingScheduleId"),
                        "matched_by": "a0_verified", "pool_ticker": symbol,
-                       "candidates": []}
+                       "candidates": [], "rejected": None,
+                       "venue_short_name": meta.get("shortName"),
+                       "venue_name": meta.get("name")}
     return out
 
 
@@ -145,6 +221,8 @@ def main() -> int:
                  if not e["ticker"] and e["candidates"]}
     unmatched = sorted(s for s, e in table.items()
                        if not e["ticker"] and not e["candidates"])
+    rejected = {s: e["rejected"] for s, e in table.items()
+                if not e["ticker"] and e.get("rejected")}
     by_rule: dict[str, int] = defaultdict(int)
     for entry in matched.values():
         by_rule[entry["matched_by"]] += 1
@@ -158,6 +236,7 @@ def main() -> int:
                     "ambiguous": len(ambiguous), "unmatched": len(unmatched),
                     "by_rule": dict(by_rule)},
          "ambiguous": ambiguous, "unmatched": unmatched,
+         "rejected": rejected,
          "map": table}, indent=1), encoding="utf-8")
 
     print(f"candidates      {len(table)}")
@@ -165,6 +244,9 @@ def main() -> int:
         print(f"  matched by {rule:<12} {count}")
     print(f"ambiguous       {len(ambiguous)}  {sorted(ambiguous)[:10]}")
     print(f"unmatched       {len(unmatched)}  {unmatched[:10]}")
+    print(f"rejected        {len(rejected)}")
+    for symbol, why in sorted(rejected.items())[:12]:
+        print(f"    {symbol}: {why}")
     print(f"written         {out_path}")
     return 0
 

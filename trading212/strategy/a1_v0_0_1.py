@@ -545,7 +545,12 @@ def signal_diagnostics(view, portfolio, params, injection: dict) -> dict:
                      "score": score_of.get(symbol),
                      "weight": 1.0 / len(pick) if pick else 0.0,
                      "status": status})
-    for symbol in sorted(held - set(pick)):
+    # Exiting rows come from the A1 BOOK, not from the account. Under B0 the
+    # account is shared with A0 by construction, so reporting every held name
+    # outside the pick would show A1 exiting thirteen A0 holdings it never
+    # owned -- on the one panel the owner checks before leaving the daemon
+    # unattended.
+    for symbol in sorted((set(book) - set(pick)) & held):
         rows.append({"symbol": symbol, "rank": rank_of.get(symbol),
                      "score": score_of.get(symbol), "weight": 0.0,
                      "status": "exiting"})

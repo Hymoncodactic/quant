@@ -375,8 +375,13 @@ def _decide(view, portfolio, params, injection, a1_leg) -> dict[str, Decimal]:
     active, a0_prices = _a0_active_and_prices(view, injection, params)
     equity, prices = _equity(view, portfolio, fx)
     prices = {**a0_prices, **prices}
-    if not book and not s0:
-        return {}
+    # No early return when both sets are empty. b0_spec.md 3.5 allows exactly
+    # two empty results -- not a session, and no FX rate -- and the execution
+    # layer reads an empty mapping as an abort. With both sets empty the right
+    # answer is the clearing pass on its own: every held name to zero plus the
+    # eighteen A0 zeros, which is what A0 alone would have produced when its
+    # gates shut. Returning {} instead rides the whole book through a closed
+    # gate with no order (decision A7).
 
     def price_of(symbol) -> Decimal:
         if symbol in prices:
