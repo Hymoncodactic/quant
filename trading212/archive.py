@@ -319,7 +319,8 @@ def record_signals(root: Path | None, payload: dict[str, Any]) -> int:
 def record_a1_plan(root: Path | None, payload: dict[str, Any]) -> int:
     """Append one A1 rotation: the book that was decided and what changed.
 
-    Keyed by rebalance_date, so replaying a session cannot duplicate the row.
+    Keyed by rebalance_date: replaying the identical decision is a no-op, and
+    a decision retaken on better data supersedes the earlier row.
     This stream is the ONLY memory of the previous book: the buffer band is
     defined against it, and positions are not a substitute because a rejected
     order leaves them disagreeing with the plan.
@@ -336,10 +337,53 @@ def record_b0_allocation(root: Path | None, payload: dict[str, Any]) -> int:
 
 
 def _append_keyed(path: Path, rows: list[dict[str, Any]], key: str) -> int:
-    """Append rows whose key is not already present in the file."""
-    known = _known_keys(path, key)
-    fresh = [r for r in rows if r.get(key) not in known]
+    """Append a row unless an identical one for the same key is already newest.
+
+    Supersede, not first-write-wins. These streams record a DECISION, and a
+    decision can legitimately be retaken within the same session: the first
+    attempt may abort before submitting and a later attempt may reach a
+    different answer on refreshed data. First-write-wins froze the earlier,
+    worse-informed row forever and left no way to correct it.
+
+    Replay safety is kept by comparing content: re-recording the identical
+    decision is a no-op, so an idempotent retry still does not duplicate. The
+    file stays append-only, so the supersede history is auditable; every
+    reader takes the NEWEST row for a key (read_stream returns newest first).
+    """
+    newest = _newest_by_key(path, key)
+    fresh = []
+    for row in rows:
+        previous = newest.get(row.get(key))
+        if previous is not None and _same_decision(previous, row):
+            continue
+        fresh.append(row)
     return _append(path, fresh)
+
+
+def _same_decision(previous: dict[str, Any], row: dict[str, Any]) -> bool:
+    """Whether two rows record the same decision, ignoring the write stamp."""
+    drop = {"at_utc"}
+    return {k: v for k, v in previous.items() if k not in drop} \
+        == {k: v for k, v in row.items() if k not in drop}
+
+
+def _newest_by_key(path: Path, key: str) -> dict[Any, dict[str, Any]]:
+    """The most recent row per key value in one stream."""
+    out: dict[Any, dict[str, Any]] = {}
+    if not path.exists():
+        return out
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if key in row:
+                out[row[key]] = row
+    return out
 
 
 def harvest_all(client, root: Path | None = None,

@@ -85,7 +85,7 @@ Change log:
 from __future__ import annotations
 
 __all__ = ["decide", "settle", "status", "init_ledger", "adopt_book",
-           "assemble_params",
+           "assemble_params", "anchor_problem",
            "DEFAULT_SUBMIT_LEAD_SEC", "DEFAULT_MAX_WAIT_SEC",
            "DECISION_PARAM_OVERRIDES"]
 
@@ -190,7 +190,11 @@ def assemble_params(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("execution.b0_live_from must be set for strategy b0; "
                          "it is B0's start date AND A1's rebalance anchor, "
                          "and the two have to be the same day")
-    _assert_anchor_is_a_session(live_from)
+    problem = anchor_problem(live_from)
+    if problem:
+        # Reported, not raised: assemble_params runs in _Cycle.__init__, and
+        # raising here takes settle and status down with decide.
+        log.critical("[params] %s", problem)
     a0_params = _strategy_params("a0_v0_0_1")
     a0_params.update(DECISION_PARAM_OVERRIDES)
     a0_params["live_from"] = live_from
@@ -214,8 +218,16 @@ def assemble_params(cfg: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
-def _assert_anchor_is_a_session(live_from: str) -> None:
-    """Refuse a rotation anchor that cannot be session 0.
+def anchor_problem(live_from: str) -> str | None:
+    """Describe why a rotation anchor cannot be session 0, or None if it can.
+
+    NEVER raises. It used to, from inside assemble_params, which _Cycle builds
+    in its constructor -- so a failing check killed decide, settle AND status
+    alike, leaving no way to even look at the book. Worse, the failure arrives
+    on its own: the go-live date is checkable only once it is in the past, so
+    the day after go-live an un-run daily update makes the anchor unverifiable
+    and every phase dies. Reporting lets settle and status keep working while
+    decide, the only phase that can act on it, refuses.
 
     The anchor is index 0 of the rotation by construction, so whatever date is
     written here becomes the first rebalance. A date that is not a session
@@ -232,24 +244,24 @@ def _assert_anchor_is_a_session(live_from: str) -> None:
     """
     day = pd.Timestamp(live_from).date()
     if day.weekday() >= 5:
-        raise ValueError(
-            f"execution.b0_live_from {live_from!r} is a weekend. It is "
-            f"rotation session 0, so it must be the session B0 actually "
-            f"starts trading on.")
+        return (f"execution.b0_live_from {live_from!r} is a weekend. It is "
+                f"rotation session 0, so it must be the session B0 actually "
+                f"starts trading on.")
     # Today is the normal go-live date, and its own daily bar is not published
     # until after the close, so the stored calendar cannot confirm it either.
     # Only a date strictly in the past is checkable here.
     if day >= pd.Timestamp.now(tz=instruments.EXCHANGE_TZ).date():
-        return
+        return None
     try:
         sessions_ = market_data.us_sessions(live_from, live_from)
     except FileNotFoundError:                      # no lake: nothing to check
-        return
+        return None
     if day not in sessions_:
-        raise ValueError(
-            f"execution.b0_live_from {live_from!r} is not a US trading "
-            f"session in the stored calendar. It is rotation session 0, so a "
-            f"non-session date shifts every rebalance after it.")
+        return (f"execution.b0_live_from {live_from!r} is not a US trading "
+                f"session in the stored calendar. It is rotation session 0, "
+                f"so a non-session date shifts every rebalance after it. If "
+                f"the date is right, the daily update has not run since then.")
+    return None
 
 
 class _Cycle:
@@ -375,6 +387,13 @@ def decide(cfg: dict[str, Any], armed: bool,
     if state.get("last_decide_session") == session_id:
         return _abort(f"already decided for session {session_id}")
 
+    if cycle.is_b0:
+        problem = anchor_problem(str((cfg.get("execution") or {})
+                                     .get("b0_live_from", "")))
+        if problem:
+            notify(f"{cycle.strategy_id} rotation anchor unusable", problem)
+            return _abort(problem)
+
     # Learned venue precisions, before any quantity is floored. A step
     # learned from a rejection last session is worthless if it is not
     # installed before this session sizes the same name.
@@ -481,15 +500,17 @@ def decide(cfg: dict[str, Any], armed: bool,
     # Persist the rotation NOW, before any of the abort paths below. Session
     # zero is consumed by being reached; a book decided and then not recorded
     # is a book the next session will liquidate.
-    rebalance = _record_rotation(cycle, session_id, diagnostics, injected)
+    rebalance = _record_rotation(cycle, session_id, diagnostics, injected,
+                                 dry_run=cycle.dry_run or not armed)
     if cycle.is_b0 and isinstance(injected, dict):
         if injected.get("session_calendar_stale"):
+            problems = "; ".join(injected.get("session_calendar_problems")
+                                 or ["unspecified"])
+            notify(f"{cycle.strategy_id} session calendar unusable", problems)
             return _abort(
-                f"the stored session list ends {injected.get('sessions')[-2] if len(injected.get('sessions') or []) > 1 else None} "
-                f"and trails {session.date_ny} by "
-                f"{injected.get('session_lag_days')} calendar days; the A1 "
-                f"rotation counter would be wrong. Run the daily update "
-                f"(scripts/update_data.py) and retry")
+                f"the stored session calendar cannot be trusted, so the A1 "
+                f"rotation counter would be wrong: {problems}. Run the daily "
+                f"update (scripts/update_data.py) and retry")
         a1_tree = (diagnostics or {}).get("a1") or {}
         tree = a1_tree.get("rebalance") or {}
         if not injected.get("a1_book") and not rebalance \
@@ -1141,7 +1162,7 @@ def _fit_before_close(intents, session, safety_sec: int = SUBMIT_SAFETY_SEC):
 
 
 def _record_rotation(cycle: _Cycle, session_id: str, diagnostics: dict,
-                     injected) -> bool:
+                     injected, dry_run: bool = False) -> bool:
     """Persist the rotation the moment it is decided, before anything can abort.
 
     The a1_plan row is the ONLY memory of the A1 book: the buffer band is
@@ -1154,9 +1175,14 @@ def _record_rotation(cycle: _Cycle, session_id: str, diagnostics: dict,
     instant, a halt raised while parked, an operator stopping the daemon
     inside the twenty-nine minute wait. The next session would then find no
     book, size the A1 half to nothing, and liquidate the names it had just
-    chosen. Recording a rotation the session failed to execute is strictly
-    safer than executing one it failed to record, and the row is keyed by date
-    so a replay cannot duplicate it.
+    chosen.
+
+    The converse cost -- recording a rotation the session then failed to
+    execute -- is bounded, because B0 re-sizes the whole A1 book on EVERY
+    session, not only on rotation days: the recorded names are bought on the
+    next session that completes. The row is superseded rather than frozen, so
+    a later decision on the same date can correct it, and it carries dry_run
+    so a rehearsal is never mistaken for an executed rotation.
 
     Returns whether this session is a rotation.
     """
@@ -1185,6 +1211,9 @@ def _record_rotation(cycle: _Cycle, session_id: str, diagnostics: dict,
         .get("universe_file"),
         "code_version": f"{cycle.signal_name}_v"
         + cycle.signal_version.replace(".", "_"),
+        # Stamped so a rehearsal is distinguishable from an armed rotation in
+        # the record, and so an armed run on the same date supersedes it.
+        "dry_run": bool(dry_run),
     })
     return True
 

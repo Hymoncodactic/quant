@@ -219,10 +219,21 @@ def test_the_previous_book_comes_from_the_record_stream(tmp_path):
                  {"symbol": "MU", "weight": 0.05}]})
     assert market_data.a1_book_from_records(tmp_path) == {"PLTR": 0.05,
                                                           "MU": 0.05}
-    # Keyed by rebalance_date: replaying a session must not duplicate the row.
-    archive.record_a1_plan(tmp_path, {"rebalance_date": "2026-09-15",
-                                      "book": []})
+    # Replaying the IDENTICAL decision is a no-op.
+    archive.record_a1_plan(tmp_path, {
+        "rebalance_date": "2026-09-15",
+        "book": [{"symbol": "PLTR", "weight": 0.05},
+                 {"symbol": "MU", "weight": 0.05}]})
     assert len(archive.read_stream(tmp_path, "a1_plan", limit=10)) == 1
+    # A decision RETAKEN on the same date supersedes: the first attempt may
+    # have aborted before submitting, and freezing its book forever left no
+    # way to correct it.
+    archive.record_a1_plan(tmp_path, {
+        "rebalance_date": "2026-09-15",
+        "book": [{"symbol": "SNDK", "weight": 0.05}]})
+    rows = archive.read_stream(tmp_path, "a1_plan", limit=10)
+    assert len(rows) == 2                      # history kept, append-only
+    assert market_data.a1_book_from_records(tmp_path) == {"SNDK": 0.05}
 
 
 # --- 4. seam S4 -------------------------------------------------------------
@@ -424,8 +435,14 @@ def test_the_allocation_row_carries_every_contracted_field(tmp_path):
         "decision_date", "equity_gbp", "priority", "a0_names", "a1_names",
         "overlap", "a0_target_gbp", "a1_target_gbp", "cash_target_gbp",
         "attribution", "a0_value_gbp", "a1_value_gbp", "cash_gbp"}
-    archive.record_b0_allocation(tmp_path, {"decision_date": "2026-09-15"})
+    # The identical row is not duplicated; a changed one supersedes it.
+    same = dict(rows[0]); same.pop("at_utc")
+    archive.record_b0_allocation(tmp_path, same)
     assert len(archive.read_stream(tmp_path, "b0_allocation", limit=5)) == 1
+    archive.record_b0_allocation(tmp_path, {"decision_date": "2026-09-15",
+                                            "equity_gbp": 999.0})
+    latest = archive.read_stream(tmp_path, "b0_allocation", limit=5)[0]
+    assert latest["equity_gbp"] == 999.0
 
 
 def test_both_new_streams_are_declared():
@@ -661,3 +678,67 @@ def test_the_rotation_is_recorded_before_any_abort_can_discard_it(tmp_path):
     assert len(archive.read_stream(tmp_path, "a1_plan", limit=5)) == 1
     assert json.loads(
         (tmp_path / "a1_rebalance_state.json").read_text())["session_index"] == 5
+
+
+# --- second review round ---------------------------------------------------
+
+def test_the_session_calendar_shape_is_checked_not_only_its_tip():
+    """Catches: a hole in the middle, or a truncated calendar with a fresh tip.
+
+    The rotation counter is a positional index into this list, so a lost
+    session shifts every rebalance after it. The decision path refreshes SPY
+    and write_daily overwrites rather than merges, so one short vendor
+    response can truncate the calendar while the newest date still looks
+    current -- the same mechanism that lost 2026-08-28 for 1,427 symbols.
+    """
+    as_of = pd.Timestamp("2026-09-03").date()
+    healthy = market_data.us_sessions("2025-09-01", "2026-09-02")
+    assert market_data.session_list_problems(healthy, as_of) == []
+
+    holed = [d for d in healthy
+             if d != pd.Timestamp("2026-05-26").date()]     # a long weekend
+    problems = market_data.session_list_problems(holed, as_of)
+    assert any("session is missing" in p for p in problems)
+
+    truncated = healthy[-5:]
+    problems = market_data.session_list_problems(truncated, as_of)
+    assert any("truncated" in p for p in problems)
+
+    stale = [d for d in healthy if d <= pd.Timestamp("2026-08-20").date()]
+    assert any("calendar days before" in p
+               for p in market_data.session_list_problems(stale, as_of))
+    assert market_data.session_list_problems([], as_of) != []
+
+
+def test_the_lag_bound_is_the_longest_legal_gap_not_one_more():
+    """2026's longest legal gap between sessions is 4 days (holiday weekends);
+    a bound of 5 lets a list that actually LOST a session pass."""
+    sessions = market_data.us_sessions("2026-01-01", "2026-12-31")
+    gaps = [(b - a).days for a, b in zip(sessions, sessions[1:])]
+    assert max(gaps) == market_data.MAX_SESSION_CALENDAR_LAG_DAYS == 4
+
+
+def test_a_bad_anchor_is_reported_and_never_raises():
+    """Catches: assemble_params raising inside _Cycle.__init__, which takes
+    settle and status down along with decide."""
+    assert session_cycle.anchor_problem("2026-09-05")        # a Saturday
+    assert session_cycle.anchor_problem("2026-12-25") is None   # future date
+    cfg = _cfg("b0")
+    cfg["execution"]["b0_live_from"] = "2026-09-05"
+    params = session_cycle.assemble_params(cfg)              # must not raise
+    assert params["live_from"] == "2026-09-05"
+
+
+def test_a_rotation_recorded_before_an_abort_can_be_superseded(tmp_path):
+    """Catches: freezing a rotation decided by an attempt that then aborted."""
+    archive.record_a1_plan(tmp_path, {"rebalance_date": "2026-09-15",
+                                      "book": [{"symbol": "OLD",
+                                                "weight": 0.05}],
+                                      "dry_run": True})
+    assert market_data.a1_book_from_records(tmp_path) == {"OLD": 0.05}
+    archive.record_a1_plan(tmp_path, {"rebalance_date": "2026-09-15",
+                                      "book": [{"symbol": "NEW",
+                                                "weight": 0.05}],
+                                      "dry_run": False})
+    assert market_data.a1_book_from_records(tmp_path) == {"NEW": 0.05}
+    assert len(archive.read_stream(tmp_path, "a1_plan", limit=10)) == 2

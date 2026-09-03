@@ -92,13 +92,26 @@ Constants:
                             zero while the table is genuinely old. Measured
                             2026-09-03: a table from 2026-08-31 reported
                             rank_stale_sessions = 0. Either threshold freezes.
-    MAX_SESSION_CALENDAR_LAG_DAYS int  5. How far the stored session list may
-                            trail the day being decided before the rotation
-                            counter is no longer trustworthy. Beyond it the
-                            injection reports session_calendar_stale and the
-                            cycle refuses to decide, because a session missing
-                            from the middle of the list shifts every index
-                            after it and silently moves the rotation.
+    MAX_SESSION_CALENDAR_LAG_DAYS int  4. How far the stored session list may
+                            trail the day being decided. 4 is the largest
+                            legal gap between consecutive US sessions -- 2026
+                            has six of them, all holiday long weekends
+                            (2026-05-22 to 05-26 among them) and none longer.
+                            5 let a list that had actually LOST a session
+                            across such a weekend pass the gate, which shifts
+                            every rotation index after it.
+    MAX_SESSION_GAP_DAYS int  4. The same bound applied INSIDE the list. Tail
+                            freshness alone cannot see a hole in the middle,
+                            and a hole is what moves the rotation counter.
+    MIN_SESSIONS_PER_YEAR int  200. Floor on the sessions in the trailing year.
+                            The decision path now refreshes SPY, and
+                            yahoo_bars.write_daily OVERWRITES a year partition
+                            with whatever was fetched rather than merging it
+                            into what is stored -- the mechanism that lost
+                            2026-08-28 for 1,427 symbols on 2026-09-03. One
+                            short response would truncate SPY_2026.parquet to
+                            a handful of rows while the tail still looked
+                            fresh, so the shape is checked as well as the tip.
     SESSION_SYMBOL   str    "SPY". The session calendar's single source of
                             truth: its stored daily bars ARE the US trading
                             days, half days included. The venue calendar is
@@ -137,7 +150,7 @@ from __future__ import annotations
 __all__ = ["group_for", "refresh_bars", "load_frames", "daily_rows",
            "build_view", "assert_intraday_ready", "us_sessions",
            "refresh_for_decision", "load_b0_injection", "a1_book_from_records",
-           "a1_universe_for",
+           "a1_universe_for", "session_list_problems",
            "LiveBar", "LiveMarketView",
            "GROUPS", "FX_SYMBOL", "FX_LAG_MINUTES", "FX_CURRENT_LAG_MINUTES",
            "INTRADAY_SESSIONS_LOADED", "SESSION_SYMBOL"]
@@ -171,7 +184,9 @@ A1_REFRESH_BACKOFF_SEC = 4
 A1_INTRADAY_DAYS = 7
 RANK_STALE_FREEZE_SESSIONS = 3
 RANK_STALE_FREEZE_DAYS = 7
-MAX_SESSION_CALENDAR_LAG_DAYS = 5
+MAX_SESSION_CALENDAR_LAG_DAYS = 4
+MAX_SESSION_GAP_DAYS = 4
+MIN_SESSIONS_PER_YEAR = 200
 
 _TZ_LONDON = "Europe/London"
 _TZ_NEW_YORK = "America/New_York"
@@ -526,6 +541,49 @@ def _latest_rank_table(target, sessions_before: list):
     return None, None, None
 
 
+def session_list_problems(sessions: list, as_of) -> list[str]:
+    """Everything wrong with a stored session list, as human-readable strings.
+
+    Three checks, because the rotation counter is a positional index into this
+    list and any distortion moves every rebalance after it:
+
+      tip     The list must reach within MAX_SESSION_CALENDAR_LAG_DAYS of the
+              day being decided.
+      shape   No interior gap wider than MAX_SESSION_GAP_DAYS. Tail freshness
+              cannot see a hole in the middle, and a hole is exactly what a
+              lost session looks like.
+      size    At least MIN_SESSIONS_PER_YEAR in the trailing year. The
+              decision path refreshes SPY, and write_daily overwrites a year
+              partition rather than merging, so one short vendor response can
+              truncate the calendar to a few rows with a perfectly fresh tip.
+
+    An empty list is a problem in itself; the caller decides what to do, and
+    for a decision the answer is to refuse.
+    """
+    as_of = pd.Timestamp(str(as_of)).date()
+    if not sessions:
+        return ["the stored session list is empty"]
+    out: list[str] = []
+    newest = sessions[-1]
+    lag = (as_of - newest).days
+    if lag > MAX_SESSION_CALENDAR_LAG_DAYS:
+        out.append(f"the list ends {newest}, {lag} calendar days before "
+                   f"{as_of} (bound {MAX_SESSION_CALENDAR_LAG_DAYS})")
+    year_ago = as_of - pd.Timedelta(days=365).to_pytimedelta()
+    recent = [d for d in sessions if d > year_ago]
+    for earlier, later in zip(recent, recent[1:]):
+        gap = (later - earlier).days
+        if gap > MAX_SESSION_GAP_DAYS:
+            out.append(f"a {gap}-day gap between {earlier} and {later} "
+                       f"(bound {MAX_SESSION_GAP_DAYS}); a session is missing")
+            break
+    if len(recent) < MIN_SESSIONS_PER_YEAR and lag <= MAX_SESSION_CALENDAR_LAG_DAYS:
+        out.append(f"only {len(recent)} session(s) in the year before "
+                   f"{as_of} (floor {MIN_SESSIONS_PER_YEAR}); the calendar "
+                   f"looks truncated")
+    return out
+
+
 def a1_universe_for(params: dict, as_of, held=None, records_root=None) -> dict:
     """The A1 names one session may touch, without loading any daily history.
 
@@ -631,19 +689,17 @@ def load_b0_injection(params: dict, as_of, held=None,
         log.error("[bars] no A1 ranking table at or before %s; the A1 leg "
                   "has nothing to rotate on", as_of)
 
-    # The session list drives the rotation counter, and a session missing from
-    # the middle of it shifts every index after it. The lag is measured on the
+    # The session list drives the rotation counter, and a session missing
+    # ANYWHERE in it shifts every index after it. The lag is measured on the
     # STORED list, before today is appended -- measuring it afterwards always
     # reads zero, because the appended day is today by construction.
     stored = universe["sessions_all"]
     newest = stored[-1] if stored else None
     lag_days = None if newest is None else (as_of - newest).days
-    calendar_stale = bool(lag_days is not None
-                          and lag_days > MAX_SESSION_CALENDAR_LAG_DAYS)
-    if calendar_stale:
-        log.error("[bars] the stored session list ends %s, %d calendar days "
-                  "before %s; the rotation counter is not trustworthy",
-                  newest, lag_days, as_of)
+    problems = session_list_problems(stored, as_of)
+    calendar_stale = bool(problems)
+    for problem in problems:
+        log.error("[bars] session calendar: %s", problem)
 
     held_names = sorted(set(held or []))
     a1_names = sorted(set(universe["names"]) - set(a0_symbols))
@@ -663,6 +719,7 @@ def load_b0_injection(params: dict, as_of, held=None,
         "a1_names": a1_names,
         "sessions": sessions_list,
         "session_calendar_stale": calendar_stale,
+        "session_calendar_problems": problems,
         "session_lag_days": lag_days,
         "as_of": as_of,
         "thin": [],
