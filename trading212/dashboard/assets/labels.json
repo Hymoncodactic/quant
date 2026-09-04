@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "A0 交易看板",
+    "title": "交易看板",
     "orders_title": "手动下单",
     "nav_dashboard": "总览",
     "nav_orders": "手动下单",
@@ -178,19 +178,18 @@
     "halt_check_separator": "："
   },
   "charts": {
-    "equity_title": "持仓市值变化",
-    "equity_y": "英镑",
-    "equity_series": "策略总资产（账本）",
-    "cash_series": "未买入的现金（账本）",
-    "holdings_series": "持仓市值",
+    "pnl_title": "累计损益",
+    "pnl_y": "损益（英镑）",
+    "pnl_series": "累计损益",
+    "pnl_note": "累计损益 = 策略总资产 − 净投入资金。注资与收回按账本事件剔除；B0 接手 A0 时沿用原账本投入起点，不把账本迁移误算成损益。",
+    "pnl_unavailable": "暂时算不出累计损益：需要完整持仓行情和可追溯的账本投入记录。",
     "positions_title": "各只股票的持仓市值",
     "positions_y": "英镑",
+    "positions_empty": "当前没有可定价的持仓。",
     "empty": "还没有采集到数据。点上面的「开始实时更新」就会开始记录。",
     "gap_note": "曲线中断的地方是看板停着、没有采集数据的时段。",
     "session_band": "美股交易时段",
     "tz_suffix": "显示；浅色带是美股常规交易时段（纽约 09:30–16:00）。",
-    "account_series": "账户实际总值",
-    "book_vs_account": "只画持仓市值一条线（按行情报价估值）。策略总资产、现金、账户总值在顶部数字栏随时可看。交互：滚轮以光标为中心按比例缩放时间轴，按住拖动平移，双击复原；纵轴自动贴合当前可见区间。",
     "tz_label": "时间按",
     "tz_local": "本地时间",
     "tz_london": "伦敦时间",
@@ -350,7 +349,8 @@
     "history_real": "实单",
     "history_empty": "还没有决策留痕；第一次决策后这里会出现记录。",
     "insufficient": "历史不足",
-    "empty": "暂无信号数据：日线数据尚未落地。"
+    "empty": "暂无信号数据：日线数据尚未落地。",
+    "unavailable": "信号暂时不可用，正在等待完整的本地策略数据。"
   },
   "watch": {
     "heading": "标的实时走势（当日）",

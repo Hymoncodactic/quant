@@ -20,7 +20,7 @@ Constants:
     VENUE            str    "t212". The dashboard is venue-specific by
                             design: the two venue lines keep their code,
                             configuration and conclusions separate
-                            (CLAUDE.md section 6).
+                            (AGENTS.md section 6).
     CLIENT_TIMEOUT_SEC float 6.0. An interactive surface must fail fast. The
                             execution layer keeps the patient default,
                             because a batch job would rather wait than miss
@@ -39,6 +39,8 @@ Outputs:
 
 Change log:
     2026-08-22  Created.
+    2026-09-04  B0 now uses seam S1 for parameter assembly and prices the
+                A0 universe, current book, and recorded A1 allocation.
 """
 
 from __future__ import annotations
@@ -48,12 +50,12 @@ __all__ = ["AppContext", "VENUE", "CLIENT_TIMEOUT_SEC", "CLIENT_ATTEMPTS"]
 import threading
 from typing import Any
 
-import yaml
-
 from common.config import load_config
 from common.logging_setup import get_logger
-from common.paths import config_dir, execution_state_dir
+from common.paths import execution_state_dir, records_dir
+from trading212 import archive
 from trading212.client import T212Client
+from trading212.execution import session_cycle
 from trading212.execution.ledger_store import LedgerFrozenError
 from trading212.execution.shadow_ledger import ShadowLedger
 
@@ -86,8 +88,7 @@ class AppContext:
         self.signal_version = strategy.get("version", "0.0.1")
         self.strategy_id = f"{self.signal_name}_v" \
                            + self.signal_version.replace(".", "_")
-        params_path = config_dir(VENUE) / "strategies" / f"{self.strategy_id}.yaml"
-        self.params = yaml.safe_load(params_path.read_text(encoding="utf-8")) or {}
+        self.params = session_cycle.assemble_params(self.cfg)
         self.fx_symbol = self.params.get("fx_symbol", "GBPUSD=X")
         self.state_dir = execution_state_dir(VENUE, str(self.cfg.get("_env")))
         self.halt_path = self.state_dir / "halt"
@@ -105,11 +106,25 @@ class AppContext:
         return str(self.cfg.get("_env"))
 
     def watch_symbols(self) -> list[str]:
-        """Symbols the dashboard prices: the universe plus state and FX."""
-        symbols = list(self.params.get("trade_symbols") or [])
-        for extra in (self.params.get("state_symbol"), self.fx_symbol):
-            if extra and extra not in symbols:
-                symbols.append(extra)
+        """Symbols the dashboard prices: strategy inputs plus the live book."""
+        a0_params = self.params.get("a0_params") or self.params
+        symbols = list(a0_params.get("trade_symbols") or [])
+
+        def add(values) -> None:
+            for value in values:
+                if value and value not in symbols:
+                    symbols.append(value)
+
+        if self.signal_name == "b0":
+            add((self.book_state().get("positions") or {}).keys())
+            try:
+                rows = archive.read_stream(records_dir(VENUE, self.env),
+                                           "b0_allocation", limit=1)
+                if rows and rows[0].get("strategy_id") == self.strategy_id:
+                    add(rows[0].get("a1_names") or [])
+            except (OSError, ValueError) as exc:
+                log.warning("[dashboard] B0 allocation read failed: %r", exc)
+        add((a0_params.get("state_symbol"), self.fx_symbol))
         return symbols
 
     # ------------------------------------------------------------------

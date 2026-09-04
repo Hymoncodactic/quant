@@ -36,7 +36,8 @@ Constants:
                             request cannot make the browser unresponsive.
 
 Inputs:
-    data/t212/dashboard/  through snapshots.py
+    trading212/records/equity/ through snapshots.py
+    data/t212/execution_state[_paper] ledger journals through pnl.py
 Outputs:
     trading212/config/t212.<env>.yaml     through settings.py
     data/t212/execution_state/            through session_cycle and
@@ -44,6 +45,8 @@ Outputs:
 
 Change log:
     2026-08-22  Created.
+    2026-09-04  History rows gained cumulative PnL net of ledgered capital
+                flows; the chart no longer treats holdings value as return.
 """
 
 from __future__ import annotations
@@ -56,7 +59,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-__all__ = ["get_state", "get_history", "get_settings", "get_watch", "get_signals", "post_settings", "post_strategy", "strategy_state",
+__all__ = ["get_state", "get_history", "get_settings", "get_watch",
+           "get_signals", "post_settings", "post_strategy", "strategy_state",
            "post_collector", "post_ledger_init", "post_allocation",
            "post_ledger_reset",
            "post_halt", "get_sessions", "get_instruments", "get_manual",
@@ -72,7 +76,13 @@ import pandas as pd
 
 from common.paths import records_dir
 from trading212 import archive
-from trading212.dashboard import manual_orders, settings, signal_view, snapshots
+from trading212.dashboard import (
+    manual_orders,
+    pnl,
+    settings,
+    signal_view,
+    snapshots,
+)
 from trading212.execution import instruments as venue_instruments
 from trading212.execution import daemon as daemon_mod
 from trading212.execution import reconciler, session_cycle
@@ -217,7 +227,8 @@ def get_history(ctx, range_id: str = "1D",
                  "equity_gbp": r.get("close"),
                  "cash_gbp": r.get("cash_gbp"),
                  "holdings_gbp": r.get("holdings_gbp"),
-                 "account_total": r.get("account_total")}
+                 "account_total": r.get("account_total"),
+                 "_pnl_ts": r.get("last_ts")}
                 for r in snapshots.read_rollup(_VENUE, env=ctx.env)]
         if start is not None:
             cut = start.strftime("%Y-%m-%d")
@@ -232,9 +243,13 @@ def get_history(ctx, range_id: str = "1D",
             source = "ticks"
 
     thinned = _downsample(rows, target)
+    thinned, pnl_meta = pnl.add_cumulative_pnl(
+        thinned, getattr(ctx, "state_dir", None),
+        getattr(ctx, "strategy_id", None))
     covered = thinned[0]["ts"] if thinned else None
     return 200, {"range": range_id, "source": source, "points": len(thinned),
-                 "available_from": covered, "rows": thinned}
+                 "available_from": covered, "rows": thinned,
+                 "pnl": pnl_meta}
 
 
 def get_records(ctx, name: str | None = None,

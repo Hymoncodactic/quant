@@ -1,16 +1,16 @@
 # 目录与模块职责地图
 
 本文件是路径与分层的唯一权威。新增模块前先读本文件；新增目录后同步更新本文件。
-纪律见 `CLAUDE.md`，流程见 `.claude/skills/`。
+纪律见 `AGENTS.md`，流程见 `.agents/skills/`。
 
 ## 1. 顶层
 
 | 路径 | 职责 | 备注 |
 |---|---|---|
-| `CLAUDE.md` | 项目纪律，always-on | 资金红线 §3 优先级最高 |
+| `AGENTS.md` | 项目纪律，always-on | 资金红线 §3 优先级最高 |
 | `ARCHITECTURE.md` | 本文件 | |
 | `WORKING_MEMORY.md` | 跨会话状态：当前状态 / 未决项 / 时间线 | 开工必读，收工必写 |
-| `.claude/skills/` | 本项目 skills，共 10 个 | 见 §4 |
+| `.agents/skills/` | 本项目 skills，共 10 个 | 见 §4 |
 | `common/` | 两条线共用的基础库 | 不得含场所特有口径 |
 | `crypto_trading/` | OKX 交易代码 | 只装与交易所打交道的代码 |
 | `trading212/` | Trading 212 交易代码 | 同上 |
@@ -26,11 +26,11 @@
 | `dashboard_demo.command` | 双击启动模拟盘看板（paper 环境，端口 8788，可与实盘看板并跑） | 同上；模拟盘状态物理隔离于 `data/t212/execution_state_paper/` 与 `trading212/records/paper/` |
 | `trading212/records/` | 账户记账归档（成交、流水、分红、快照、信号、资产曲线） | **不入库**，带自身 `.gitignore`；仓库公开，内含持仓与账户号 |
 | `tests/` | 引擎与适配层测试 | 见 `tests/README.md` |
-| `reports/` `logs/` `backtest/results/` | 运行时产物落地位置 | gitignore，允许为空，不放 `README.md`（`CLAUDE.md` §4.3） |
+| `reports/` `logs/` `backtest/results/` | 运行时产物落地位置 | gitignore，允许为空，不放 `README.md`（`AGENTS.md` §4.3） |
 | `secrets/` | 唯一的密钥落地位置 | gitignore，永不展示内容 |
 
 每个目录必须配 `README.md`，登记其中每个文件的作用与存在必要性，
-豁免范围见 `CLAUDE.md` §4.3。每个源文件必须有六节模块头，见 `CLAUDE.md` §4.4。
+豁免范围见 `AGENTS.md` §4.3。每个源文件必须有六节模块头，见 `AGENTS.md` §4.4。
 
 ## 2. 代码分层
 
@@ -165,7 +165,7 @@ T212 无行情接口也无推送通道，故「主循环」体现为**每个交�
 | `api.py` / `server.py` | 路由（返回纯数据）与本地服务；只绑 127.0.0.1，写操作需本次运行令牌。含紧急停止（落旗随时可做、解除须过账本与对账检查）、策略资金调整（写成账本事件）、场次跨度查询（供图表标注美股交易时段） |
 | `assets/` | 页面与脚本；**全部中文文案集中在 `labels.json`**，源码保持纯 ASCII |
 
-界面语言为中文属用户当轮指定（`CLAUDE.md` §2.3 表格「用户指定的输出」一行）。
+界面语言为中文属用户当轮指定（`AGENTS.md` §2.3 表格「用户指定的输出」一行）。
 `plotly.min.js` 不入库，由服务端从已安装的 plotly 包下发并长缓存。
 
 ### 2.1 `common/` 现有模块
@@ -260,4 +260,4 @@ data/t212/curated/<group>/<symbol>/<interval>/<symbol>_<start>_<end>_<interval>.
 - Python 3.11+，UTF-8，依赖见 `requirements.txt`
 - `QUANT_ENV`：`paper`（默认）/ `live`
 - 密钥只放 `secrets/`（权限 600，gitignore）或环境变量
-- 文件名与目录名一律 ASCII，无例外（`CLAUDE.md` §4.1）
+- 文件名与目录名一律 ASCII，无例外（`AGENTS.md` §4.1）

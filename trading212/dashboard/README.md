@@ -2,41 +2,42 @@
 
 ## 1. 职责
 
-Trading 212 一侧的**本地看板**：把策略状态、账户情况和延迟行情画出来，把上交易
-前必须填的配置集中到一个页面，并提供一个独立的手动下单界面。
+Trading 212 一侧的本地策略操作面：展示策略状态、账户情况、信号、累计损益与延迟
+行情，并集中提供配置、采样器、策略守护进程、急停、账本额度与独立手动下单操作。
 
-看板只读也只画。它**不启动策略、不停止策略、不代替策略下单**：策略是另一个按
-计划运行的进程（`trading212/execution/run_a0.py`），关掉看板对它没有任何影响。
+展示路由只读本地缓存与账本；只有明确的写操作按钮会改配置、账本或进程状态。策略由
+独立守护进程运行，关闭看板不会停止已经启动的策略进程。
 
-界面语言为中文（用户当轮指定，`CLAUDE.md` §2.3 表格「用户指定的输出」一行）。
+界面语言为中文（用户当轮指定，`AGENTS.md` §2.3 表格「用户指定的输出」一行）。
 为不破坏「代码内不出现中文」的硬性条款，**全部中文文案集中在 `assets/labels.json`
 这一份数据文件里**，Python 与 JavaScript 源码保持纯 ASCII。
 
 ## 2. 文件清单
 
-| 文件 | 作用 | 存在必要性 |
-|---|---|---|
-| `__init__.py` | 声明为常规 Python 包 | 不 import 任何子模块，避免导入包就拉进 pandas 与网络客户端 |
-| `context.py` | 进程内共享状态：配置、券商客户端、账本读取、关注标的 | 采集线程与请求处理器共用同一个客户端，才共用同一套限频 |
-| `collector.py` | 秒更采集：各数据源独立轮询，采样只读缓存 | 慢或不可达的数据源不能拖慢界面刷新 |
-| `snapshots.py` | 最新快照与逐日采样落盘、降采样读取 | 浏览器不该拿到几万个点；停机形成的断点必须可见 |
-| `signal_view.py` | 把策略自带的 signal_diagnostics 跑在与决策同口径的日线上，混入延迟报价算实时阈值距离 | 阈值距离若另写公式必与策略失同步；此处只调用策略单一副本 | `api.py` |
-| `diagnostics.py` | 把连不上券商的失败判成具体原因（环境用错、DNS 被劫持、限流、密钥失效） | 「连不上券商」对读者不可行动；四种原因对应四种完全不同的处置 |
-| `quotes.py` | 延迟行情拉取（与策略同一数据源） | T212 无行情接口；换数据源会让看板与策略对不上 |
-| `settings.py` | 上交易前配置的读取、校验与写回 | 校验只出问题码，措辞交给界面，模块不掺表现层 |
-| `api.py` 的 `post_halt` | 紧急停止的落旗与解除 | 落旗随时可做；解除要先过检查，否则等于带着问题重新开始交易 |
-| `api.py` 的 `post_allocation` | 调整策略资金 | 账上钱变了要能改额度；写成账本事件而不是改快照，账本才仍能自证其现金 |
-| `api.py` 的 `get_sessions` | 供图表标注美股交易时段 | 读日历缓存，开页面不消耗券商的元数据配额 |
-| `api.py` 的 `post_ledger_reset` | 清空（归档）策略账本 | 策略资金只在建账本时定一次，换数额只能重建；账本是持仓归属的唯一记录，故改名归档而非删除 |
-| `server.py` 的 `acquire_instance_lock` | 单实例保护，锁内记端口 | 券商按账户计限频，两个看板会把彼此都挤成「连不上」；锁在绑定端口**之前**取，否则第二次启动会先崩在 bind 上，根本走不到提示 |
-| `manual_orders.py` | 手动下单与独立留痕 | 手动单不进策略账本，否则会污染策略的归因 |
-| `api.py` | 路由处理，返回纯数据 | 路由可在无套接字的情况下被测试 |
-| `server.py` | 本地 HTTP 服务、静态资源、采集生命周期 | 只绑 127.0.0.1；写操作需本次运行的令牌 |
-| `assets/labels.json` | 全部中文文案 | 见 §1 |
-| `assets/index.html` `app.js` | 总览页 | |
-| `assets/orders.html` `orders.js` | 手动下单页 | 与总览分开，避免误点 |
-| `assets/style.css` | 样式 | |
-| `README.md` | 本文件 | |
+| 文件 | 作用 | 存在必要性 | 谁在用 |
+|---|---|---|---|
+| `__init__.py` | 声明为常规 Python 包 | 不 import 任何子模块，避免导入包就拉进 pandas 与网络客户端 | Python 导入系统 |
+| `context.py` | 进程内共享状态：配置、券商客户端、账本读取、关注标的 | 采集线程与请求处理器共用同一个客户端，才共用同一套限频 | `server.py`、`collector.py`、`api.py` |
+| `collector.py` | 秒更采集：各数据源独立轮询，采样只读缓存 | 慢或不可达的数据源不能拖慢界面刷新 | `server.py`、`api.py` |
+| `snapshots.py` | 最新快照与逐日采样落盘、降采样读取 | 浏览器不该拿到几万个点；停机形成的断点必须可见 | `collector.py`、`api.py` |
+| `signal_view.py` | 把策略自带的 signal_diagnostics 跑在与决策同口径的数据上，混入延迟报价算实时阈值距离 | 阈值距离若另写公式必与策略失同步；此处只调用策略单一副本 | `api.py` |
+| `pnl.py` | 从当前账本及被接手账本的 journal 还原净投入资金，为历史权益补累计损益 | 直接画权益变化会把注资、收回和 B0 账本迁移误当收益；缺失证据时必须返回空值 | `api.py` |
+| `diagnostics.py` | 把连不上券商的失败判成具体原因（环境用错、DNS 被劫持、限流、密钥失效） | 「连不上券商」对读者不可行动；四种原因对应四种完全不同的处置 | `collector.py` |
+| `quotes.py` | 延迟行情拉取（与策略同一数据源） | T212 无行情接口；换数据源会让看板与策略对不上 | `collector.py` |
+| `settings.py` | 上交易前配置的读取、校验与写回 | 校验只出问题码，措辞交给界面，模块不掺表现层 | `api.py` |
+| `api.py` 的 `post_halt` | 紧急停止的落旗与解除 | 落旗随时可做；解除要先过检查，否则等于带着问题重新开始交易 | `server.py` |
+| `api.py` 的 `post_allocation` | 调整策略资金 | 账上钱变了要能改额度；写成账本事件而不是改快照，账本才仍能自证其现金 | `server.py` |
+| `api.py` 的 `get_sessions` | 供图表标注美股交易时段 | 读日历缓存，开页面不消耗券商的元数据配额 | `server.py`、`assets/app.js` |
+| `api.py` 的 `post_ledger_reset` | 清空（归档）策略账本 | 策略资金只在建账本时定一次，换数额只能重建；账本是持仓归属的唯一记录，故改名归档而非删除 | `server.py` |
+| `server.py` 的 `acquire_instance_lock` | 单实例保护，锁内记端口 | 券商按账户计限频，两个看板会把彼此都挤成「连不上」；锁在绑定端口之前取，否则第二次启动会先崩在 bind 上 | `server.py` 启动入口 |
+| `manual_orders.py` | 手动下单与独立留痕 | 手动单不进策略账本，否则会污染策略的归因 | `api.py` |
+| `api.py` | 路由处理，返回纯数据 | 路由可在无套接字的情况下被测试 | `server.py`、浏览器页面 |
+| `server.py` | 本地 HTTP 服务、静态资源、采集生命周期 | 只绑 127.0.0.1；写操作需本次运行的令牌 | `dashboard.command`、浏览器 |
+| `assets/labels.json` | 全部中文文案 | 见 §1 | `assets/app.js`、`assets/orders.js` |
+| `assets/index.html` `app.js` | 总览页：累计损益图、分股持仓市值图、B0 内 A0 信号阈值、状态与操作面 | 缺失会使总览页不可用 | 浏览器、`server.py` |
+| `assets/orders.html` `orders.js` | 手动下单页 | 与总览分开，避免误点 | 浏览器、`server.py` |
+| `assets/style.css` | 页面样式 | 缺失会使状态层级与图表布局不可读 | 两个 HTML 页面 |
+| `README.md` | 本目录职责、依赖和回滚留痕 | 删除后无法审计文件归属与变更 | 维护者与自动化代理 |
 
 `plotly.min.js` **不入库**：由 `server.py` 从已安装的 plotly 包里取出并以一年期
 不可变缓存头下发，浏览器只解析一次，仓库里也不多出 4.8 MB。
@@ -55,12 +56,12 @@ shadow_ledger,ledger_store}`、`common/{config,paths,logging_setup}`、`yfinance
 
 ## 5. 产出与清理
 
-写 `data/t212/dashboard/`（`live_snapshot.json` 与 `samples/YYYY-MM-DD.jsonl`）、
-`logs/`；经 `settings.py` 写 `trading212/config/t212.<env>.yaml`；经 `api.py` 的
-账本初始化写 `data/t212/execution_state/`；手动下单写
-`data/t212/execution_state/manual_orders.jsonl`。
+写 `trading212/records[/paper]/equity/`（`live_snapshot.json`、
+`samples/YYYY-MM-DD.jsonl`、`daily.jsonl` 与 `quotes/`）、`logs/`；经
+`settings.py` 写 `trading212/config/t212.<env>.yaml`；经 `api.py` 的账本操作写
+`data/t212/execution_state[_paper]/`；手动下单留痕也按环境写入该状态目录。
 
-可以随时删除的：`data/t212/dashboard/` 整棵，只损失历史曲线。
+可以随时删除的：`trading212/records[/paper]/equity/` 整棵，只损失看板采样历史。
 必须保留的：`manual_orders.jsonl`（手动下单的唯一留痕）。
 
 ## 6. 变更记录
@@ -83,3 +84,5 @@ shadow_ledger,ledger_store}`、`common/{config,paths,logging_setup}`、`yfinance
 2026-09-01 KPI 行补口径说明：策略总资产/持仓市值按行情报价估值，报价过时（休市期间停在最近收盘）时两项置灰并写明报价时刻——券商的账户总值此时用盘后/隔夜实时价，两者差额属价源不同而非账实不符（实测 2026-09-01 07:00Z：差 0.92 GBP，归因价格 -0.94、汇率 +0.02）。
 2026-09-01 注资/收回块重写：原「当前策略资金」标签接的是账本现金（语义错位，用户误读为设定值），现同时显示策略总资产与现金并注明口径；输入框标明为变动额（差额）而非目标值，打字时实时预览调整后的现金与总资产；文案写明新资金下一决策才用于新开仓、已有持仓不加仓不重买、收回上限为当前现金、注资后需同步调最大持仓额度。
 2026-09-01 资产图改版：只画持仓市值一条线（其余数值在 KPI 栏）；滚轮以光标为锚按比例缩放时间轴，拖动平移，双击复原；纵轴按可见窗口自动贴合（数据占 95% 高度）；用户缩放的视窗在 30 秒周期重画时保留，区间按钮与双击才复位。策略进程 spawn 包 caffeinate -i（防空闲睡眠挂起守护进程；合盖睡眠仍无法阻止，见操作卡）。
+2026-09-04 修复 B0 看板回归：参数改走 S1，关注列表覆盖 A0、当前账本与最近 A1 名单；信号面板按 S2/S3/S6 读取 B0 并渲染其 A0 子树，明确禁止 S4；删除「持仓市值变化」与「各只股票的持仓市值」两图，以扣除净投入资金且跨 `BOOK_ADOPTED` 延续的累计损益图替换；页面标题去掉已失效的 A0 限定。回滚：还原 `context.py`、`signal_view.py`、`pnl.py`、`api.py` 与 assets 本行对应改动。
+2026-09-04 恢复「各只股票的持仓市值」柱状图；累计损益图保留，「持仓市值变化」历史图不恢复。图表仅使用看板状态已有的逐仓标记市值，无可定价持仓时显示空状态。回滚：移除 `assets/index.html` 的 positions 面板、`assets/app.js` 的 `drawPositions` 调用及 `assets/labels.json` 的 positions 文案。

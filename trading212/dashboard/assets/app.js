@@ -127,8 +127,10 @@
     text("stop-btn", L.controls.stop);
     text("shutdown-btn", L.controls.shutdown);
     text("shutdown-note", L.controls.shutdown_note);
-    text("equity-heading", L.charts.equity_title);
-    text("book-vs-account", L.charts.book_vs_account);
+    text("pnl-heading", L.charts.pnl_title);
+    text("pnl-note", L.charts.pnl_note);
+    text("positions-heading", L.charts.positions_title);
+    text("positions-empty", L.charts.positions_empty);
     text("tz-label", L.charts.tz_label);
     text("reset-btn", L.setup.reset_btn);
     text("reset-hint", L.setup.reset_hint);
@@ -150,11 +152,11 @@
     sel.onchange = function () {
       TZ_ID = sel.value;
       localStorage.setItem("dash.tz", TZ_ID);
-      if (LAST_ROWS.length) drawEquity(LAST_ROWS);
+      if (LAST_ROWS.length) drawPnl(LAST_ROWS);
     };
     text("gap-note", L.charts.gap_note);
-    text("equity-empty", L.charts.empty);
-    text("positions-heading", L.charts.positions_title);
+    text("pnl-empty", L.charts.empty);
+    text("signals-empty", L.signals.empty);
     text("table-heading", L.table.heading);
     text("modal-ok", L.setup.modal_ok);
   }
@@ -358,7 +360,11 @@
 
   function drawSignals(live) {
     var chart = $("signals-chart");
-    if (!live || !live.symbols) { return; }
+    if (!live || !live.symbols) {
+      chart.classList.add("hidden");
+      $("signals-empty").classList.remove("hidden");
+      return;
+    }
     var rows = [];
     Object.keys(live.symbols).forEach(function (sym) {
       var r = live.symbols[sym];
@@ -371,6 +377,9 @@
                         r.live_margin_pct !== null });
     });
     rows.sort(function (a, b) { return a.margin - b.margin; });
+    chart.classList.toggle("hidden", !rows.length);
+    $("signals-empty").classList.toggle("hidden", !!rows.length);
+    if (!rows.length) return;
     var trace = {
       type: "bar", orientation: "h",
       y: rows.map(function (r) {
@@ -420,16 +429,30 @@
   function refreshSignals() {
     return getJSON("/api/signals").then(function (payload) {
       if (payload.ok && payload.live) {
-        paintGates(payload.live);
-        drawSignals(payload.live);
+        var live = payload.live;
+        var a0 = live.a0 || live;
+        paintGates(a0);
+        drawSignals(a0);
         text("signals-asof", L.signals.asof_prefix + " " +
-             localTime(isoNorm(payload.live.as_of)));
+             signalAsOf(live.as_of || a0.as_of));
       } else {
         $("gates-wrap").innerHTML = "<p class='note'>" + L.signals.empty +
                                     "</p>";
+        $("signals-chart").classList.add("hidden");
+        text("signals-empty", L.signals.unavailable);
+        $("signals-empty").classList.remove("hidden");
       }
       paintSignalHistory(payload.history || []);
-    }).catch(function () {});
+    }).catch(function () {
+      $("signals-chart").classList.add("hidden");
+      text("signals-empty", L.signals.unavailable);
+      $("signals-empty").classList.remove("hidden");
+    });
+  }
+
+  function signalAsOf(value) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return value;
+    return localTime(isoNorm(value));
   }
 
   var watchBuilt = false;
@@ -663,56 +686,64 @@
     return { x: x, y: y };
   }
 
-  var equityWired = false;
+  var pnlWired = false;
   var fittingY = false;
   var userXRange = null;   /* set while the reader is zoomed/panned in */
 
-  function fitEquityY(x0, x1) {
-    /* Fit the y range so the visible data spans about 95% of the plot
-       height. The window is the CURRENT x range (wheel-zoomed or panned),
-       so zooming in re-reads the local extremes instead of keeping the
-       global scale, which is what makes zooming feel proportional. */
-    var lo = null, hi = null;
+  function fitPnlY(x0, x1) {
+    /* Fit the y range to the visible data while retaining zero as the PnL
+       reference. The window is the CURRENT x range (wheel-zoomed or panned),
+       so zooming in re-reads local extremes instead of keeping global ones. */
+    var lo = 0, hi = 0, seen = false;
     LAST_ROWS.forEach(function (r) {
       if (r.gap) return;
-      var v = r.holdings_gbp;
+      var v = r.cumulative_pnl_gbp;
       if (v === null || v === undefined) return;
       var t = inZone(r.ts);
       if (x0 !== null && (t < x0 || t > x1)) return;
-      if (lo === null || v < lo) lo = v;
-      if (hi === null || v > hi) hi = v;
+      seen = true;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
     });
-    if (lo === null) return;
+    if (!seen) return;
     var span = hi - lo;
     var pad = span > 0 ? span * 0.0263 : Math.max(Math.abs(hi) * 0.01, 1);
     fittingY = true;
-    Plotly.relayout("equity-chart",
+    Plotly.relayout("pnl-chart",
                     { "yaxis.range": [lo - pad, hi + pad] })
       .then(function () { fittingY = false; })
       .catch(function () { fittingY = false; });
   }
 
-  function drawEquity(rows) {
+  function drawPnl(rows, meta) {
     LAST_ROWS = rows;
-    var empty = !rows.length;
-    $("equity-empty").classList.toggle("hidden", !empty);
-    $("equity-chart").classList.toggle("hidden", empty);
+    var empty = !rows.some(function (row) {
+      return row.cumulative_pnl_gbp !== null &&
+             row.cumulative_pnl_gbp !== undefined;
+    });
+    text("pnl-empty", meta && meta.ok === false
+      ? L.charts.pnl_unavailable : L.charts.empty);
+    $("pnl-empty").classList.toggle("hidden", !empty);
+    $("pnl-chart").classList.toggle("hidden", empty);
     if (empty) return;
-    var ho = splitOnGaps(rows, "holdings_gbp");
+    var series = splitOnGaps(rows, "cumulative_pnl_gbp");
     var traces = [
-      { x: ho.x, y: ho.y, name: L.charts.holdings_series, type: "scatter",
-        mode: "lines", line: { color: "#d99a2b", width: 2 },
+      { x: series.x, y: series.y, name: L.charts.pnl_series, type: "scatter",
+        mode: "lines", line: { color: "#4c8dff", width: 2 },
         hovertemplate: "%{y:.2f} " + L.app.currency_prefix + "<extra>" +
-                       L.charts.holdings_series + "</extra>" }
+                       L.charts.pnl_series + "</extra>" }
     ];
     var layout = JSON.parse(JSON.stringify(LAYOUT_BASE));
-    layout.yaxis.title = { text: L.charts.equity_y, font: { size: 11 } };
+    layout.yaxis.title = { text: L.charts.pnl_y, font: { size: 11 } };
+    layout.yaxis.zeroline = true;
+    layout.yaxis.zerolinewidth = 2;
+    layout.yaxis.zerolinecolor = "#6d7584";
     layout.shapes = sessionBands(rows);
     layout.showlegend = false;
     layout.dragmode = "pan";
     /* The wheel zooms the TIME axis only, anchored at the cursor (Plotly's
        scroll zoom is proportional by construction); the y axis never zooms
-       by hand -- it follows the visible window via fitEquityY. */
+       by hand -- it follows the visible window via fitPnlY. */
     layout.yaxis.fixedrange = true;
     var cfg = JSON.parse(JSON.stringify(CONFIG));
     cfg.scrollZoom = true;
@@ -721,10 +752,10 @@
       layout.xaxis.range = userXRange.slice();
       layout.xaxis.autorange = false;
     }
-    var chart = $("equity-chart");
+    var chart = $("pnl-chart");
     Plotly.react(chart, traces, layout, cfg).then(function () {
-      if (!equityWired) {
-        equityWired = true;
+      if (!pnlWired) {
+        pnlWired = true;
         chart.on("plotly_relayout", function (ev) {
           /* Wheel and drag emit xaxis.range[0]/[1]; programmatic relayout
              and some gestures emit xaxis.range as a pair. Accept both.
@@ -739,35 +770,51 @@
             ? ev["xaxis.range[1]"] : (pair ? pair[1] : undefined);
           if (x0 !== undefined) {
             userXRange = [x0, x1];
-            fitEquityY(x0, x1);
+            fitPnlY(x0, x1);
           } else if (ev["xaxis.autorange"] || ev.autosize) {
             userXRange = null;
-            fitEquityY(null, null);
+            fitPnlY(null, null);
           }
         });
       }
       if (userXRange) {
-        fitEquityY(userXRange[0], userXRange[1]);
+        fitPnlY(userXRange[0], userXRange[1]);
       } else {
-        fitEquityY(null, null);
+        fitPnlY(null, null);
       }
     });
   }
 
   function drawPositions() {
-    var book = (STATE.snapshot && STATE.snapshot.book) || {};
+    var book = (STATE.snapshot && STATE.snapshot.book) || STATE.book || {};
     var marked = book.marked || {};
-    var keys = Object.keys(marked).filter(function (k) {
-      return marked[k].value_gbp !== null && marked[k].value_gbp !== undefined;
+    var keys = Object.keys(marked).filter(function (key) {
+      var position = marked[key] || {};
+      var quantity = Number(position.qty);
+      var value = Number(position.value_gbp);
+      return Number.isFinite(quantity) && quantity !== 0 &&
+             position.value_gbp !== null &&
+             position.value_gbp !== undefined && Number.isFinite(value);
     });
-    keys.sort(function (a, b) { return marked[b].value_gbp - marked[a].value_gbp; });
+    keys.sort(function (a, b) {
+      return Number(marked[b].value_gbp) - Number(marked[a].value_gbp);
+    });
+    var empty = keys.length === 0;
+    var chart = $("positions-chart");
+    chart.classList.toggle("hidden", empty);
+    $("positions-empty").classList.toggle("hidden", !empty);
+    if (empty) return;
+
     var layout = JSON.parse(JSON.stringify(LAYOUT_BASE));
     layout.showlegend = false;
     layout.yaxis.title = { text: L.charts.positions_y, font: { size: 11 } };
-    Plotly.react("positions-chart", [{
-      x: keys, y: keys.map(function (k) { return marked[k].value_gbp; }),
-      type: "bar", marker: { color: "#4c8dff" },
-      hovertemplate: "%{x}<br>%{y:.2f} " + L.app.currency_prefix + "<extra></extra>"
+    Plotly.react(chart, [{
+      x: keys,
+      y: keys.map(function (key) { return Number(marked[key].value_gbp); }),
+      type: "bar",
+      marker: { color: "#4c8dff" },
+      hovertemplate: "%{x}<br>%{y:.2f} " + L.app.currency_prefix +
+                     "<extra></extra>"
     }], layout, CONFIG);
   }
 
@@ -840,7 +887,7 @@
     }).catch(function () { SESSIONS = []; }).then(function () {
       return getJSON("/api/history?range=" + encodeURIComponent(RANGE_ID));
     }).then(function (h) {
-      drawEquity(h.rows || []);
+      drawPnl(h.rows || [], h.pnl || {});
       paintRangeMeta(h);
       chartsBuilt = true;
     }).catch(function () { });

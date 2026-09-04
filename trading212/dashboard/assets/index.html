@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>A0 交易看板</title>
+<title>交易看板</title>
 <link rel="stylesheet" href="/assets/style.css">
 <script>window.DASH_TOKEN = "__DASH_TOKEN__";</script>
 </head>
 <body>
 <header>
-  <h1 id="app-title">A0 交易看板</h1>
+  <h1 id="app-title">交易看板</h1>
   <div class="statusbar" id="statusbar"></div>
   <nav>
     <a href="/" class="active" id="nav-dash">总览</a>
@@ -99,8 +99,8 @@
   </section>
 
   <section class="panel">
-    <h2 id="equity-heading"></h2>
-    <p class="note" id="book-vs-account"></p>
+    <h2 id="pnl-heading"></h2>
+    <p class="note" id="pnl-note"></p>
     <div class="row" style="margin-bottom:8px">
       <span class="note" id="range-label"></span>
       <span class="rangebar" id="range-bar"></span>
@@ -111,13 +111,14 @@
       <span class="note" id="range-meta"></span>
     </div>
     <p class="note" id="gap-note"></p>
-    <div class="chart" id="equity-chart"></div>
-    <p class="note hidden" id="equity-empty"></p>
+    <div class="chart" id="pnl-chart"></div>
+    <p class="note hidden" id="pnl-empty"></p>
   </section>
 
   <section class="panel">
     <h2 id="positions-heading"></h2>
     <div class="chart" id="positions-chart" style="height:280px"></div>
+    <p class="note hidden" id="positions-empty"></p>
   </section>
 
   <section class="panel">
@@ -125,6 +126,7 @@
     <p class="note" id="signals-note"></p>
     <div id="gates-wrap"></div>
     <div class="chart" id="signals-chart" style="height:430px"></div>
+    <p class="note hidden" id="signals-empty"></p>
     <p class="note" id="signals-asof"></p>
     <h3 id="signals-history-heading" style="margin-top:14px"></h3>
     <div id="signals-history-wrap"></div>
